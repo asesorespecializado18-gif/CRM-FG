@@ -295,6 +295,7 @@ let sesionUsuario = null; // { rol:'admin' } o { rol:'asesor', asesorId, nombre 
 function esAsesorSesion(){ return !!(sesionUsuario && sesionUsuario.rol==='asesor'); }
 function misVentas(arr){ return esAsesorSesion() ? arr.filter(v=>v.asesorId===sesionUsuario.asesorId) : arr; }
 let tab = 'dashboard';
+let filtroVTextoRenov = '';
 let editing = null;
 let pendingPolizaPDF; // undefined = sin cambios, null = quitar, {name,dataUrl} = nuevo archivo
 let charts = {};
@@ -375,9 +376,15 @@ function bloqueFlujoGlobal(label, montoPEN, montoUSD, color, grande, soloPEN){
   </div>`;
 }
 function seccionFlujoGlobal(titulo, res, grande, soloPEN){
+  const pctUtilPEN = res.fgPEN>0 ? Math.round((res.netoPEN/res.fgPEN)*100) : 0;
+  const pctUtilUSD = res.fgUSD>0 ? Math.round((res.netoUSD/res.fgUSD)*100) : 0;
+  const mostrarPct = res.fgPEN>0 || res.fgUSD>0;
   return `
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px;">
-      <div style="padding:10px 16px;font-weight:600;text-align:center;background:var(--surface);border-bottom:1px solid var(--border);">${titulo}</div>
+      <div style="padding:10px 16px;font-weight:600;text-align:center;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">
+        <span>${titulo}</span>
+        ${mostrarPct ? `<span class="pill pill-gray" style="font-weight:600;">% utilidad: ${soloPEN ? pctUtilPEN : (res.fgUSD>0?pctUtilUSD:pctUtilPEN)}%</span>` : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);">
         ${bloqueFlujoGlobal('Comisión FG recibida', res.fgPEN, res.fgUSD, '#2E5266', grande, soloPEN)}
         ${bloqueFlujoGlobal('(–) Comisión pagada a asesores', res.asesorPEN, res.asesorUSD, '#7A4B42', grande, soloPEN)}
@@ -1161,12 +1168,13 @@ function viewVentas(){
       ${(bit==='oncologicos' || bit==='asesorias') ? '' : `<select id="fVCanal"><option value="todos" ${filtroVCanal==='todos'?'selected':''}>Todos los canales</option><option value="directo" ${filtroVCanal==='directo'?'selected':''}>Canal directo</option><option value="alta_corredores" ${filtroVCanal==='alta_corredores'?'selected':''}>Canal Alta Corredores</option></select>`}
       <select id="fVMes"><option value="todos">Todos los meses</option>${MESES.map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}" ${filtroVMes===String(i+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}</select>
       <select id="fVAnio"><option value="todos">Todos los años</option>${añosDisponibles.map(a=>`<option value="${a}" ${filtroVAnio===a?'selected':''}>${a}</option>`).join('')}</select>
+      <button class="btn btn-ghost" id="btnLimpiarFiltrosV">Limpiar filtros</button>
     </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Asesor</th><th>Canal</th><th>Tipo</th><th>Fecha</th><th>${esAsesorSesion()?'Mi comisión':'Comisión 100%'}</th><th>Vigencia</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Asesor</th><th>Canal</th><th>Tipo</th><th>Fecha</th><th>${esAsesorSesion()?'Mi comisión':'Comisión 100%'}</th><th>Vigencia</th><th>Estado</th><th></th><th></th></tr></thead>
         <tbody>
-          ${rows.length===0 ? `<tr class="empty-row"><td colspan="12">No hay ventas que coincidan con el filtro.</td></tr>` : rows.map(v=>{
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="13">No hay ventas que coincidan con el filtro.</td></tr>` : rows.map(v=>{
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const ase = state.asesores.find(a=>a.id===v.asesorId);
             const celdaComision = esAsesorSesion()
@@ -1185,6 +1193,7 @@ function viewVentas(){
               <td>${v.vigenciaFin ? fmtDate(v.vigenciaFin) : '<span class="pill pill-gray">No aplica</span>'}</td>
               <td><span class="pill ${v.estadoVenta==='anulada'?'pill-red':'pill-green'}">${v.estadoVenta==='anulada'?'Anulada':'Emitida'}</span></td>
               <td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button></td>
+              <td>${v.vigenciaFin ? `<button class="btn btn-ghost btn-sm" data-ver-cobranza="${cli?cli.nombre:''}">Ver cobranza</button>` : ''}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1226,6 +1235,15 @@ function wireVentas(){
   const can = document.getElementById('fVCanal'); if(can) can.onchange = e=>{ filtroVCanal = e.target.value; render(); };
   const mes = document.getElementById('fVMes'); if(mes) mes.onchange = e=>{ filtroVMes = e.target.value; render(); };
   const anio = document.getElementById('fVAnio'); if(anio) anio.onchange = e=>{ filtroVAnio = e.target.value; render(); };
+  const btnLimpiar = document.getElementById('btnLimpiarFiltrosV'); if(btnLimpiar) btnLimpiar.onclick = () => {
+    filtroVTexto=''; filtroVProducto='todos'; filtroVAsesor='todos'; filtroVEstado='todas'; filtroVCanal='todos'; filtroVMes='todos'; filtroVAnio='todos';
+    render();
+  };
+  document.querySelectorAll('[data-ver-cobranza]').forEach(b=> b.onclick = () => {
+    filtroVTextoRenov = b.dataset.verCobranza;
+    tab = 'renovaciones';
+    render();
+  });
 }
 
 // ================= 2. REGISTRO DE POLIZAS =================
@@ -1510,13 +1528,21 @@ function wirePolizas(){
 }
 
 function viewRenovaciones(){
-  const withDays = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.vigenciaFin)
+  let withDays = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.vigenciaFin)
     .map(v=>({v, d: daysUntil(v.vigenciaFin)}))
     .filter(x=> x.d <= 60)
     .sort((a,b)=>a.d-b.d);
+  if(filtroVTextoRenov){
+    const texto = filtroVTextoRenov.toLowerCase();
+    withDays = withDays.filter(({v})=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return cli && cli.nombre && cli.nombre.toLowerCase().includes(texto);
+    });
+  }
 
   return `
     <div class="page-head"><div><h1>Renovaciones y cobranza</h1><p>Ventas con vigencia por vencer en los próximos 60 días</p></div></div>
+    ${filtroVTextoRenov ? `<div class="toolbar"><span class="pill pill-gray">Filtrando por: ${filtroVTextoRenov}</span><button class="btn btn-ghost btn-sm" id="btnQuitarFiltroRenov">Quitar filtro</button></div>` : ''}
     <div class="card" style="padding:0;">
       <table>
         <thead><tr><th>Folio</th><th>Cliente</th><th>Producto</th><th>Aseguradora</th><th>Asesor</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
@@ -1541,6 +1567,7 @@ function viewRenovaciones(){
   `;
 }
 function wireRenovaciones(){
+  const btnQuitar = document.getElementById('btnQuitarFiltroRenov'); if(btnQuitar) btnQuitar.onclick = () => { filtroVTextoRenov=''; render(); };
   document.querySelectorAll('[data-wa-renovacion]').forEach(b=>{
     b.onclick = () => {
       const v = state.ventas.find(v=>v.id===b.dataset.waRenovacion);
@@ -2366,7 +2393,9 @@ function wireModal(){
         else { data.polizaPDFNombre = pendingPolizaPDF.name; data.polizaPDFData = pendingPolizaPDF.dataUrl; }
       }
       if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
+      if(esSeguro(tipoProductoSel) && !data.aseguradora){ alert('Selecciona la aseguradora.'); return; }
       if(esSeguro(tipoProductoSel) && modoComisionAseguradora!=='fijo' && !data.primaBruta){ alert('Ingresa la prima bruta para calcular la comisión.'); return; }
+      if(!data.comisionTotal || data.comisionTotal<=0){ alert('Ingresa un monto de comisión válido (mayor a 0).'); return; }
       if(editing.id){
         const existing = state.ventas.find(v=>v.id===editing.id);
         if(data.estadoComision==='pagada' && existing.estadoComision!=='pagada') data.fechaPagoComision = todayISO();
