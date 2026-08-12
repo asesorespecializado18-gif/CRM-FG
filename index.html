@@ -103,6 +103,11 @@
 #crm-app .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
 #crm-app .hint { font-size: 12px; color: var(--ink-faint); margin-top: 2px; }
 #crm-app .divider { height: 1px; background: var(--border); margin: 16px 0; }
+#crm-app .mtab-btn { background:none; border:none; border-bottom:2px solid transparent; padding:8px 4px; font-size:13px; font-weight:600; color:var(--ink-faint); cursor:pointer; }
+#crm-app .mtab-btn.active { color:var(--primary); border-bottom-color:var(--primary); }
+#crm-app .mtab-panel.hidden { display:none; }
+#crm-app .crono-table { width:100%; border-collapse:collapse; font-size:13px; }
+#crm-app .crono-table th, #crm-app .crono-table td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:left; }
 #crm-app .kpi-inline { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; }
 #crm-app .kpi-inline div { font-size: 12px; color: var(--ink-soft); }
 #crm-app .kpi-inline b { font-family: 'IBM Plex Mono', monospace; color: var(--ink); }
@@ -165,8 +170,7 @@
     <button class="nav-btn" data-tab="cobro_comisiones"><span class="nav-icon">④</span>Cobro de comisiones</button>
     <button class="nav-btn" data-tab="pago_comisiones"><span class="nav-icon">⑤</span>Pago de comisiones</button>
     <div class="nav-group-label">Seguimiento</div>
-    <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Registro de pólizas</button>
-    <button class="nav-btn" data-tab="renovaciones"><span class="nav-icon">↻</span>Renovaciones y cobranza</button>
+    <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Pólizas y Renovaciones</button>
     <div class="nav-group-label">Directorio</div>
     <button class="nav-btn" data-tab="asesores"><span class="nav-icon">☺</span>Asesores</button>
     <div class="sidebar-foot">
@@ -185,6 +189,8 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script>
@@ -279,6 +285,13 @@ const ESTADOS_CONTACTO = [
   { id:'cliente', label:'Cliente' },
   { id:'no_interesado', label:'No interesado' },
 ];
+const ETIQUETAS_CLIENTE = [
+  { id:'vip', label:'VIP', clase:'pill-gold' },
+  { id:'moroso', label:'Moroso', clase:'pill-red' },
+  { id:'nuevo_tag', label:'Nuevo', clase:'pill-gray' },
+  { id:'referido', label:'Referido', clase:'pill-green' },
+  { id:'prioritario', label:'Prioritario', clase:'pill-gold' },
+];
 const CIUDADES_PERU = [
   'Lima','Callao','Arequipa','Trujillo','Chiclayo','Piura','Iquitos','Cusco','Chimbote','Huancayo',
   'Tacna','Ica','Sullana','Juliaca','Pucallpa','Ayacucho','Cajamarca','Puno','Tumbes','Chincha Alta',
@@ -289,13 +302,12 @@ const CIUDADES_PERU = [
   'Otuzco','Virú','Casma','Pativilca','Supe','Vitarte','San Vicente de Cañete','Otra ciudad',
 ];
 
-let state = { clientes: [], asesores: [], ventas: [], polizas: [], folioVenta: 0, folioPoliza: 0, metas: { general: 0, porAsesor: {} }, aseguradoras: ASEGURADORAS_DEFAULT.slice(), oficinas: [], tipoCambio: 3.75, productosPersonalizados: [], tema: 'claro', auth: { email: 'asesorespecializado18@gmail.com', passwordHash: null } };
+let state = { clientes: [], asesores: [], ventas: [], folioVenta: 0, metas: { general: 0, porAsesor: {} }, aseguradoras: ASEGURADORAS_DEFAULT.slice(), oficinas: [], tipoCambio: 3.75, productosPersonalizados: [], tema: 'claro', auth: { email: 'asesorespecializado18@gmail.com', passwordHash: null } };
 let sesionIniciada = false;
 let sesionUsuario = null; // { rol:'admin' } o { rol:'asesor', asesorId, nombre }
 function esAsesorSesion(){ return !!(sesionUsuario && sesionUsuario.rol==='asesor'); }
 function misVentas(arr){ return esAsesorSesion() ? arr.filter(v=>v.asesorId===sesionUsuario.asesorId) : arr; }
 let tab = 'dashboard';
-let filtroVTextoRenov = '';
 let editing = null;
 let pendingPolizaPDF; // undefined = sin cambios, null = quitar, {name,dataUrl} = nuevo archivo
 let charts = {};
@@ -394,7 +406,6 @@ function seccionFlujoGlobal(titulo, res, grande, soloPEN){
 }
 function ventaActiva(v){ return v.estadoVenta !== 'anulada'; }
 function ventaSeguroActiva(v){ return ventaActiva(v) && esSeguro(v.tipoProducto); }
-function polizaDeVenta(ventaId){ return state.polizas.find(p=>p.ventaId===ventaId); }
 
 function ventasEnMes(asesorId, key){
   return state.ventas.filter(v=> ventaActiva(v) && monthKey(v.fechaVenta)===key && (asesorId===undefined || v.asesorId===asesorId));
@@ -438,7 +449,7 @@ async function load(){
     }
     if(raw){
       const d = JSON.parse(raw);
-      state = Object.assign({clientes:[],asesores:[],ventas:[],polizas:[],folioVenta:0,folioPoliza:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',passwordHash:null}}, d);
+      state = Object.assign({clientes:[],asesores:[],ventas:[],folioVenta:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',passwordHash:null}}, d);
       if(!state.productosPersonalizados) state.productosPersonalizados = [];
       if(!state.metas) state.metas = { general:0, porAsesor:{} };
       if(!state.metas.porAsesor) state.metas.porAsesor = {};
@@ -502,7 +513,6 @@ function seedIfEmpty(){
   const v4 = mk({ folio: ++state.folioVenta, clienteId:c2.id, asesorId:null, aseguradora:'Insur', tipoProducto:'cartas_fianza', fechaVenta: iso(0,3), vigenciaInicio: iso(0,3), vigenciaFin: addYears(iso(0,3),1), primaBruta:v4PrimaBruta, primaNeta:v4PrimaNeta, porcentajeComisionAseguradora:v4Pct, comisionTotal: Math.round(v4PrimaNeta*v4Pct/100*100)/100, tipoComisionAsesor:'ninguna', valorComisionAsesor:0, estadoComision:'pagada', fechaPagoComision: iso(0,4) });
   const v5 = mk({ folio: ++state.folioVenta, clienteId:c1.id, asesorId:null, tipoProducto:'asesoria_contable', fechaVenta: iso(0,8), comisionTotal:300, tipoComisionAsesor:'ninguna', valorComisionAsesor:0, estadoComision:'pagada', fechaPagoComision: iso(0,8) });
   state.ventas = [v1,v2,v3,v4,v5];
-  state.polizas = [];
   state.metas = { general: 10, porAsesor: { [a1.id]: 6, [a2.id]: 4 } };
 }
 
@@ -633,9 +643,8 @@ function render(){
   else if(tab==='cobro_comisiones') el.innerHTML = viewCobroComisiones();
   else if(tab==='pago_comisiones') el.innerHTML = viewPagoComisiones();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
-  else if(tab==='renovaciones') el.innerHTML = viewRenovaciones();
   else if(tab==='asesores') el.innerHTML = viewAsesores();
-  else if(tab==='clientes') el.innerHTML = viewClientes();
+  else if(tab==='clientes') el.innerHTML = fichaClienteId ? viewFichaCliente(fichaClienteId) : viewClientes();
   wireCommon();
   if(tab==='dashboard') drawDashboardCharts();
   if(editing) openModal();
@@ -732,6 +741,7 @@ async function descargarRespaldo(){
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  localStorage.setItem('crm-fg-ultimo-respaldo', fecha);
 
   const btn = document.getElementById('btnDescargarRespaldo');
   const textoOriginal = btn ? btn.innerHTML : '';
@@ -744,6 +754,11 @@ async function descargarRespaldo(){
     if(btn) btn.innerHTML = textoOriginal;
     alert('El respaldo se descargó a tu computadora, pero no se pudo subir automáticamente a Google Drive.\n\nMotivo: ' + err.message + '\n\nPuedes intentarlo de nuevo con el botón, o subir manualmente el archivo que se descargó.');
   }
+}
+function diasDesdeUltimoRespaldo(){
+  const f = localStorage.getItem('crm-fg-ultimo-respaldo');
+  if(!f) return 999;
+  return Math.floor((new Date(todayISO()) - new Date(f)) / 86400000);
 }
 
 function restaurarRespaldo(e){
@@ -821,6 +836,18 @@ function alertasPendientes(){
   return { cuotasAtrasadas, porVencer };
 }
 
+function cumpleañosEstaSemana(){
+  const hoy = new Date();
+  const out = [];
+  state.clientes.forEach(c=>{
+    if(!c.fechaNacimiento) return;
+    const nac = new Date(c.fechaNacimiento+'T00:00:00');
+    const cumpleEsteAnio = new Date(hoy.getFullYear(), nac.getMonth(), nac.getDate());
+    let diff = Math.round((cumpleEsteAnio - new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate())) / 86400000);
+    if(diff >= 0 && diff <= 7) out.push({ c, diff });
+  });
+  return out.sort((a,b)=>a.diff-b.diff);
+}
 function viewDashboard(){
   const agg = monthlyAgg();
   const keys = Object.keys(agg).sort();
@@ -872,17 +899,36 @@ function viewDashboard(){
 
   const seccionFlujo = seccionFlujoGlobal;
   const alertas = alertasPendientes();
+  const cumples = cumpleañosEstaSemana();
+  const urgentes = alertas.porVencer.filter(v=>daysUntil(v.vigenciaFin)<=7);
+  const totalTareas = alertas.cuotasAtrasadas.length + alertas.porVencer.length + cumples.length;
+  const diasRespaldo = diasDesdeUltimoRespaldo();
 
   return `
     <div class="page-head">
       <div style="display:flex;align-items:center;gap:12px;"><img src="${LOGO_ICON}" alt="FG" style="height:44px;width:auto;"><div><h1>Panel general</h1><p>Resumen de ventas, pólizas y comisiones — actualizado al ${fmtDate(todayISO())}</p></div></div>
     </div>
-    ${(alertas.cuotasAtrasadas.length || alertas.porVencer.length) ? `
+    ${diasRespaldo >= 7 ? `
+    <div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--border);background:var(--primary-soft);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:13px;">💾 ${diasRespaldo===999 ? 'Aún no has hecho un respaldo desde este dispositivo.' : `Han pasado ${diasRespaldo} días desde tu último respaldo.`} Se recomienda respaldar al menos una vez por semana.</div>
+      <button class="btn btn-sm" id="btnRespaldoRecordatorio">Hacer respaldo ahora</button>
+    </div>` : ''}
+    ${totalTareas>0 ? `
     <div class="card" style="padding:14px 16px;margin-bottom:16px;border:1px solid var(--danger);background:var(--danger-soft);">
-      <div style="font-weight:600;color:var(--danger);margin-bottom:6px;">🔔 Avisos pendientes</div>
-      ${alertas.cuotasAtrasadas.length ? `<div style="font-size:13px;margin-bottom:2px;">• <b>${alertas.cuotasAtrasadas.length}</b> póliza(s) con cuotas atrasadas — <a href="#" class="link-inline" data-goto="polizas">ver en Registro de pólizas</a></div>` : ''}
-      ${alertas.porVencer.length ? `<div style="font-size:13px;margin-bottom:8px;">• <b>${alertas.porVencer.length}</b> póliza(s) por vencer en los próximos 30 días — <a href="#" class="link-inline" data-goto="renovaciones">ver en Renovaciones</a></div>` : ''}
-      <button class="btn btn-sm" id="btnWhatsAppResumen" style="margin-top:4px;">📲 Enviarme este resumen por WhatsApp</button>
+      <div style="font-weight:600;color:var(--danger);margin-bottom:8px;">✅ Tareas de hoy (${totalTareas})</div>
+      ${alertas.cuotasAtrasadas.slice(0,5).map(v=>{
+        const cli = state.clientes.find(c=>c.id===v.clienteId);
+        return `<div style="font-size:13px;margin-bottom:3px;display:flex;justify-content:space-between;gap:8px;"><span>💳 Cuota atrasada — <b>${cli?cli.nombre:'—'}</b> (${v.numeroPoliza||prodLabel(v.tipoProducto)})</span><button class="btn btn-ghost btn-sm" data-tarea-wa-cuota="${v.id}">📲</button></div>`;
+      }).join('')}
+      ${urgentes.slice(0,5).map(v=>{
+        const cli = state.clientes.find(c=>c.id===v.clienteId);
+        const d = daysUntil(v.vigenciaFin);
+        return `<div style="font-size:13px;margin-bottom:3px;display:flex;justify-content:space-between;gap:8px;"><span>📅 Vence en ${d} día(s) — <b>${cli?cli.nombre:'—'}</b> (${prodLabel(v.tipoProducto)})</span><button class="btn btn-ghost btn-sm" data-tarea-wa-renov="${v.id}">📲</button></div>`;
+      }).join('')}
+      ${alertas.porVencer.length > urgentes.length ? `<div style="font-size:13px;margin-bottom:3px;">📅 <b>${alertas.porVencer.length - urgentes.length}</b> póliza(s) más por vencer en 30 días — <a href="#" class="link-inline" data-goto="polizas">ver todas</a></div>` : ''}
+      ${cumples.map(({c,diff})=>`<div style="font-size:13px;margin-bottom:3px;">🎂 ${diff===0?'Hoy':'En '+diff+' día(s)'} cumple años <b>${c.nombre}</b></div>`).join('')}
+      ${alertas.cuotasAtrasadas.length ? `<div style="font-size:12px;margin-top:6px;"><a href="#" class="link-inline" data-goto="polizas">Ver todas las cuotas atrasadas</a></div>` : ''}
+      <button class="btn btn-sm" id="btnWhatsAppResumen" style="margin-top:8px;">📲 Enviarme este resumen por WhatsApp</button>
     </div>` : ''}
     ${seccionFlujo(`Flujo de comisiones — ${meses[hoy.getMonth()]} ${hoy.getFullYear()}`, resMes)}
     ${seccionFlujo(`Flujo de comisiones — Acumulado ${hoy.getFullYear()}`, resAnio)}
@@ -1085,8 +1131,25 @@ function drawDashboardCharts(){
 
 function wireDashboard(){
   const btn = document.getElementById('btnEditarMetas'); if(btn) btn.onclick = () => { editing = {type:'metas'}; render(); };
+  const btnResp = document.getElementById('btnRespaldoRecordatorio'); if(btnResp) btnResp.onclick = descargarRespaldo;
   const sel = document.getElementById('fRankingPeriodo'); if(sel) sel.onchange = e => { rankingPeriodo = e.target.value; render(); };
   document.querySelectorAll('[data-goto]').forEach(a=> a.onclick = (e) => { e.preventDefault(); tab = a.dataset.goto; render(); });
+  document.querySelectorAll('[data-tarea-wa-cuota]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.tareaWaCuota);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que tiene una cuota pendiente de pago de su póliza ${v.numeroPoliza||''} (${prodLabel(v.tipoProducto)}${v.aseguradora?' - '+v.aseguradora:''}).\n${v.proximaCuotaFecha ? 'Fecha de vencimiento: '+fmtDate(v.proximaCuotaFecha)+'.' : ''}\n\nPor favor regularice a la brevedad para evitar la pérdida de cobertura.\n\nQuedamos atentos.`;
+    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
+    window.open(linkWhatsApp(tel, mensaje), '_blank');
+  });
+  document.querySelectorAll('[data-tarea-wa-renov]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.tareaWaRenov);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que su ${prodLabel(v.tipoProducto)} con ${v.aseguradora||'nuestra compañía'} vence el ${fmtDate(v.vigenciaFin)}.\nPor favor coordine con nosotros la renovación para evitar interrupciones en su cobertura.\n\nQuedamos atentos.`;
+    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
+    window.open(linkWhatsApp(tel, mensaje), '_blank');
+  });
   const btnWA = document.getElementById('btnWhatsAppResumen'); if(btnWA) btnWA.onclick = () => {
     const alertas = alertasPendientes();
     const partes = [];
@@ -1135,7 +1198,7 @@ function viewVentas(){
   let rows = filteredVentas();
   const bit = bitacoraDeTab();
   const titulos = {
-    seguros: { h1:'Venta de Seguros', sub:'Cliente, aseguradora, producto, prima y comisión — todo en un solo registro.' },
+    seguros: { h1:'Venta de Seguros', sub:'Registro de ventas nuevas — cliente, aseguradora, producto, prima y comisión. Para vigencia y cobranza, ve a "Pólizas y Renovaciones".' },
     oncologicos: { h1:'Ventas Auna - Oncosalud', sub:'Seguros oncológicos: prima, comisión de la aseguradora y comisión FG/asesor, igual que un seguro regular.' },
     asesorias: { h1:'Venta de Asesoría y Consultoría', sub:'Asesoría contable, cartas fianza, consultorías y otros servicios.' },
   };
@@ -1240,8 +1303,8 @@ function wireVentas(){
     render();
   };
   document.querySelectorAll('[data-ver-cobranza]').forEach(b=> b.onclick = () => {
-    filtroVTextoRenov = b.dataset.verCobranza;
-    tab = 'renovaciones';
+    filtroPolTexto = b.dataset.verCobranza;
+    tab = 'polizas';
     render();
   });
 }
@@ -1254,7 +1317,11 @@ let filtroComEstado='todas', filtroComAsesor='todos', filtroComMes='todos', filt
 
 function filteredComisiones(){
   let rows = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna').sort((a,b)=> (b.fechaVenta||'').localeCompare(a.fechaVenta||'') || b.folio-a.folio);
-  if(filtroComEstado!=='todas') rows = rows.filter(v=>v.estadoComision===filtroComEstado);
+  if(filtroComEstado==='pendiente_semana'){
+    const inicioSemana = new Date(); inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay());
+    const inicioSemanaISO = inicioSemana.toISOString().slice(0,10);
+    rows = rows.filter(v=> v.estadoComision!=='pagada' && ((v.fechaVenta||'') >= inicioSemanaISO || Math.max(0, daysUntil(v.fechaVenta)*-1) <= 7));
+  } else if(filtroComEstado!=='todas') rows = rows.filter(v=>v.estadoComision===filtroComEstado);
   if(filtroComAsesor!=='todos') rows = rows.filter(v=>v.asesorId===filtroComAsesor);
   if(filtroComMes!=='todos') rows = rows.filter(v=>(v.fechaVenta||'').slice(5,7)===filtroComMes);
   if(filtroComAnio!=='todos') rows = rows.filter(v=>(v.fechaVenta||'').slice(0,4)===filtroComAnio);
@@ -1280,10 +1347,31 @@ function viewCobroComisiones(){
   const añoActual = String(new Date().getFullYear());
   const añosDisponibles = Array.from(new Set([añoActual, ...state.ventas.map(v=>(v.fechaVenta||'').slice(0,4)).filter(Boolean)])).sort((a,b)=>b.localeCompare(a));
 
+  // ---- Dashboard: pendiente, cobrado este mes, antigüedad ----
+  const diasPendiente = v => v.estadoCobroFG==='cobrado' ? 0 : Math.max(0, daysUntil(v.fechaVenta)*-1);
+  const pendientesTodas = todasSeguro.filter(v=>(v.estadoCobroFG||'pendiente')==='pendiente');
+  const totalPendientePEN = pendientesTodas.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const totalPendienteUSD = pendientesTodas.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const cobradoEsteMes = todasSeguro.filter(v=>v.estadoCobroFG==='cobrado' && (v.fechaCobroFG||'').slice(0,7)===todayISO().slice(0,7));
+  const cobradoMesPEN = cobradoEsteMes.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const cobradoMesUSD = cobradoEsteMes.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const atrasados60 = pendientesTodas.filter(v=>diasPendiente(v)>=60).length;
+
+  // ---- Resumen por aseguradora ----
+  const porAseguradora = {};
+  pendientesTodas.forEach(v=>{
+    const key = v.aseguradora || 'Sin especificar';
+    if(!porAseguradora[key]) porAseguradora[key] = { pen:0, usd:0, count:0, maxDias:0 };
+    if(v.moneda==='USD') porAseguradora[key].usd += comisionFG(v); else porAseguradora[key].pen += comisionFG(v);
+    porAseguradora[key].count += 1;
+    porAseguradora[key].maxDias = Math.max(porAseguradora[key].maxDias, diasPendiente(v));
+  });
+  const aseguradorasOrdenadas = Object.entries(porAseguradora).sort((a,b)=>b[1].maxDias-a[1].maxDias);
+
   return `
     <div class="page-head">
       <div><h1>Cobro de comisiones</h1><p>Lo que le corresponde cobrar a FG por cada venta — Comisión FG sobre el total.</p></div>
-      <button class="btn" id="btnExportCobro">Exportar a Excel</button>
+      <div style="display:flex;gap:8px;"><button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button></div>
     </div>
     <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
       <div style="padding:10px 16px;font-weight:600;text-align:center;background:var(--surface);border-bottom:1px solid var(--border);">Comisión FG — % variable (3% – 100%) sobre ventas de seguros</div>
@@ -1292,6 +1380,35 @@ function viewCobroComisiones(){
         <div style="background:#7A4B42;color:#fff;padding:14px 12px;"><div style="font-size:19px;font-weight:700;" class="num">${fmtUSD(fgSeguroUSD)}</div><div style="font-size:11.5px;opacity:0.95;">Comisión FG — Dólares</div></div>
       </div>
     </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Total pendiente de cobro</div>
+        <div class="value num" style="color:#fff;font-size:19px;">${fmtMoney(totalPendientePEN)} · ${fmtUSD(totalPendienteUSD)}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">${pendientesTodas.length} venta(s) sin cobrar</div>
+      </div>
+      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Cobrado este mes</div>
+        <div class="value num" style="color:#fff;font-size:19px;">${fmtMoney(cobradoMesPEN)} · ${fmtUSD(cobradoMesUSD)}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">${cobradoEsteMes.length} venta(s) cobradas</div>
+      </div>
+      <div class="card stat-card" style="background:#B8483A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Cobros atrasados (60+ días)</div>
+        <div class="value num" style="color:#fff;">${atrasados60}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">contactar a la aseguradora</div>
+      </div>
+    </div>
+    <div class="panel-title">Pendiente de cobro por aseguradora</div>
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <table>
+        <thead><tr><th>Aseguradora</th><th># Ventas</th><th>Pendiente S/</th><th>Pendiente US$</th><th>Antigüedad máxima</th><th></th></tr></thead>
+        <tbody>
+          ${aseguradorasOrdenadas.length===0 ? `<tr class="empty-row"><td colspan="6">No hay cobros pendientes — ¡al día!</td></tr>` : aseguradorasOrdenadas.map(([nombre,d])=>{
+            const diasPill = d.maxDias>=60 ? `<span class="pill pill-red">${d.maxDias} días</span>` : d.maxDias>=30 ? `<span class="pill pill-gold">${d.maxDias} días</span>` : `<span class="pill pill-gray">${d.maxDias} días</span>`;
+            return `<tr><td>${nombre}</td><td class="num">${d.count}</td><td class="num">${fmtMoney(d.pen)}</td><td class="num">${fmtUSD(d.usd)}</td><td>${diasPill}</td><td><button class="btn btn-ghost btn-sm" data-estado-cuenta="${nombre}">Estado de cuenta (PDF)</button></td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
     <div class="toolbar">
       <select id="fCobroEstado"><option value="todas" ${filtroCobroEstado==='todas'?'selected':''}>Todos los estados</option><option value="pendiente" ${filtroCobroEstado==='pendiente'?'selected':''}>Pendientes de cobro</option><option value="cobrado" ${filtroCobroEstado==='cobrado'?'selected':''}>Cobrados</option></select>
       <select id="fCobroMes"><option value="todos">Todos los meses</option>${MESES.map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}" ${filtroCobroMes===String(i+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}</select>
@@ -1299,11 +1416,13 @@ function viewCobroComisiones(){
     </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Folio venta</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Estado de cobro</th><th>Fecha de cobro</th><th></th></tr></thead>
+        <thead><tr><th>Folio venta</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Antigüedad</th><th>Estado de cobro</th><th>Fecha de cobro</th><th></th></tr></thead>
         <tbody>
-          ${rowsCobro.length===0 ? `<tr class="empty-row"><td colspan="10">No hay ventas que coincidan con el filtro.</td></tr>` : rowsCobro.map(v=>{
+          ${rowsCobro.length===0 ? `<tr class="empty-row"><td colspan="11">No hay ventas que coincidan con el filtro.</td></tr>` : rowsCobro.map(v=>{
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const cobrado = v.estadoCobroFG==='cobrado';
+            const dias = diasPendiente(v);
+            const diasPill = cobrado ? '—' : (dias>=60 ? `<span class="pill pill-red">${dias} días</span>` : dias>=30 ? `<span class="pill pill-gold">${dias} días</span>` : `<span class="pill pill-gray">${dias} días</span>`);
             return `<tr>
               <td class="folio">${folioV(v.folio)}</td>
               <td>${v.numeroPoliza||'—'}</td>
@@ -1312,6 +1431,7 @@ function viewCobroComisiones(){
               <td>${prodLabel(v.tipoProducto)}</td>
               <td class="num">${fmtDual(v)}</td>
               <td class="num" style="font-weight:600;">${fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda)} (${v.porcentajeFG||70}%)</td>
+              <td>${diasPill}</td>
               <td><span class="pill ${cobrado?'pill-green':'pill-red'}">${cobrado?'Cobrado':'Pendiente'}</span></td>
               <td>${cobrado ? fmtDate(v.fechaCobroFG) : '—'}</td>
               <td>${cobrado ? `<button class="btn btn-ghost btn-sm" data-mark-cobro-pendiente="${v.id}">Marcar pendiente</button>` : `<button class="btn btn-sm" data-mark-cobrado="${v.id}">Marcar cobrado</button>`}</td>
@@ -1335,6 +1455,35 @@ function wireCobroComisiones(){
     });
     exportExcel('cobro-comisiones.xlsx', headers, rows);
   };
+  const btnPdf = document.getElementById('btnExportCobroPDF'); if(btnPdf) btnPdf.onclick = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text('Reporte de cobro de comisiones — FG', 14, 16);
+    doc.setFontSize(10); doc.text(`Generado el ${fmtDate(todayISO())}`, 14, 23);
+    const body = filteredCobro().map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [folioV(v.folio), cli?cli.nombre:'—', v.aseguradora||'—', prodLabel(v.tipoProducto), fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda), v.estadoCobroFG==='cobrado'?'Cobrado':'Pendiente'];
+    });
+    doc.autoTable({ startY: 28, head: [['Folio','Cliente','Aseguradora','Producto','Comisión FG','Estado']], body });
+    doc.save('cobro-comisiones.pdf');
+  };
+  document.querySelectorAll('[data-estado-cuenta]').forEach(b=> b.onclick = () => {
+    const nombreAseg = b.dataset.estadoCuenta;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text(`Estado de cuenta — ${nombreAseg}`, 14, 16);
+    doc.setFontSize(10); doc.text(`Comisiones pendientes de cobro al ${fmtDate(todayISO())}`, 14, 23);
+    const pendientes = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && (v.aseguradora||'Sin especificar')===nombreAseg && (v.estadoCobroFG||'pendiente')==='pendiente');
+    const body = pendientes.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [folioV(v.folio), v.numeroPoliza||'—', cli?cli.nombre:'—', fmtDate(v.fechaVenta), fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda)];
+    });
+    doc.autoTable({ startY: 28, head: [['Folio','N° póliza','Cliente','Fecha venta','Comisión FG pendiente']], body });
+    const totalPEN = pendientes.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
+    const totalUSD = pendientes.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+    doc.text(`Total pendiente: ${fmtMoney(totalPEN)}  /  ${fmtUSD(totalUSD)}`, 14, doc.lastAutoTable.finalY + 10);
+    doc.save(`estado-cuenta-${nombreAseg.replace(/\s+/g,'-')}.pdf`);
+  });
   const e1 = document.getElementById('fCobroEstado'); if(e1) e1.onchange = e=>{ filtroCobroEstado=e.target.value; render(); };
   const e2 = document.getElementById('fCobroMes'); if(e2) e2.onchange = e=>{ filtroCobroMes=e.target.value; render(); };
   const e3 = document.getElementById('fCobroAnio'); if(e3) e3.onchange = e=>{ filtroCobroAnio=e.target.value; render(); };
@@ -1346,7 +1495,7 @@ function viewPagoComisiones(){
   let rows = filteredComisiones();
 
   const porAsesor = {};
-  state.ventas.filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna').forEach(v=>{
+  state.ventas.filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna' && (filtroComAsesor==='todos' || v.asesorId===filtroComAsesor)).forEach(v=>{
     const key = v.asesorId || '__directa__';
     if(!porAsesor[key]) porAsesor[key] = { pagadoPEN:0, pendientePEN:0, pagadoUSD:0, pendienteUSD:0, count:0 };
     const monto = comisionAsesor(v);
@@ -1355,41 +1504,64 @@ function viewPagoComisiones(){
     porAsesor[key].count += 1;
   });
 
+  const diasPendiente = v => v.estadoComision==='pagada' ? 0 : Math.max(0, daysUntil(v.fechaVenta)*-1);
+  const inicioSemana = new Date(); inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay());
+  const inicioSemanaISO = inicioSemana.toISOString().slice(0,10);
+  const pendientesTodas = state.ventas.filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna' && v.estadoComision!=='pagada');
+  const pendientesEstaSemana = pendientesTodas.filter(v=> (v.fechaVenta||'') >= inicioSemanaISO || diasPendiente(v)<=7);
+  const totalSemanaPEN = pendientesEstaSemana.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+  const totalSemanaUSD = pendientesEstaSemana.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+
   return `
     <div class="page-head">
       <div><h1>Pago de comisiones</h1><p>Lo que le corresponde a cada asesor freelance, calculado desde sus ventas.</p></div>
-      <button class="btn" id="btnExportComisiones">Exportar a Excel</button>
+      <div style="display:flex;gap:8px;"><button class="btn" id="btnExportComisionesPDF">Descargar PDF</button><button class="btn" id="btnExportComisiones">Exportar a Excel</button></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Total a pagar esta semana</div>
+        <div class="value num" style="color:#fff;font-size:19px;">${fmtMoney(totalSemanaPEN)} · ${fmtUSD(totalSemanaUSD)}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">${pendientesEstaSemana.length} pago(s) pendiente(s)</div>
+      </div>
+      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Total pendiente (histórico)</div>
+        <div class="value num" style="color:#fff;font-size:19px;">${fmtMoney(pendientesTodas.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0))} · ${fmtUSD(pendientesTodas.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0))}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">${pendientesTodas.length} pago(s) en total</div>
+      </div>
     </div>
     <div class="card" style="margin-bottom:16px;">
       <div class="panel-title">Resumen por asesor</div>
-      <div class="panel-sub">Monto ganado por cada asesor, según ventas registradas</div>
+      <div class="panel-sub">Monto ganado por cada asesor, según ventas registradas${filtroComAsesor!=='todos' ? ' — filtrado por el asesor seleccionado abajo' : ''}</div>
       <table>
-        <thead><tr><th>Asesor</th><th># Ventas</th><th>Pagado S/.</th><th>Pagado US$</th><th>Pendiente S/.</th><th>Pendiente US$</th></tr></thead>
+        <thead><tr><th>Asesor</th><th># Ventas</th><th>Pagado S/.</th><th>Pagado US$</th><th>Pendiente S/.</th><th>Pendiente US$</th><th></th></tr></thead>
         <tbody>
-          ${Object.keys(porAsesor).length===0 ? `<tr class="empty-row"><td colspan="6">Aún no hay comisiones registradas.</td></tr>` :
+          ${Object.keys(porAsesor).length===0 ? `<tr class="empty-row"><td colspan="7">Aún no hay comisiones registradas.</td></tr>` :
           Object.entries(porAsesor).map(([key,v])=>{
             const ase = state.asesores.find(a=>a.id===key);
-            return `<tr><td>${ase?ase.nombre:'Venta directa (sin asesor)'}</td><td class="num">${v.count}</td><td class="num">${fmtMoney(v.pagadoPEN)}</td><td class="num">${fmtUSD(v.pagadoUSD)}</td><td class="num">${fmtMoney(v.pendientePEN)}</td><td class="num">${fmtUSD(v.pendienteUSD)}</td></tr>`;
+            return `<tr><td>${ase?ase.nombre:'Venta directa (sin asesor)'}</td><td class="num">${v.count}</td><td class="num">${fmtMoney(v.pagadoPEN)}</td><td class="num">${fmtUSD(v.pagadoUSD)}</td><td class="num">${fmtMoney(v.pendientePEN)}</td><td class="num">${fmtUSD(v.pendienteUSD)}</td><td>${ase?`<button class="btn btn-ghost btn-sm" data-estado-cuenta-asesor="${ase.id}">Estado de cuenta (PDF)</button>`:''}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
     </div>
     <div class="toolbar">
-      <select id="fComEstado"><option value="todas" ${filtroComEstado==='todas'?'selected':''}>Todos los estados</option><option value="pendiente" ${filtroComEstado==='pendiente'?'selected':''}>Pendientes</option><option value="pagada" ${filtroComEstado==='pagada'?'selected':''}>Pagadas</option></select>
+      <select id="fComEstado"><option value="todas" ${filtroComEstado==='todas'?'selected':''}>Todos los estados</option><option value="pendiente" ${filtroComEstado==='pendiente'?'selected':''}>Pendientes</option><option value="pendiente_semana" ${filtroComEstado==='pendiente_semana'?'selected':''}>Pendientes de esta semana</option><option value="pagada" ${filtroComEstado==='pagada'?'selected':''}>Pagadas</option></select>
       <select id="fComAsesor"><option value="todos">Todos los asesores</option>${state.asesores.map(a=>`<option value="${a.id}" ${filtroComAsesor===a.id?'selected':''}>${a.nombre}</option>`).join('')}</select>
       <select id="fComMes"><option value="todos">Todos los meses</option>${MESES.map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}" ${filtroComMes===String(i+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}</select>
       <select id="fComAnio"><option value="todos">Todos los años</option>${Array.from(new Set([String(new Date().getFullYear()), ...state.ventas.map(v=>(v.fechaVenta||'').slice(0,4)).filter(Boolean)])).sort((a,b)=>b.localeCompare(a)).map(a=>`<option value="${a}" ${filtroComAnio===a?'selected':''}>${a}</option>`).join('')}</select>
     </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Folio venta</th><th>N° póliza</th><th>Cliente</th><th>Asesor</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Comisión asesor</th><th>Utilidad FG</th><th>Estado</th><th>Fecha de pago</th><th></th></tr></thead>
+        <thead><tr><th>Aseguradora</th><th>N° póliza</th><th>Cliente</th><th>Asesor</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Comisión asesor</th><th>Utilidad FG</th><th>Antigüedad</th><th>Estado</th><th>Fecha de pago</th><th></th></tr></thead>
         <tbody>
-          ${rows.length===0 ? `<tr class="empty-row"><td colspan="12">No hay comisiones que coincidan con el filtro.</td></tr>` : rows.map(v=>{
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="13">No hay comisiones que coincidan con el filtro.</td></tr>` : rows.map(v=>{
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const ase = state.asesores.find(a=>a.id===v.asesorId);
             const esVentaSeguro = esSeguro(v.tipoProducto);
+            const pagada = v.estadoComision==='pagada';
+            const dias = diasPendiente(v);
+            const diasPill = pagada ? '—' : (dias>=30 ? `<span class="pill pill-red">${dias} días</span>` : dias>=15 ? `<span class="pill pill-gold">${dias} días</span>` : `<span class="pill pill-gray">${dias} días</span>`);
             return `<tr>
-              <td class="folio">${folioV(v.folio)}</td>
+              <td class="folio">${v.aseguradora||'—'}</td>
               <td>${v.numeroPoliza||'—'}</td>
               <td>${cli?cli.nombre:'—'}</td>
               <td>${ase?ase.nombre:'Directa'}</td>
@@ -1398,9 +1570,12 @@ function viewPagoComisiones(){
               <td class="num">${esVentaSeguro ? fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda) + ` (${v.porcentajeFG||70}%)` : '—'}</td>
               <td class="num">${fmtMonedaVal(comisionAsesor(v), v.moneda)}</td>
               <td class="num" style="font-weight:600;">${esVentaSeguro ? fmtMonedaVal(comisionEmpresa(v), v.moneda) : '—'}</td>
-              <td><span class="pill ${v.estadoComision==='pagada'?'pill-green':'pill-red'}">${v.estadoComision==='pagada'?'Pagada':'Pendiente'}</span></td>
-              <td>${v.estadoComision==='pagada' ? fmtDate(v.fechaPagoComision) : '—'}</td>
-              <td>${v.estadoComision==='pagada' ? `<button class="btn btn-ghost btn-sm" data-mark-pendiente="${v.id}">Marcar pendiente</button>` : `<button class="btn btn-sm" data-mark-pagada="${v.id}">Marcar pagada</button>`}</td>
+              <td>${diasPill}</td>
+              <td><span class="pill ${pagada?'pill-green':'pill-red'}">${pagada?'Pagada':'Pendiente'}</span></td>
+              <td>${pagada ? fmtDate(v.fechaPagoComision) : '—'}</td>
+              <td>
+                ${pagada ? `<button class="btn btn-ghost btn-sm" data-mark-pendiente="${v.id}">Marcar pendiente</button><button class="btn btn-ghost btn-sm" data-recibo-pago="${v.id}" style="margin-left:4px;">Recibo PDF</button>` : `<button class="btn btn-sm" data-mark-pagada="${v.id}">Marcar pagada</button>${ase&&ase.telefono ? `<button class="btn btn-ghost btn-sm" data-wa-aviso-pago="${v.id}" style="margin-left:4px;">📲 Avisar</button>` : ''}`}
+              </td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1418,6 +1593,61 @@ function wirePagoComisiones(){
     });
     exportExcel('pago-comisiones.xlsx', headers, rows);
   };
+  const btnPdf = document.getElementById('btnExportComisionesPDF'); if(btnPdf) btnPdf.onclick = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text('Reporte de pago de comisiones — Asesores', 14, 16);
+    doc.setFontSize(10); doc.text(`Generado el ${fmtDate(todayISO())}`, 14, 23);
+    const body = filteredComisiones().map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      const ase = state.asesores.find(a=>a.id===v.asesorId);
+      return [folioV(v.folio), ase?ase.nombre:'Directa', cli?cli.nombre:'—', fmtMonedaVal(comisionAsesor(v), v.moneda), v.estadoComision==='pagada'?'Pagada':'Pendiente'];
+    });
+    doc.autoTable({ startY: 28, head: [['Folio','Asesor','Cliente','Comisión','Estado']], body });
+    doc.save('pago-comisiones.pdf');
+  };
+  document.querySelectorAll('[data-estado-cuenta-asesor]').forEach(b=> b.onclick = () => {
+    const ase = state.asesores.find(a=>a.id===b.dataset.estadoCuentaAsesor);
+    if(!ase) return;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text(`Estado de cuenta — ${ase.nombre}`, 14, 16);
+    doc.setFontSize(10); doc.text(`Al ${fmtDate(todayISO())}`, 14, 23);
+    const ventasAsesor = state.ventas.filter(v=>ventaSeguroActiva(v) && v.asesorId===ase.id && v.tipoComisionAsesor!=='ninguna').sort((a,b)=>(b.fechaVenta||'').localeCompare(a.fechaVenta||''));
+    const body = ventasAsesor.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [folioV(v.folio), cli?cli.nombre:'—', v.aseguradora||'—', v.numeroPoliza||'—', fmtDate(v.fechaVenta), fmtMonedaVal(comisionAsesor(v), v.moneda), v.estadoComision==='pagada'?`Pagada (${fmtDate(v.fechaPagoComision)})`:'Pendiente'];
+    });
+    doc.autoTable({ startY: 28, head: [['Folio','Cliente','Aseguradora','N° póliza','Fecha venta','Comisión','Estado']], body });
+    doc.save(`estado-cuenta-${ase.nombre.replace(/\s+/g,'-')}.pdf`);
+  });
+  document.querySelectorAll('[data-recibo-pago]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.reciboPago);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const ase = state.asesores.find(a=>a.id===v.asesorId);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text('Recibo de pago de comisión', 14, 20);
+    doc.setFontSize(11);
+    doc.text(`Asesor: ${ase?ase.nombre:'—'}`, 14, 34);
+    doc.text(`Folio de venta: ${folioV(v.folio)}`, 14, 42);
+    doc.text(`Cliente: ${cli?cli.nombre:'—'}`, 14, 50);
+    doc.text(`Producto: ${prodLabel(v.tipoProducto)}`, 14, 58);
+    doc.text(`Aseguradora: ${v.aseguradora||'—'}`, 14, 66);
+    doc.text(`N° de póliza: ${v.numeroPoliza||'—'}`, 14, 74);
+    doc.text(`Monto pagado: ${fmtMonedaVal(comisionAsesor(v), v.moneda)}`, 14, 82);
+    doc.text(`Fecha de pago: ${fmtDate(v.fechaPagoComision)}`, 14, 90);
+    doc.save(`recibo-pago-${folioV(v.folio)}.pdf`);
+  });
+  document.querySelectorAll('[data-wa-aviso-pago]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.waAvisoPago);
+    if(!v) return;
+    const ase = state.asesores.find(a=>a.id===v.asesorId);
+    if(!ase || !ase.telefono) return;
+    const mensaje = `Hola ${ase.nombre}, te confirmo el pago de tu comisión por la venta ${folioV(v.folio)} (${prodLabel(v.tipoProducto)}), por un monto de ${fmtMonedaVal(comisionAsesor(v), v.moneda)}. ¡Gracias por tu trabajo!`;
+    window.open(linkWhatsApp(ase.telefono, mensaje), '_blank');
+  });
   const e1 = document.getElementById('fComEstado'); if(e1) e1.onchange = e=>{ filtroComEstado=e.target.value; render(); };
   const e2 = document.getElementById('fComAsesor'); if(e2) e2.onchange = e=>{ filtroComAsesor=e.target.value; render(); };
   const e3 = document.getElementById('fComMes'); if(e3) e3.onchange = e=>{ filtroComMes=e.target.value; render(); };
@@ -1431,9 +1661,9 @@ function setEstadoComision(id, estado){
 }
 
 // ================= RENOVACIONES Y COBRANZA =================
-let filtroPolEstado='todas', filtroPolCuota='todas';
+let filtroPolEstado='todas', filtroPolCuota='todas', filtroPolTexto='';
 function viewPolizas(){
-  let rows = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.numeroPoliza)
+  let rows = misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto) && v.numeroPoliza)
     .sort((a,b)=> (b.fechaVenta||'').localeCompare(a.fechaVenta||'') || b.folio-a.folio);
 
   const conCuotasVencidas = v => {
@@ -1442,43 +1672,85 @@ function viewPolizas(){
     if(v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha) < 0) return true;
     return false;
   };
+  const diasAtraso = v => v.proximaCuotaFecha ? Math.max(0, -daysUntil(v.proximaCuotaFecha)) : 0;
 
-  if(filtroPolEstado==='vigentes') rows = rows.filter(v=> daysUntil(v.vigenciaFin) >= 0);
-  else if(filtroPolEstado==='por_vencer') rows = rows.filter(v=> daysUntil(v.vigenciaFin) >= 0 && daysUntil(v.vigenciaFin) <= 30);
-  else if(filtroPolEstado==='vencidas') rows = rows.filter(v=> daysUntil(v.vigenciaFin) < 0);
-  if(filtroPolCuota==='atrasadas') rows = rows.filter(conCuotasVencidas);
+  if(filtroPolEstado==='vigentes') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) >= 0);
+  else if(filtroPolEstado==='por_renovar_mes') rows = rows.filter(v=> ventaActiva(v) && v.vigenciaFin && (v.vigenciaFin||'').slice(0,7)===todayISO().slice(0,7));
+  else if(filtroPolEstado==='por_vencer') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) >= 0 && daysUntil(v.vigenciaFin) <= 30);
+  else if(filtroPolEstado==='por_vencer_15') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) >= 0 && daysUntil(v.vigenciaFin) <= 15);
+  else if(filtroPolEstado==='vencidas') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) < 0);
+  else if(filtroPolEstado==='anuladas') rows = rows.filter(v=> !ventaActiva(v));
+  else rows = rows.filter(v=> ventaActiva(v));
+  if(filtroPolCuota==='atrasadas'){ rows = rows.filter(conCuotasVencidas).sort((a,b)=> diasAtraso(b)-diasAtraso(a)); }
   else if(filtroPolCuota==='al_dia') rows = rows.filter(v=> (v.formaPago==='cupones'||v.formaPago==='debito_automatico') && !conCuotasVencidas(v));
+  if(filtroPolTexto){
+    const texto = filtroPolTexto.toLowerCase();
+    rows = rows.filter(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return cli && cli.nombre && cli.nombre.toLowerCase().includes(texto);
+    });
+  }
 
-  const totalAtrasadas = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && conCuotasVencidas(v)).length;
-  const totalPorVencer = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=30).length;
+  const todasActivas = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v));
+  const totalAtrasadas = todasActivas.filter(conCuotasVencidas).length;
+  const totalPorVencer = todasActivas.filter(v=>v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=30).length;
+  const totalPorVencer15 = todasActivas.filter(v=>v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=15).length;
+  const totalPorRenovarEsteMes = todasActivas.filter(v=> v.vigenciaFin && (v.vigenciaFin||'').slice(0,7)===todayISO().slice(0,7)).length;
+  const cuotasEstaSemana = todasActivas.filter(v=>(v.formaPago==='cupones'||v.formaPago==='debito_automatico') && v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha)>=0 && daysUntil(v.proximaCuotaFecha)<=7);
+  const totalPorCobrarMes = todasActivas.filter(v=>(v.formaPago==='cupones'||v.formaPago==='debito_automatico') && v.proximaCuotaFecha && (v.proximaCuotaFecha||'').slice(0,7)===todayISO().slice(0,7))
+    .reduce((s,v)=> s + (v.cantidadCuotas && v.comisionTotal ? 0 : 0) + (v.cronogramaCuotas && v.cronogramaCuotas.length ? (v.cronogramaCuotas.find(cc=>cc.fecha===v.proximaCuotaFecha)?.monto||0) : (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0)), 0);
 
   return `
-    <div class="page-head"><div><h1>Registro de pólizas</h1><p>Todas las pólizas emitidas, con su vigencia y estado de cuotas.</p></div><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar póliza</button></div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+    <div class="page-head"><div><h1>Pólizas y Renovaciones</h1><p>Seguimiento de lo ya vendido: vigencia, cuotas y renovación. Para registrar una venta nueva, ve a "Venta de Seguros".</p></div><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Cuotas atrasadas</div>
         <div class="value num" style="color:#fff;">${totalAtrasadas}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">pólizas con pago pendiente vencido</div>
+      </div>
+      <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Por renovar este mes</div>
+        <div class="value num" style="color:#fff;">${totalPorRenovarEsteMes}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">vencen dentro de ${MESES[new Date().getMonth()]}</div>
       </div>
       <div class="card stat-card" style="background:#8A6D3B;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Por vencer en 30 días</div>
         <div class="value num" style="color:#fff;">${totalPorVencer}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">pólizas próximas a renovar</div>
       </div>
+      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Por vencer en 15 días</div>
+        <div class="value num" style="color:#fff;">${totalPorVencer15}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">urgentes, contactar ya</div>
+      </div>
+      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Cuotas por vencer esta semana</div>
+        <div class="value num" style="color:#fff;">${cuotasEstaSemana.length}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">próximos 7 días</div>
+      </div>
+      <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Aprox. por cobrar este mes</div>
+        <div class="value num" style="color:#fff;">S/ ${totalPorCobrarMes.toFixed(2)}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">cuotas con vencimiento este mes</div>
+      </div>
     </div>
     <div class="toolbar">
       <select id="fPolEstado">
-        <option value="todas" ${filtroPolEstado==='todas'?'selected':''}>Todas las vigencias</option>
+        <option value="todas" ${filtroPolEstado==='todas'?'selected':''}>Todas las vigencias (sin anuladas)</option>
         <option value="vigentes" ${filtroPolEstado==='vigentes'?'selected':''}>Vigentes</option>
+        <option value="por_renovar_mes" ${filtroPolEstado==='por_renovar_mes'?'selected':''}>Por renovar este mes</option>
         <option value="por_vencer" ${filtroPolEstado==='por_vencer'?'selected':''}>Por vencer (30 días)</option>
+        <option value="por_vencer_15" ${filtroPolEstado==='por_vencer_15'?'selected':''}>Por vencer (15 días)</option>
         <option value="vencidas" ${filtroPolEstado==='vencidas'?'selected':''}>Vencidas</option>
+        <option value="anuladas" ${filtroPolEstado==='anuladas'?'selected':''}>Anuladas</option>
       </select>
       <select id="fPolCuota">
         <option value="todas" ${filtroPolCuota==='todas'?'selected':''}>Todas las cuotas</option>
-        <option value="atrasadas" ${filtroPolCuota==='atrasadas'?'selected':''}>Con cuotas atrasadas</option>
+        <option value="atrasadas" ${filtroPolCuota==='atrasadas'?'selected':''}>Con cuotas atrasadas (morosidad, mayor a menor)</option>
         <option value="al_dia" ${filtroPolCuota==='al_dia'?'selected':''}>Cuotas al día</option>
       </select>
     </div>
+    ${filtroPolTexto ? `<div class="toolbar"><span class="pill pill-gray">Filtrando por: ${filtroPolTexto}</span><button class="btn btn-ghost btn-sm" id="btnQuitarFiltroPolTexto">Quitar filtro</button></div>` : ''}
     <div class="card" style="padding:0;">
       <table>
         <thead><tr><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Vigencia</th><th>Forma de pago</th><th>Próxima cuota</th><th>Estado cuotas</th><th></th></tr></thead>
@@ -1487,14 +1759,17 @@ function viewPolizas(){
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const d = v.vigenciaFin ? daysUntil(v.vigenciaFin) : null;
             let vigenciaPill = '<span class="pill pill-gray">—</span>';
-            if(d!==null){
+            if(!ventaActiva(v)) vigenciaPill = `<span class="pill pill-gray">Anulada</span>`;
+            else if(d!==null){
               if(d<0) vigenciaPill = `<span class="pill pill-red">Vencida</span>`;
+              else if(d<=15) vigenciaPill = `<span class="pill pill-red">${d} días</span>`;
               else if(d<=30) vigenciaPill = `<span class="pill pill-gold">${d} días</span>`;
               else vigenciaPill = `<span class="pill pill-green">Vigente</span>`;
             }
             const enCuotas = v.formaPago==='cupones' || v.formaPago==='debito_automatico';
-            const atrasada = conCuotasVencidas(v);
-            const cuotaPill = !enCuotas ? '<span class="pill pill-gray">Al contado</span>' : (atrasada ? '<span class="pill pill-red">Atrasada</span>' : '<span class="pill pill-green">Al día</span>');
+            const atrasada = ventaActiva(v) && conCuotasVencidas(v);
+            const cercaDeVencer = ventaActiva(v) && d!==null && d<=60;
+            const cuotaPill = !enCuotas ? '<span class="pill pill-gray">Al contado</span>' : (atrasada ? `<span class="pill pill-red">Atrasada${diasAtraso(v)?' · '+diasAtraso(v)+' días':''}</span>` : '<span class="pill pill-green">Al día</span>');
             return `<tr>
               <td class="folio">${v.numeroPoliza}</td>
               <td>${cli?cli.nombre:'—'}</td>
@@ -1504,60 +1779,11 @@ function viewPolizas(){
               <td>${enCuotas ? (v.formaPago==='cupones'?'Cupones':'Débito automático') + (v.cantidadCuotas?` (${v.cantidadCuotas})`:'') : 'Al contado'}</td>
               <td>${v.proximaCuotaFecha ? fmtDate(v.proximaCuotaFecha) : '—'}</td>
               <td>${cuotaPill}</td>
-              <td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>${atrasada ? `<button class="btn btn-sm" data-wa-cuota="${v.id}" style="margin-left:6px;">📲 WhatsApp</button>` : ''}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-function wirePolizas(){
-  const btn = document.getElementById('btnNuevaPoliza'); if(btn) btn.onclick = () => { editing = {type:'venta', id:null}; render(); };
-  document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
-  const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; render(); };
-  const e2 = document.getElementById('fPolCuota'); if(e2) e2.onchange = e=>{ filtroPolCuota=e.target.value; render(); };
-  document.querySelectorAll('[data-wa-cuota]').forEach(b=> b.onclick = () => {
-    const v = state.ventas.find(v=>v.id===b.dataset.waCuota);
-    if(!v) return;
-    const cli = state.clientes.find(c=>c.id===v.clienteId);
-    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que tiene una cuota pendiente de pago de su póliza ${v.numeroPoliza||''} (${prodLabel(v.tipoProducto)}${v.aseguradora?' - '+v.aseguradora:''}).\n${v.proximaCuotaFecha ? 'Fecha de vencimiento: '+fmtDate(v.proximaCuotaFecha)+'.' : ''}\n\nPor favor regularice a la brevedad para evitar la pérdida de cobertura.\n\nQuedamos atentos.`;
-    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
-    window.open(linkWhatsApp(tel, mensaje), '_blank');
-  });
-}
-
-function viewRenovaciones(){
-  let withDays = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.vigenciaFin)
-    .map(v=>({v, d: daysUntil(v.vigenciaFin)}))
-    .filter(x=> x.d <= 60)
-    .sort((a,b)=>a.d-b.d);
-  if(filtroVTextoRenov){
-    const texto = filtroVTextoRenov.toLowerCase();
-    withDays = withDays.filter(({v})=>{
-      const cli = state.clientes.find(c=>c.id===v.clienteId);
-      return cli && cli.nombre && cli.nombre.toLowerCase().includes(texto);
-    });
-  }
-
-  return `
-    <div class="page-head"><div><h1>Renovaciones y cobranza</h1><p>Ventas con vigencia por vencer en los próximos 60 días</p></div></div>
-    ${filtroVTextoRenov ? `<div class="toolbar"><span class="pill pill-gray">Filtrando por: ${filtroVTextoRenov}</span><button class="btn btn-ghost btn-sm" id="btnQuitarFiltroRenov">Quitar filtro</button></div>` : ''}
-    <div class="card" style="padding:0;">
-      <table>
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Producto</th><th>Aseguradora</th><th>Asesor</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
-        <tbody>
-          ${withDays.length===0 ? `<tr class="empty-row"><td colspan="8">No hay ventas con vigencia por vencer en los próximos 60 días.</td></tr>` : withDays.map(({v,d})=>{
-            const cli = state.clientes.find(c=>c.id===v.clienteId);
-            const ase = state.asesores.find(a=>a.id===v.asesorId);
-            let estado = `<span class="pill pill-gray">${d} días</span>`;
-            if(d<0) estado = `<span class="pill pill-red">Vencida</span>`;
-            else if(d<=15) estado = `<span class="pill pill-red">${d} días</span>`;
-            else if(d<=30) estado = `<span class="pill pill-gold">${d} días</span>`;
-            return `<tr>
-              <td class="folio">${folioV(v.folio)}</td><td>${cli?cli.nombre:'—'}</td><td>${prodLabel(v.tipoProducto)}</td><td>${v.aseguradora||'—'}</td><td>${ase?ase.nombre:'Directa'}</td>
-              <td>${fmtDate(v.vigenciaFin)}</td><td>${estado}</td>
-              <td><button class="btn btn-ghost btn-sm" data-aviso="${v.id}">Aviso de cobranza</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}">📲 WhatsApp</button><button class="btn btn-sm" data-renovar="${v.id}">Generar renovación</button></td>
+              <td>
+                <button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>
+                ${atrasada ? `<button class="btn btn-sm" data-wa-cuota="${v.id}" style="margin-left:6px;">📲 Cobranza</button>` : ''}
+                ${cercaDeVencer ? `<button class="btn btn-ghost btn-sm" data-aviso="${v.id}" style="margin-left:6px;">Aviso de renovación</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}" style="margin-left:6px;">📲 Renovación</button><button class="btn btn-sm" data-renovar="${v.id}" style="margin-left:6px;">Generar renovación</button>` : ''}
+              </td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1566,8 +1792,20 @@ function viewRenovaciones(){
     <div id="avisoBox"></div>
   `;
 }
-function wireRenovaciones(){
-  const btnQuitar = document.getElementById('btnQuitarFiltroRenov'); if(btnQuitar) btnQuitar.onclick = () => { filtroVTextoRenov=''; render(); };
+function wirePolizas(){
+  const btn = document.getElementById('btnNuevaPoliza'); if(btn) btn.onclick = () => { editing = {type:'venta', id:null}; render(); };
+  document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
+  const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; render(); };
+  const e2 = document.getElementById('fPolCuota'); if(e2) e2.onchange = e=>{ filtroPolCuota=e.target.value; render(); };
+  const btnQuitarTexto = document.getElementById('btnQuitarFiltroPolTexto'); if(btnQuitarTexto) btnQuitarTexto.onclick = () => { filtroPolTexto=''; render(); };
+  document.querySelectorAll('[data-wa-cuota]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.waCuota);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que tiene una cuota pendiente de pago de su póliza ${v.numeroPoliza||''} (${prodLabel(v.tipoProducto)}${v.aseguradora?' - '+v.aseguradora:''}).\n${v.proximaCuotaFecha ? 'Fecha de vencimiento: '+fmtDate(v.proximaCuotaFecha)+'.' : ''}\n\nPor favor regularice a la brevedad para evitar la pérdida de cobertura.\n\nQuedamos atentos.`;
+    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
+    window.open(linkWhatsApp(tel, mensaje), '_blank');
+  });
   document.querySelectorAll('[data-wa-renovacion]').forEach(b=>{
     b.onclick = () => {
       const v = state.ventas.find(v=>v.id===b.dataset.waRenovacion);
@@ -1662,47 +1900,162 @@ function wireAsesoria(){
 }
 
 // ================= ASESORES =================
+let filtroAsesorPeriodo = 'actual', filtroAsesorNombre = '';
 function viewAsesores(){
+  const añoActual = String(new Date().getFullYear());
+  const mesActual = String(new Date().getMonth()+1).padStart(2,'0');
+  const añosDisponibles = Array.from(new Set([añoActual, ...state.ventas.map(v=>(v.fechaVenta||'').slice(0,4)).filter(Boolean)])).sort((a,b)=>b.localeCompare(a));
+  const enPeriodo = v => {
+    if(filtroAsesorPeriodo==='historico') return true;
+    if(filtroAsesorPeriodo==='actual') return (v.fechaVenta||'').slice(0,7)===`${añoActual}-${mesActual}`;
+    return (v.fechaVenta||'').slice(0,4)===filtroAsesorPeriodo;
+  };
+  const etiquetaPeriodo = filtroAsesorPeriodo==='historico' ? 'Histórico completo' : filtroAsesorPeriodo==='actual' ? `${MESES[new Date().getMonth()]} ${añoActual} (mes actual)` : `Año ${filtroAsesorPeriodo}`;
   return `
-    <div class="page-head"><div><h1>Asesores freelance</h1><p>${state.asesores.length} asesores registrados</p></div><div style="display:flex;gap:8px;"><button class="btn" id="btnExportAsesores">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevoAsesor">+ Registrar asesor</button></div></div>
+    <div class="page-head"><div><h1>Asesores freelance</h1><p>${state.asesores.length} asesores registrados — ${etiquetaPeriodo}</p></div><div style="display:flex;gap:8px;"><button class="btn" id="btnExportAsesoresPDF">Descargar PDF</button><button class="btn" id="btnExportAsesores">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevoAsesor">+ Registrar asesor</button></div></div>
+    <div class="toolbar">
+      <input type="text" id="fAsesorNombre" placeholder="Buscar asesor por nombre" value="${filtroAsesorNombre}" style="min-width:220px;">
+      <select id="fAsesorPeriodo">
+        <option value="actual" ${filtroAsesorPeriodo==='actual'?'selected':''}>Comisiones del mes actual</option>
+        <option value="historico" ${filtroAsesorPeriodo==='historico'?'selected':''}>Histórico completo</option>
+        ${añosDisponibles.map(a=>`<option value="${a}" ${filtroAsesorPeriodo===a?'selected':''}>Año ${a}</option>`).join('')}
+      </select>
+    </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Acceso</th><th># Ventas</th><th>Comisión ganada</th><th></th></tr></thead>
+        <thead><tr><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Acceso</th><th># Ventas</th><th>Comisión ganada S/</th><th>Comisión ganada US$</th><th></th></tr></thead>
         <tbody>
-          ${state.asesores.length===0 ? `<tr class="empty-row"><td colspan="7">Aún no registras asesores.</td></tr>` : state.asesores.map(a=>{
-            const props = state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v));
-            const total = props.reduce((s,v)=>s+comisionAsesorSoles(v),0);
-            const acceso = a.usuario ? (a.accesoActivo===false ? `<span class="pill pill-gray">Suspendido</span>` : `<span class="pill pill-green">Con acceso</span>`) : `<span class="pill pill-gray">Sin acceso</span>`;
-            return `<tr><td>${a.nombre}</td><td>${a.telefono||'—'}</td><td>${a.email||'—'}</td><td>${acceso}</td><td class="num">${props.length}</td><td class="num">${fmtMoney(total)}</td><td><button class="btn btn-ghost btn-sm" data-edit-asesor="${a.id}">Editar</button></td></tr>`;
-          }).join('')}
+          ${(() => {
+            const listadoAsesores = filtroAsesorNombre ? state.asesores.filter(a=>a.nombre && a.nombre.toLowerCase().includes(filtroAsesorNombre.toLowerCase())) : state.asesores;
+            if(listadoAsesores.length===0) return `<tr class="empty-row"><td colspan="8">${state.asesores.length===0 ? 'Aún no registras asesores.' : 'Ningún asesor coincide con la búsqueda.'}</td></tr>`;
+            return listadoAsesores.map(a=>{
+              const props = state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v) && enPeriodo(v));
+              const totalPEN = props.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+              const totalUSD = props.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+              const acceso = a.usuario ? (a.accesoActivo===false ? `<span class="pill pill-gray">Suspendido</span>` : `<span class="pill pill-green">Con acceso</span>`) : `<span class="pill pill-gray">Sin acceso</span>`;
+              return `<tr><td>${a.nombre}</td><td>${a.telefono||'—'}</td><td>${a.email||'—'}</td><td>${acceso}</td><td class="num">${props.length}</td><td class="num">${fmtMoney(totalPEN)}</td><td class="num">${fmtUSD(totalUSD)}</td><td><button class="btn btn-ghost btn-sm" data-edit-asesor="${a.id}">Editar</button></td></tr>`;
+            }).join('');
+          })()}
         </tbody>
       </table>
     </div>
   `;
 }
 function wireAsesores(){
+  const añoActual = String(new Date().getFullYear());
+  const mesActual = String(new Date().getMonth()+1).padStart(2,'0');
+  const enPeriodo = v => {
+    if(filtroAsesorPeriodo==='historico') return true;
+    if(filtroAsesorPeriodo==='actual') return (v.fechaVenta||'').slice(0,7)===`${añoActual}-${mesActual}`;
+    return (v.fechaVenta||'').slice(0,4)===filtroAsesorPeriodo;
+  };
+  const fp = document.getElementById('fAsesorPeriodo'); if(fp) fp.onchange = e=>{ filtroAsesorPeriodo=e.target.value; render(); };
+  const fn = document.getElementById('fAsesorNombre'); if(fn) fn.oninput = e=>{ filtroAsesorNombre=e.target.value; render(); };
   const btnEx = document.getElementById('btnExportAsesores'); if(btnEx) btnEx.onclick = () => {
-    const headers = ['Nombre','Teléfono','Email','# Ventas','Comisión ganada (S/)'];
-    const rows = state.asesores.map(a=>{
-      const props = state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v));
-      const total = props.reduce((s,v)=>s+comisionAsesorSoles(v),0);
-      return [a.nombre, a.telefono||'', a.email||'', props.length, total];
+    const headers = ['Nombre','Teléfono','Email','# Ventas','Comisión ganada (S/)','Comisión ganada (US$)'];
+    const listadoAsesores = filtroAsesorNombre ? state.asesores.filter(a=>a.nombre && a.nombre.toLowerCase().includes(filtroAsesorNombre.toLowerCase())) : state.asesores;
+    const rows = listadoAsesores.map(a=>{
+      const props = state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v) && enPeriodo(v));
+      const totalPEN = props.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+      const totalUSD = props.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+      return [a.nombre, a.telefono||'', a.email||'', props.length, totalPEN, totalUSD];
     });
-    exportExcel('asesores.xlsx', headers, rows);
+    exportExcel('comisiones-asesores.xlsx', headers, rows);
+  };
+  const btnPdf = document.getElementById('btnExportAsesoresPDF'); if(btnPdf) btnPdf.onclick = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const etiquetaPeriodo = filtroAsesorPeriodo==='historico' ? 'Histórico completo' : filtroAsesorPeriodo==='actual' ? `${MESES[new Date().getMonth()]} ${añoActual} (mes actual)` : `Año ${filtroAsesorPeriodo}`;
+    doc.setFontSize(14); doc.text('Reporte de comisiones — Asesores freelance', 14, 16);
+    doc.setFontSize(10); doc.text(etiquetaPeriodo + (filtroAsesorNombre ? ` — Filtrado por: ${filtroAsesorNombre}` : ''), 14, 23);
+    const listadoAsesores = filtroAsesorNombre ? state.asesores.filter(a=>a.nombre && a.nombre.toLowerCase().includes(filtroAsesorNombre.toLowerCase())) : state.asesores;
+    const body = listadoAsesores.map(a=>{
+      const props = state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v) && enPeriodo(v));
+      const totalPEN = props.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+      const totalUSD = props.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0);
+      return [a.nombre, a.telefono||'—', String(props.length), fmtMoney(totalPEN), fmtUSD(totalUSD)];
+    });
+    doc.autoTable({ startY: 28, head: [['Nombre','Teléfono','# Ventas','Comisión S/','Comisión US$']], body });
+    doc.save('comisiones-asesores.pdf');
   };
   const btn = document.getElementById('btnNuevoAsesor'); if(btn) btn.onclick = ()=>{ editing={type:'asesor', id:null}; render(); };
   document.querySelectorAll('[data-edit-asesor]').forEach(b=> b.onclick = ()=>{ editing={type:'asesor', id:b.dataset.editAsesor}; render(); });
 }
 
 // ================= CLIENTES =================
-let filtroClienteProducto='todos', filtroClienteContacto='todos';
+let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos';
+let fichaClienteId = null;
+function viewFichaCliente(id){
+  const c = state.clientes.find(x=>x.id===id);
+  if(!c) { fichaClienteId=null; return viewClientes(); }
+  const ventasCliente = state.ventas.filter(v=>v.clienteId===id).sort((a,b)=>b.folio-a.folio);
+  const comisionTotalGenerada = ventasCliente.filter(v=>v.estadoVenta!=='anulada').reduce((s,v)=> s + fmtMonedaANumeroPEN(v.comisionTotal, v.moneda), 0);
+  const est = ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo')) || ESTADOS_CONTACTO[0];
+  const tagsHtml = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?`<span class="pill ${t.clase}" style="margin-right:4px;">${t.label}</span>`:''; }).join('') || '<span class="hint">Sin etiquetas</span>';
+  return `
+    <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card"><div class="label">Estado de contacto</div><div style="margin-top:6px;"><span class="pill pill-gold">${est.label}</span></div></div>
+      <div class="card"><div class="label">Etiquetas</div><div style="margin-top:6px;">${tagsHtml}</div></div>
+      <div class="card"><div class="label">Comisión total generada</div><div class="value num" style="margin-top:4px;">S/ ${comisionTotalGenerada.toFixed(2)}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-top:0;">Datos de contacto</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:13.5px;">
+        <div><b>Celular 1:</b> ${c.celular1||c.telefono||'—'}</div>
+        <div><b>Celular 2:</b> ${c.celular2||'—'}</div>
+        <div><b>Correo:</b> ${c.email||'—'}</div>
+        <div><b>Dirección:</b> ${c.direccion||'—'}</div>
+        <div><b>Persona de contacto:</b> ${c.personaContacto||'—'}</div>
+        <div><b>Cumpleaños:</b> ${c.fechaNacimiento?fmtDate(c.fechaNacimiento):'—'}</div>
+      </div>
+    </div>
+    <div class="panel-title">Pólizas y ventas (${ventasCliente.length})</div>
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <table>
+        <thead><tr><th>Folio</th><th>Producto</th><th>Aseguradora</th><th>Vigencia</th><th>Forma de pago</th><th>Estado</th></tr></thead>
+        <tbody>
+          ${ventasCliente.length===0 ? `<tr class="empty-row"><td colspan="6">Este cliente aún no tiene ventas registradas.</td></tr>` : ventasCliente.map(v=>`<tr>
+            <td class="folio">${folioV(v.folio)}</td><td>${prodLabel(v.tipoProducto)}</td><td>${v.aseguradora||'—'}</td>
+            <td>${v.vigenciaFin?fmtDate(v.vigenciaFin):'—'}</td><td>${v.formaPago==='contado'?'Contado':v.formaPago==='cupones'?'Cupones':v.formaPago==='debito_automatico'?'Débito automático':'—'}</td>
+            <td><span class="pill ${v.estadoVenta==='anulada'?'pill-red':'pill-green'}">${v.estadoVenta==='anulada'?'Anulada':'Emitida'}</span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div class="panel-title">Registro de interacciones</div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field" style="flex:1;"><label>Nueva nota / interacción</label><textarea id="fichaNuevaNota" style="width:100%;min-height:50px;" placeholder="Ej. Llamé al cliente, quedó en enviar documentos..."></textarea></div>
+        <div class="field" style="flex:0;"><button class="btn btn-primary btn-sm" id="btnAgregarInteraccion">+ Agregar</button></div>
+      </div>
+      <div style="margin-top:10px;">
+        ${(c.interacciones||[]).length===0 ? '<div class="hint">Sin interacciones registradas todavía.</div>' : (c.interacciones||[]).slice().reverse().map(i=>`
+          <div style="border-bottom:1px solid var(--border);padding:8px 0;">
+            <div style="font-size:11px;color:var(--ink-faint);">${fmtDate(i.fecha)}</div>
+            <div style="font-size:13.5px;">${i.nota}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+}
+function fmtMonedaANumeroPEN(monto, moneda){
+  const n = parseFloat(monto)||0;
+  return moneda==='USD' ? n*(Number(state.tipoCambio)||3.75) : n;
+}
 function viewClientes(){
   const activos = state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && ventaActiva(v))).length;
   const sinVentas = state.clientes.length - activos;
+  const clientesConProducto = (prodId) => state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===prodId)).length;
+  const totalEmpresas = state.clientes.filter(c=>c.tipoDocumento==='RUC').length;
+  const totalPersonas = state.clientes.length - totalEmpresas;
   let listado = state.clientes.slice();
-  if(filtroClienteProducto!=='todos') listado = listado.filter(c=>c.tipoSeguro===filtroClienteProducto);
   if(filtroClienteContacto!=='todos') listado = listado.filter(c=>(c.estadoContacto||'nuevo')===filtroClienteContacto);
+  if(filtroClienteEtiqueta!=='todas') listado = listado.filter(c=>(c.etiquetas||[]).includes(filtroClienteEtiqueta));
+  if(filtroClienteTipo!=='todos') listado = listado.filter(c=>(c.tipoDocumento||'DNI')===(filtroClienteTipo==='empresa'?'RUC':filtroClienteTipo==='dni'?'DNI':'CE'));
+  if(filtroClienteProducto!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===filtroClienteProducto));
   const estadoInfo = id => ESTADOS_CONTACTO.find(e=>e.id===id) || ESTADOS_CONTACTO[0];
+  const productosSeguro = todosLosProductos().filter(r=>r.categoria==='seguro');
   return `
     <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
@@ -1722,23 +2075,38 @@ function viewClientes(){
         <div class="value num" style="color:#fff;">${sinVentas}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">oportunidades para retomar contacto</div>
       </div>
+      <div class="card stat-card" style="background:#5A6B65;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Empresas (RUC) / Personas</div>
+        <div class="value num" style="color:#fff;">${totalEmpresas} / ${totalPersonas}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">según tipo de documento</div>
+      </div>
     </div>
     <div class="toolbar">
-      <select id="fClienteProducto"><option value="todos">Todos los productos</option>${TIPOS_SEGURO_CLIENTE.map(t=>`<option value="${t.id}" ${filtroClienteProducto===t.id?'selected':''}>${t.label}</option>`).join('')}</select>
       <select id="fClienteContacto"><option value="todos">Todos los estados de contacto</option>${ESTADOS_CONTACTO.map(e=>`<option value="${e.id}" ${filtroClienteContacto===e.id?'selected':''}>${e.label}</option>`).join('')}</select>
+      <select id="fClienteEtiqueta"><option value="todas">Todas las etiquetas</option>${ETIQUETAS_CLIENTE.map(t=>`<option value="${t.id}" ${filtroClienteEtiqueta===t.id?'selected':''}>${t.label}</option>`).join('')}</select>
+      <select id="fClienteTipo">
+        <option value="todos" ${filtroClienteTipo==='todos'?'selected':''}>Empresas y personas</option>
+        <option value="empresa" ${filtroClienteTipo==='empresa'?'selected':''}>Solo empresas (RUC)</option>
+        <option value="dni" ${filtroClienteTipo==='dni'?'selected':''}>Solo personas (DNI)</option>
+        <option value="ce" ${filtroClienteTipo==='ce'?'selected':''}>Carnet de Extranjería</option>
+      </select>
+      <select id="fClienteProducto">
+        <option value="todos" ${filtroClienteProducto==='todos'?'selected':''}>Todos los productos</option>
+        ${productosSeguro.map(p=>`<option value="${p.id}" ${filtroClienteProducto===p.id?'selected':''}>${p.label} (${clientesConProducto(p.id)})</option>`).join('')}
+      </select>
     </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Nombre / Razón social</th><th>Documento</th><th>Celular 1</th><th>Ciudad</th><th>Producto</th><th>Seguimiento</th><th># Ventas</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th>Nombre / Razón social</th><th>Documento</th><th>Celular 1</th><th>Ciudad</th><th>Etiquetas</th><th>Seguimiento</th><th># Ventas</th><th>Estado</th><th></th></tr></thead>
         <tbody>
           ${listado.length===0 ? `<tr class="empty-row"><td colspan="9">No hay clientes que coincidan con el filtro.</td></tr>` : listado.map(c=>{
             const ventasCliente = state.ventas.filter(v=>v.clienteId===c.id);
             const n = ventasCliente.length;
             const activo = ventasCliente.some(v=>ventaActiva(v));
-            const tipo = TIPOS_SEGURO_CLIENTE.find(t=>t.id===c.tipoSeguro);
             const est = estadoInfo(c.estadoContacto);
             const colorContacto = { nuevo:'pill-gray', contactado:'pill-gold', interesado:'pill-gold', cotizacion_enviada:'pill-gold', cita_agendada:'pill-gold', cliente:'pill-green', no_interesado:'pill-red' }[est.id] || 'pill-gray';
-            return `<tr><td>${c.nombre}</td><td>${c.documento||'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tipo?tipo.label:'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
+            const tagsHtml = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?`<span class="pill ${t.clase}" style="margin-right:4px;">${t.label}</span>`:''; }).join('');
+            return `<tr><td><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);font-weight:600;">${c.nombre}</a></td><td>${c.documento?(c.tipoDocumento||'DNI')+' '+c.documento:'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tagsHtml||'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -1746,8 +2114,26 @@ function viewClientes(){
   `;
 }
 function wireClientes(){
-  const fp = document.getElementById('fClienteProducto'); if(fp) fp.onchange = e=>{ filtroClienteProducto=e.target.value; render(); };
+  if(fichaClienteId){
+    const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
+    document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
+    const btnNota = document.getElementById('btnAgregarInteraccion');
+    if(btnNota) btnNota.onclick = () => {
+      const txt = document.getElementById('fichaNuevaNota').value.trim();
+      if(!txt) return;
+      const c = state.clientes.find(x=>x.id===fichaClienteId);
+      if(!c) return;
+      c.interacciones = c.interacciones || [];
+      c.interacciones.push({ fecha: todayISO(), nota: txt });
+      save(); render();
+    };
+    return;
+  }
+  const fe = document.getElementById('fClienteEtiqueta'); if(fe) fe.onchange = e=>{ filtroClienteEtiqueta=e.target.value; render(); };
+  document.querySelectorAll('[data-ficha-cliente]').forEach(a=> a.onclick = (e)=>{ e.preventDefault(); fichaClienteId=a.dataset.fichaCliente; render(); });
   const fc = document.getElementById('fClienteContacto'); if(fc) fc.onchange = e=>{ filtroClienteContacto=e.target.value; render(); };
+  const ft = document.getElementById('fClienteTipo'); if(ft) ft.onchange = e=>{ filtroClienteTipo=e.target.value; render(); };
+  const fpr = document.getElementById('fClienteProducto'); if(fpr) fpr.onchange = e=>{ filtroClienteProducto=e.target.value; render(); };
   const btnEx = document.getElementById('btnExportClientes'); if(btnEx) btnEx.onclick = () => {
     const headers = ['Nombre / Razón social','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Marca','Modelo','Año','Suma Asegurada','Placa','Motor','Serie','Uso del vehículo','Aseguradora','N° Póliza','Inicio vigencia','Forma de pago','Banco endosatario','Producto','Estado de contacto','OBS','# Ventas'];
     const rows = state.clientes.map(c=>{
@@ -1849,7 +2235,6 @@ function openModal(){
   const host = document.createElement('div'); host.id = 'modalHost';
   document.getElementById('crm-app').appendChild(host);
   if(editing.type==='venta') host.innerHTML = modalVenta();
-  else if(editing.type==='poliza') host.innerHTML = modalPoliza();
   else if(editing.type==='asesor') host.innerHTML = modalAsesor();
   else if(editing.type==='cliente') host.innerHTML = modalCliente();
   else if(editing.type==='metas') host.innerHTML = modalMetas();
@@ -1872,9 +2257,18 @@ function modalVenta(){
   <div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar venta':'Registrar venta'}</h2>
     <p class="modal-hint">${editing.id ? folioV(v.folio) : 'Se asignará un folio interno automático al guardar.'}</p>
+    <div id="mValidationError" style="display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13.5px;font-weight:600;"></div>
 
+    <div class="mtabs" style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:14px;">
+      <button type="button" class="mtab-btn active" data-mtab="personales">Datos personales</button>
+      <button type="button" class="mtab-btn" data-mtab="poliza">${esAsesoriaModal ? 'Datos del servicio' : 'Datos de la póliza'}</button>
+      <button type="button" class="mtab-btn" data-mtab="comisiones">Comisiones</button>
+      <button type="button" class="mtab-btn" data-mtab="pago">${esAsesoriaModal ? 'Forma de pago del servicio' : 'Forma de pago póliza'}</button>
+    </div>
+
+    <div class="mtab-panel" data-mtab-panel="personales">
     <div class="panel-title" style="margin-top:0;">1. Datos del cliente</div>
-    <div class="field"><label>Cliente</label><select id="mCliente" style="width:100%;"><option value="">Seleccionar…</option>${state.clientes.map(c=>`<option value="${c.id}" ${v.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
+    <div class="field"><label>Cliente *</label><select id="mCliente" style="width:100%;"><option value="">Seleccionar…</option>${state.clientes.map(c=>`<option value="${c.id}" ${v.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
     <div class="hint">El RUC/DNI, dirección y contacto del cliente se administran desde su ficha en Clientes.</div>
     <div class="field-row" style="align-items:flex-end;">
       <div class="field" style="flex:1;"><label>Asesor asignado (vacío = venta directa)</label><select id="mAsesor" style="width:100%;" ${esAsesorSesion()?'disabled':''}><option value="">Venta directa</option>${state.asesores.map(a=>`<option value="${a.id}" ${(esAsesorSesion()?sesionUsuario.asesorId:v.asesorId)===a.id ? 'selected' : ''}>${a.nombre}</option>`).join('')}</select></div>
@@ -1884,9 +2278,10 @@ function modalVenta(){
       <option value="directo" ${(v.canalVenta||'directo')==='directo'?'selected':''}>Canal directo</option>
       ${(bitDeModal==='oncologicos' || bitDeModal==='asesorias') ? '' : `<option value="alta_corredores" ${v.canalVenta==='alta_corredores'?'selected':''}>Canal Alta Corredores</option>`}
     </select></div>
+    </div>
 
-    <div class="divider"></div>
-    <div class="panel-title">2. ${bitDeModal==='asesorias' ? 'Empresa' : 'Aseguradora'}</div>
+    <div class="mtab-panel hidden" data-mtab-panel="poliza">
+    <div class="panel-title" style="margin-top:0;">2. ${bitDeModal==='asesorias' ? 'Empresa' : 'Aseguradora'}</div>
     <div class="field-row" style="align-items:flex-end;">
       <div class="field" style="flex:1;"><label>${bitDeModal==='asesorias' ? 'Empresa' : 'Compañía de seguros'}</label><select id="mAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${v.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaAseguradora" style="white-space:nowrap;">${bitDeModal==='asesorias' ? '+ Nueva empresa' : '+ Nueva compañía'}</button></div>
@@ -1894,24 +2289,24 @@ function modalVenta(){
     <div class="field"><label>${bitDeModal==='asesorias' ? 'N° RUC' : 'N° de póliza'}</label><input type="text" id="mNumeroPoliza" style="width:100%;" value="${v.numeroPoliza||''}" placeholder="${bitDeModal==='asesorias' ? 'Ej. 20481234567' : 'Ej. RG-00123'}"></div>
 
     <div class="divider"></div>
-    <div class="panel-title">3. Producto</div>
+    <div class="panel-title">3. ${esAsesoriaModal ? 'Servicio' : 'Producto'}</div>
     <div class="field-row" style="align-items:flex-end;">
-      <div class="field" style="flex:1;"><label>Producto</label><select id="mProducto" style="width:100%;">
+      <div class="field" style="flex:1;"><label>${esAsesoriaModal ? 'Tipo de servicio' : 'Producto'}</label><select id="mProducto" style="width:100%;">
         <optgroup label="Seguros">${todosLosProductos().filter(r=>r.categoria==='seguro' && !esOncologico(r.id) && !esAsesoria(r.id)).map(r=>`<option value="${r.id}" ${v.tipoProducto===r.id?'selected':''}>${r.label}</option>`).join('')}</optgroup>
         <optgroup label="Seguros oncológicos">${todosLosProductos().filter(r=>esOncologico(r.id)).map(r=>`<option value="${r.id}" ${v.tipoProducto===r.id?'selected':''}>${r.label}</option>`).join('')}</optgroup>
         <optgroup label="Asesoría y consultoría">${todosLosProductos().filter(r=>esAsesoria(r.id)).map(r=>`<option value="${r.id}" ${v.tipoProducto===r.id?'selected':''}>${r.label}</option>`).join('')}</optgroup>
       </select></div>
-      <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevoProducto" style="white-space:nowrap;">+ Agregar producto</button></div>
+      <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevoProducto" style="white-space:nowrap;">${esAsesoriaModal ? '+ Agregar servicio' : '+ Agregar producto'}</button></div>
       <div class="field" style="flex:1;"><label>Tipo de venta</label><select id="mTipoVenta" style="width:100%;"><option value="nueva" ${v.tipoVenta==='nueva'?'selected':''}>Nueva</option><option value="renovacion" ${v.tipoVenta==='renovacion'?'selected':''}>Renovación</option><option value="anulacion" ${v.tipoVenta==='anulacion'?'selected':''}>Anulación</option></select></div>
     </div>
-    <div class="field"><label>Póliza en PDF (opcional)</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
+    <div class="field"><label>${esAsesoriaModal ? 'Contrato / documento del servicio en PDF (opcional)' : 'Póliza en PDF (opcional)'}</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
       <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="${v.polizaPDFData}" download="${v.polizaPDFNombre}" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
-      <div class="hint">Máx. ~1.5 MB por póliza (todo el sistema comparte 5 MB de almacenamiento).</div>
+      <div class="hint">Máx. ~1.5 MB por archivo (todo el sistema comparte 5 MB de almacenamiento).</div>
     </div>
     <div class="field"><label>Detalle del servicio (opcional)</label><input type="text" id="mDetalleServicio" style="width:100%;" value="${v.detalleServicio||''}" placeholder="Ej. Declaración anual + planilla, o descripción específica del servicio"></div>
 
     <div class="divider"></div>
-    <div class="panel-title">4 · 5 · 6. Fechas y moneda</div>
+    <div class="panel-title">4 · 5. Fechas y moneda</div>
     <div class="field-row">
       <div class="field"><label>Fecha de emisión</label><input type="date" id="mFecha" style="width:100%;" value="${v.fechaVenta||''}"></div>
       <div class="field"><label>Moneda</label><select id="mMoneda" style="width:100%;" ${bitDeModal==='oncologicos'?'disabled':''}>
@@ -1923,27 +2318,10 @@ function modalVenta(){
       <div class="field"><label>Inicio de vigencia</label><input type="date" id="mVigenciaInicio" style="width:100%;" value="${v.vigenciaInicio||''}"></div>
       <div class="field"><label>Fin de vigencia (anualizada)</label><input type="date" id="mVigenciaFin" style="width:100%;" value="${v.vigenciaFin||''}"></div>
     </div>
-    <div class="field-row">
-      <div class="field"><label>Forma de pago</label><select id="mFormaPago" style="width:100%;">
-        <option value="contado" ${(v.formaPago||'contado')==='contado'?'selected':''}>Pago al contado</option>
-        <option value="cupones" ${v.formaPago==='cupones'?'selected':''}>Cupones (en cuotas)</option>
-        <option value="debito_automatico" ${v.formaPago==='debito_automatico'?'selected':''}>Débito automático (en cuotas)</option>
-      </select></div>
-      <div class="field" id="mFilaCantidadCuotas" style="${(v.formaPago==='cupones'||v.formaPago==='debito_automatico')?'':'display:none;'}">
-        <label>Cantidad de cuotas</label>
-        <input type="number" step="1" min="1" id="mCantidadCuotas" style="width:100%;" value="${v.cantidadCuotas||(v.formaPago==='debito_automatico'?12:'')}" placeholder="Ej. 6">
-      </div>
-    </div>
-    <div class="field-row" id="mFilaSeguimientoCuotas" style="${(v.formaPago==='cupones'||v.formaPago==='debito_automatico')?'':'display:none;'}">
-      <div class="field"><label>Próxima fecha de vencimiento de cuota</label><input type="date" id="mProximaCuotaFecha" style="width:100%;" value="${v.proximaCuotaFecha||''}"></div>
-      <div class="field"><label>Estado de las cuotas</label><select id="mCuotasAlDia" style="width:100%;">
-        <option value="si" ${v.cuotasAlDia!==false?'selected':''}>Al día</option>
-        <option value="no" ${v.cuotasAlDia===false?'selected':''}>Atrasada(s)</option>
-      </select></div>
     </div>
 
-    <div class="divider"></div>
-    <div class="panel-title">7. ${esAsesoriaModal ? 'Comisiones FG (100%)' : 'Prima y comisión de la aseguradora'}</div>
+    <div class="mtab-panel hidden" data-mtab-panel="comisiones">
+    <div class="panel-title" style="margin-top:0;">6. ${esAsesoriaModal ? 'Comisiones FG (100%)' : 'Prima y comisión de la aseguradora'}</div>
     <div id="mBloqueSeguro" style="${modoSeguro?'':'display:none;'}">
       <div class="field" style="${esAsesoriaModal?'display:none;':''}"><label>Modo de comisión de la aseguradora</label><select id="mModoComAseguradora" style="width:100%;">
         <option value="porcentaje" ${v.modoComisionAseguradora!=='fijo'?'selected':''}>% sobre prima neta (0.1% – 70%)</option>
@@ -1972,7 +2350,7 @@ function modalVenta(){
     </div>
 
     <div class="divider"></div>
-    <div class="panel-title">8. Comisión para el asesor</div>
+    <div class="panel-title">7. Comisión para el asesor</div>
     ${esAsesorSesion() ? `<p class="modal-hint">Tu comisión la define el administrador después de revisar la venta.</p>` : ''}
     <div class="field-row">
       <div class="field"><label>Comisión al asesor</label><select id="mTipoComAsesor" style="width:100%;" ${esAsesorSesion()?'disabled':''}>
@@ -1988,6 +2366,39 @@ function modalVenta(){
       <div style="font-size:12.5px;color:var(--muted);" id="mCalcHint"></div>
     </div>
     <div class="hint">Tipo de cambio actual para reportes: 1 US$ = S/ ${(Number(state.tipoCambio)||3.75).toFixed(2)}. <a href="#" id="mEditarTC">Editar</a></div>
+    </div>
+
+    <div class="mtab-panel hidden" data-mtab-panel="pago">
+    <div class="panel-title" style="margin-top:0;">8. Forma de pago de la póliza</div>
+    <div class="field-row">
+      <div class="field"><label>Forma de pago</label><select id="mFormaPago" style="width:100%;">
+        <option value="contado" ${(v.formaPago||'contado')==='contado'?'selected':''}>Pago al contado</option>
+        <option value="cupones" ${v.formaPago==='cupones'?'selected':''}>Cupones (en cuotas)</option>
+        <option value="debito_automatico" ${v.formaPago==='debito_automatico'?'selected':''}>Débito automático (en cuotas)</option>
+      </select></div>
+      <div class="field" id="mFilaCantidadCuotas" style="${(v.formaPago==='cupones'||v.formaPago==='debito_automatico')?'':'display:none;'}">
+        <label>Cantidad de cuotas</label>
+        <input type="number" step="1" min="1" id="mCantidadCuotas" style="width:100%;" value="${v.cantidadCuotas||(v.formaPago==='debito_automatico'?12:'')}" placeholder="Ej. 6">
+      </div>
+    </div>
+    <div class="field-row" id="mFilaSeguimientoCuotas" style="${(v.formaPago==='cupones'||v.formaPago==='debito_automatico')?'':'display:none;'}">
+      <div class="field"><label>Próxima fecha de vencimiento de cuota</label><input type="date" id="mProximaCuotaFecha" style="width:100%;" value="${v.proximaCuotaFecha||''}"></div>
+      <div class="field"><label>Estado de las cuotas</label><select id="mCuotasAlDia" style="width:100%;">
+        <option value="si" ${v.cuotasAlDia!==false?'selected':''}>Al día</option>
+        <option value="no" ${v.cuotasAlDia===false?'selected':''}>Atrasada(s)</option>
+      </select></div>
+    </div>
+    <div id="mBloqueCronograma" style="${(v.formaPago==='cupones'||v.formaPago==='debito_automatico')?'':'display:none;'}">
+      <div class="divider"></div>
+      <div class="panel-title">Cronograma de cuotas</div>
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field"><label>Fecha de la 1ª cuota</label><input type="date" id="mCronoFechaInicio" style="width:100%;" value="${(v.cronogramaCuotas&&v.cronogramaCuotas[0]&&v.cronogramaCuotas[0].fecha)||v.proximaCuotaFecha||todayISO()}"></div>
+        <div class="field"><button type="button" class="btn btn-ghost btn-sm" id="mGenerarCronograma">Generar cronograma</button></div>
+      </div>
+      <div class="hint">Se reparte el monto total entre la cantidad de cuotas indicada arriba, con vencimientos mensuales a partir de la fecha elegida. Puedes marcar cada cuota como pagada.</div>
+      <div id="mCronogramaTabla" style="margin-top:8px;"></div>
+    </div>
+    </div>
 
     <div class="divider"></div>
     <div class="panel-title">9. Estado de la venta</div>
@@ -1998,42 +2409,6 @@ function modalVenta(){
     <div class="field"><label>Notas</label><textarea id="mNotas" style="width:100%;min-height:56px;">${v.notas||''}</textarea></div>
     <div class="modal-actions">
       ${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar venta</button>` : ''}
-      <button class="btn" id="mCancel">Cancelar</button>
-      <button class="btn btn-primary" id="mSave">Guardar</button>
-    </div>
-  </div></div>`;
-}
-
-function modalPoliza(){
-  const p = editing.id ? state.polizas.find(p=>p.id===editing.id) : {
-    ventaId: editing.ventaId || '', numeroPoliza:'', aseguradora:'', fechaEmision: todayISO(), fechaVencimiento: addYears(todayISO(),1), notas:''
-  };
-  const ventasDisponibles = state.ventas.filter(v=> ventaActiva(v) && (v.id===p.ventaId || !polizaDeVenta(v.id)));
-  return `
-  <div class="modal-backdrop"><div class="modal">
-    <h2>${editing.id?'Editar póliza':'Registrar póliza'}</h2>
-    <p class="modal-hint">${editing.id ? folioP(p.folio) : 'Se asignará un folio interno automático al guardar.'}</p>
-    <div class="field"><label>Venta asociada</label>
-      <select id="mVenta" style="width:100%;">
-        <option value="">Seleccionar venta…</option>
-        ${ventasDisponibles.map(v=>{
-          const cli = state.clientes.find(c=>c.id===v.clienteId);
-          return `<option value="${v.id}" ${p.ventaId===v.id?'selected':''}>${folioV(v.folio)} · ${cli?cli.nombre:'—'} · ${prodLabel(v.tipoProducto)}</option>`;
-        }).join('')}
-      </select>
-      <div class="hint">Si la venta que buscas no aparece, primero regístrala en Registro de ventas.</div>
-    </div>
-    <div class="field-row">
-      <div class="field"><label>N° de póliza / documento</label><input type="text" id="mNumero" style="width:100%;" value="${p.numeroPoliza||''}"></div>
-      <div class="field"><label>Aseguradora / entidad</label><input type="text" id="mAseguradora" style="width:100%;" value="${p.aseguradora||''}"></div>
-    </div>
-    <div class="field-row">
-      <div class="field"><label>Fecha de emisión</label><input type="date" id="mEmision" style="width:100%;" value="${p.fechaEmision||''}"></div>
-      <div class="field"><label>Fecha de vencimiento</label><input type="date" id="mVencimiento" style="width:100%;" value="${p.fechaVencimiento||''}"></div>
-    </div>
-    <div class="field"><label>Notas</label><textarea id="mNotas" style="width:100%;min-height:56px;">${p.notas||''}</textarea></div>
-    <div class="modal-actions">
-      ${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar póliza</button>` : ''}
       <button class="btn" id="mCancel">Cancelar</button>
       <button class="btn btn-primary" id="mSave">Guardar</button>
     </div>
@@ -2058,11 +2433,19 @@ function modalAsesor(){
 }
 
 function modalCliente(){
-  const c = editing.id ? state.clientes.find(c=>c.id===editing.id) : { nombre:'', documento:'', direccion:'', ciudad:'', celular1:'', celular2:'', email:'', email2:'', personaContacto:'', tipoSeguro:'', aseguradoraPreferida:'', fechaNacimiento:'', vehiculoMarca:'', vehiculoModelo:'', vehiculoAnio:'', sumaAsegurada:'', motor:'', chasis:'', placa:'', serie:'', usoVehiculo:'', bancoEndosatario:'', numeroPoliza:'', inicioVigencia:'', formaPago:'', estadoContacto:'nuevo', datosAdicionales:'' };
+  const c = editing.id ? state.clientes.find(c=>c.id===editing.id) : { nombre:'', tipoDocumento:'DNI', documento:'', direccion:'', ciudad:'', celular1:'', celular2:'', email:'', email2:'', personaContacto:'', fechaNacimiento:'', estadoContacto:'nuevo', etiquetas:[], datosAdicionales:'' };
   return `<div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar cliente':'Registrar cliente'}</h2>
+    <p class="modal-hint">Datos del contratante / asegurado. Los datos de producto, póliza y vehículo se registran en Venta de Seguros.</p>
     <div class="field"><label>Nombre / Razón social</label><input type="text" id="mNombre" style="width:100%;" value="${c.nombre||''}"></div>
-    <div class="field"><label>DNI / RUC</label><input type="text" id="mDocumento" style="width:100%;" value="${c.documento||''}"></div>
+    <div class="field-row">
+      <div class="field" style="max-width:140px;"><label>Tipo de documento</label><select id="mTipoDocumento" style="width:100%;">
+        <option value="DNI" ${(c.tipoDocumento||'DNI')==='DNI'?'selected':''}>DNI</option>
+        <option value="RUC" ${c.tipoDocumento==='RUC'?'selected':''}>RUC</option>
+        <option value="CE" ${c.tipoDocumento==='CE'?'selected':''}>Carnet de Extranjería</option>
+      </select></div>
+      <div class="field" style="flex:1;"><label>N° de documento</label><input type="text" id="mDocumento" style="width:100%;" value="${c.documento||''}"></div>
+    </div>
     <div class="field-row">
       <div class="field"><label>Celular 1</label><input type="text" id="mCelular1" style="width:100%;" value="${c.celular1||c.telefono||''}"></div>
       <div class="field"><label>Celular 2</label><input type="text" id="mCelular2" style="width:100%;" value="${c.celular2||''}"></div>
@@ -2077,51 +2460,9 @@ function modalCliente(){
     <div class="field"><label>Fecha de nacimiento</label><input type="date" id="mFechaNacimiento" style="width:100%;" value="${c.fechaNacimiento||''}"></div>
 
     <div class="divider"></div>
-    <div class="panel-title" style="margin-top:0;">Producto y póliza</div>
-    <div class="field-row">
-      <div class="field"><label>Tipo de producto</label><select id="mTipoSeguro" style="width:100%;">
-        <option value="" ${!c.tipoSeguro?'selected':''}>Seleccionar…</option>
-        ${TIPOS_SEGURO_CLIENTE.map(t=>`<option value="${t.id}" ${c.tipoSeguro===t.id?'selected':''}>${t.label}</option>`).join('')}
-      </select></div>
-      <div class="field"><label>Aseguradora</label><select id="mAseguradoraPreferida" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${c.aseguradoraPreferida===a?'selected':''}>${a}</option>`).join('')}</select></div>
-    </div>
-    <div class="field-row">
-      <div class="field"><label>N° de póliza</label><input type="text" id="mNumeroPolizaCliente" style="width:100%;" value="${c.numeroPoliza||''}"></div>
-      <div class="field"><label>Inicio de vigencia</label><input type="date" id="mInicioVigenciaCliente" style="width:100%;" value="${c.inicioVigencia||''}"></div>
-      <div class="field"><label>Forma de pago</label><select id="mFormaPagoCliente" style="width:100%;">
-        <option value="" ${!c.formaPago?'selected':''}>Seleccionar…</option>
-        <option value="contado" ${c.formaPago==='contado'?'selected':''}>Pago al contado</option>
-        <option value="cupones" ${c.formaPago==='cupones'?'selected':''}>Cupones (en cuotas)</option>
-        <option value="debito_automatico" ${c.formaPago==='debito_automatico'?'selected':''}>Débito automático</option>
-      </select></div>
-    </div>
-    <div id="mBloqueVehiculo" style="${c.tipoSeguro==='vehicular'?'':'display:none;'}">
-      <div class="field-row">
-        <div class="field"><label>Marca</label><input type="text" id="mVehiculoMarca" style="width:100%;" value="${c.vehiculoMarca||''}" placeholder="Ej. Toyota"></div>
-        <div class="field"><label>Modelo</label><input type="text" id="mVehiculoModelo" style="width:100%;" value="${c.vehiculoModelo||''}" placeholder="Ej. Corolla"></div>
-        <div class="field"><label>Año</label><input type="number" id="mVehiculoAnio" style="width:100%;" value="${c.vehiculoAnio||''}" placeholder="Ej. 2022"></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Placa</label><input type="text" id="mPlaca" style="width:100%;" value="${c.placa||''}"></div>
-        <div class="field"><label>N° de motor</label><input type="text" id="mMotor" style="width:100%;" value="${c.motor||''}"></div>
-        <div class="field"><label>N° de serie / chasis</label><input type="text" id="mChasis" style="width:100%;" value="${c.chasis||c.serie||''}"></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Suma asegurada</label><input type="number" step="0.01" id="mSumaAsegurada" style="width:100%;" value="${c.sumaAsegurada||''}" placeholder="Monto"></div>
-        <div class="field"><label>Uso del vehículo</label><select id="mUsoVehiculo" style="width:100%;">
-          <option value="" ${!c.usoVehiculo?'selected':''}>Seleccionar…</option>
-          <option value="particular" ${c.usoVehiculo==='particular'?'selected':''}>Particular</option>
-          <option value="comercial" ${c.usoVehiculo==='comercial'?'selected':''}>Comercial</option>
-          <option value="taxi" ${c.usoVehiculo==='taxi'?'selected':''}>Taxi / Transporte</option>
-          <option value="carga" ${c.usoVehiculo==='carga'?'selected':''}>Carga pesada</option>
-        </select></div>
-        <div class="field"><label>Banco endosatario</label><input type="text" id="mBancoEndosatario" style="width:100%;" value="${c.bancoEndosatario||''}" placeholder="Si aplica"></div>
-      </div>
-    </div>
-
-    <div class="divider"></div>
     <div class="panel-title" style="margin-top:0;">Seguimiento de venta</div>
     <div class="field"><label>Estado de contacto</label><select id="mEstadoContacto" style="width:100%;">${ESTADOS_CONTACTO.map(e=>`<option value="${e.id}" ${(c.estadoContacto||'nuevo')===e.id?'selected':''}>${e.label}</option>`).join('')}</select></div>
+    <div class="field"><label>Etiquetas</label><div style="display:flex;gap:10px;flex-wrap:wrap;">${ETIQUETAS_CLIENTE.map(t=>`<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:13px;"><input type="checkbox" class="mEtiqueta" value="${t.id}" ${(c.etiquetas||[]).includes(t.id)?'checked':''}> ${t.label}</label>`).join('')}</div></div>
     <div class="field"><label>Observaciones (OBS)</label><textarea id="mDatosAdicionales" style="width:100%;min-height:60px;" placeholder="Cualquier otra información relevante del cliente">${c.datosAdicionales||''}</textarea></div>
 
     <div class="modal-actions">${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar cliente</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
@@ -2146,23 +2487,24 @@ function modalMetas(){
   </div></div>`;
 }
 
+function mostrarErrorModal(msg){
+  const el = document.getElementById('mValidationError');
+  if(el){ el.textContent = '⚠ ' + msg; el.style.display = ''; el.scrollIntoView({behavior:'smooth', block:'center'}); }
+  else alert(msg);
+}
+function irAPestanaModal(nombre){
+  const btn = document.querySelector(`#crm-app .mtab-btn[data-mtab="${nombre}"]`);
+  if(btn) btn.click();
+}
 function wireModal(){
+  let cronogramaActual = [];
   const cancel = document.getElementById('mCancel'); if(cancel) cancel.onclick = closeModal;
   const del = document.getElementById('mDelete'); if(del) del.onclick = () => {
-    if(editing.type==='venta'){ state.ventas = state.ventas.filter(v=>v.id!==editing.id); state.polizas = state.polizas.filter(p=>p.ventaId!==editing.id); }
-    if(editing.type==='poliza') state.polizas = state.polizas.filter(p=>p.id!==editing.id);
+    if(editing.type==='venta'){ state.ventas = state.ventas.filter(v=>v.id!==editing.id); }
     if(editing.type==='asesor') state.asesores = state.asesores.filter(a=>a.id!==editing.id);
     if(editing.type==='cliente') state.clientes = state.clientes.filter(c=>c.id!==editing.id);
     save(); closeModal(); render();
   };
-
-  if(editing.type==='cliente'){
-    const tipoSeguroSel = document.getElementById('mTipoSeguro');
-    const bloqueVehiculo = document.getElementById('mBloqueVehiculo');
-    if(tipoSeguroSel && bloqueVehiculo){
-      tipoSeguroSel.onchange = () => { bloqueVehiculo.style.display = tipoSeguroSel.value==='vehicular' ? '' : 'none'; };
-    }
-  }
 
   if(editing.type==='venta'){
     const esAsesoriaModalJS = bitacoraDeTab()==='asesorias';
@@ -2289,13 +2631,67 @@ function wireModal(){
     const filaCuotas = document.getElementById('mFilaCantidadCuotas');
     const cantidadCuotasInput = document.getElementById('mCantidadCuotas');
     const filaSeguimientoCuotas = document.getElementById('mFilaSeguimientoCuotas');
+    const bloqueCronograma = document.getElementById('mBloqueCronograma');
     if(formaPagoSel) formaPagoSel.onchange = () => {
       const enCuotas = formaPagoSel.value==='cupones' || formaPagoSel.value==='debito_automatico';
       if(filaCuotas) filaCuotas.style.display = enCuotas ? '' : 'none';
       if(filaSeguimientoCuotas) filaSeguimientoCuotas.style.display = enCuotas ? '' : 'none';
+      if(bloqueCronograma) bloqueCronograma.style.display = enCuotas ? '' : 'none';
       if(enCuotas && cantidadCuotasInput && !cantidadCuotasInput.value){
         cantidadCuotasInput.value = formaPagoSel.value==='debito_automatico' ? 12 : 6;
       }
+    };
+    // ---- Pestañas del modal de venta ----
+    document.querySelectorAll('#crm-app .mtab-btn').forEach(btn=>{
+      btn.onclick = () => {
+        document.querySelectorAll('#crm-app .mtab-btn').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        const target = btn.getAttribute('data-mtab');
+        document.querySelectorAll('#crm-app .mtab-panel').forEach(p=>{
+          p.classList.toggle('hidden', p.getAttribute('data-mtab-panel')!==target);
+        });
+      };
+    });
+    // ---- Cronograma de cuotas ----
+    const ventaEnEdicion = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
+    cronogramaActual = (ventaEnEdicion && ventaEnEdicion.cronogramaCuotas) ? ventaEnEdicion.cronogramaCuotas.map(c=>({...c})) : [];
+    const montoTotalVenta = () => {
+      const pb = parseFloat(document.getElementById('mPrimaBruta') ? document.getElementById('mPrimaBruta').value : (document.getElementById('mPrimaBrutaFijo')?document.getElementById('mPrimaBrutaFijo').value:0)) || 0;
+      return pb;
+    };
+    const renderCronograma = () => {
+      const cont = document.getElementById('mCronogramaTabla');
+      if(!cont) return;
+      if(!cronogramaActual.length){ cont.innerHTML = '<div class="hint">Aún no se generó el cronograma.</div>'; return; }
+      cont.innerHTML = `<table class="crono-table"><thead><tr><th>#</th><th>Vencimiento</th><th>Monto</th><th>Pagada</th></tr></thead><tbody>
+        ${cronogramaActual.map((c,i)=>`<tr>
+          <td>${i+1}</td>
+          <td>${c.fecha}</td>
+          <td>${(c.monto||0).toFixed(2)}</td>
+          <td><input type="checkbox" class="crono-pagada" data-idx="${i}" ${c.pagada?'checked':''}></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+      cont.querySelectorAll('.crono-pagada').forEach(chk=>{
+        chk.onchange = () => { cronogramaActual[parseInt(chk.getAttribute('data-idx'))].pagada = chk.checked; };
+      });
+    };
+    renderCronograma();
+    const btnGenerarCrono = document.getElementById('mGenerarCronograma');
+    if(btnGenerarCrono) btnGenerarCrono.onclick = () => {
+      const n = parseInt(cantidadCuotasInput ? cantidadCuotasInput.value : 0) || 0;
+      if(n<1){ alert('Indica primero la cantidad de cuotas.'); return; }
+      const fechaInicio = document.getElementById('mCronoFechaInicio').value || todayISO();
+      const total = montoTotalVenta();
+      const montoCuota = total>0 ? Math.round((total/n)*100)/100 : 0;
+      const nuevas = [];
+      for(let i=0;i<n;i++){
+        const d = new Date(fechaInicio+'T00:00:00');
+        d.setMonth(d.getMonth()+i);
+        const prev = cronogramaActual[i];
+        nuevas.push({ fecha: d.toISOString().slice(0,10), monto: montoCuota, pagada: prev ? !!prev.pagada : false });
+      }
+      cronogramaActual = nuevas;
+      renderCronograma();
     };
     const tcLink = document.getElementById('mEditarTC');
     if(tcLink) tcLink.onclick = (e) => {
@@ -2346,6 +2742,7 @@ function wireModal(){
 
   const saveBtn = document.getElementById('mSave');
   saveBtn.onclick = () => {
+   try{
     if(editing.type==='venta'){
       const tipoProductoSel = document.getElementById('mProducto').value;
       let comisionTotal, primaBruta = 0, primaNeta = 0, porcentajeComisionAseguradora = 0;
@@ -2377,6 +2774,7 @@ function wireModal(){
         vigenciaFin: document.getElementById('mVigenciaFin').value,
         formaPago: document.getElementById('mFormaPago').value,
         cantidadCuotas: (document.getElementById('mFormaPago').value!=='contado') ? (parseInt(document.getElementById('mCantidadCuotas').value)||null) : null,
+        cronogramaCuotas: (document.getElementById('mFormaPago').value!=='contado') ? cronogramaActual : [],
         proximaCuotaFecha: (document.getElementById('mFormaPago').value!=='contado') ? document.getElementById('mProximaCuotaFecha').value : '',
         cuotasAlDia: (document.getElementById('mFormaPago').value!=='contado') ? (document.getElementById('mCuotasAlDia').value!=='no') : true,
         comisionTotal, primaBruta, primaNeta, porcentajeComisionAseguradora, modoComisionAseguradora,
@@ -2392,10 +2790,10 @@ function wireModal(){
         if(pendingPolizaPDF===null){ data.polizaPDFNombre=''; data.polizaPDFData=''; }
         else { data.polizaPDFNombre = pendingPolizaPDF.name; data.polizaPDFData = pendingPolizaPDF.dataUrl; }
       }
-      if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
-      if(esSeguro(tipoProductoSel) && !data.aseguradora){ alert('Selecciona la aseguradora.'); return; }
-      if(esSeguro(tipoProductoSel) && modoComisionAseguradora!=='fijo' && !data.primaBruta){ alert('Ingresa la prima bruta para calcular la comisión.'); return; }
-      if(!data.comisionTotal || data.comisionTotal<=0){ alert('Ingresa un monto de comisión válido (mayor a 0).'); return; }
+      if(!data.clienteId){ irAPestanaModal('personales'); document.getElementById('mCliente').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
+      if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
+      if(esSeguro(tipoProductoSel) && modoComisionAseguradora!=='fijo' && !data.primaBruta){ irAPestanaModal('comisiones'); const el=document.getElementById('mPrimaBruta'); if(el) el.style.borderColor='var(--danger)'; mostrarErrorModal('Falta ingresar la Prima bruta (pestaña "Comisiones").'); return; }
+      if(!data.comisionTotal || data.comisionTotal<=0){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
       if(editing.id){
         const existing = state.ventas.find(v=>v.id===editing.id);
         if(data.estadoComision==='pagada' && existing.estadoComision!=='pagada') data.fechaPagoComision = todayISO();
@@ -2406,19 +2804,6 @@ function wireModal(){
         data.fechaPagoComision = data.estadoComision==='pagada' ? todayISO() : '';
         state.ventas.push(data);
       }
-    }
-    if(editing.type==='poliza'){
-      const data = {
-        ventaId: document.getElementById('mVenta').value,
-        numeroPoliza: document.getElementById('mNumero').value.trim(),
-        aseguradora: document.getElementById('mAseguradora').value.trim(),
-        fechaEmision: document.getElementById('mEmision').value,
-        fechaVencimiento: document.getElementById('mVencimiento').value,
-        notas: document.getElementById('mNotas').value,
-      };
-      if(!data.ventaId){ alert('Selecciona la venta asociada a esta póliza.'); return; }
-      if(editing.id){ Object.assign(state.polizas.find(p=>p.id===editing.id), data); }
-      else{ data.id = uid(); data.folio = ++state.folioPoliza; state.polizas.push(data); }
     }
     if(editing.type==='asesor'){
       const data = { nombre: document.getElementById('mNombre').value.trim(), telefono: document.getElementById('mTelefono').value.trim(), email: document.getElementById('mEmail').value.trim() };
@@ -2440,23 +2825,10 @@ function wireModal(){
       else{ data.id = uid(); data.activo = true; state.asesores.push(data); }
     }
     if(editing.type==='cliente'){
-      const data = { nombre: document.getElementById('mNombre').value.trim(), documento: document.getElementById('mDocumento').value.trim(), direccion: document.getElementById('mDireccion').value.trim(), ciudad: document.getElementById('mCiudad').value, celular1: document.getElementById('mCelular1').value.trim(), celular2: document.getElementById('mCelular2').value.trim(), email: document.getElementById('mEmail').value.trim(), email2: document.getElementById('mEmail2').value.trim(), personaContacto: document.getElementById('mPersonaContacto').value.trim(),
+      const data = { nombre: document.getElementById('mNombre').value.trim(), tipoDocumento: document.getElementById('mTipoDocumento').value, documento: document.getElementById('mDocumento').value.trim(), direccion: document.getElementById('mDireccion').value.trim(), ciudad: document.getElementById('mCiudad').value, celular1: document.getElementById('mCelular1').value.trim(), celular2: document.getElementById('mCelular2').value.trim(), email: document.getElementById('mEmail').value.trim(), email2: document.getElementById('mEmail2').value.trim(), personaContacto: document.getElementById('mPersonaContacto').value.trim(),
         fechaNacimiento: document.getElementById('mFechaNacimiento').value,
-        tipoSeguro: document.getElementById('mTipoSeguro').value,
-        aseguradoraPreferida: document.getElementById('mAseguradoraPreferida').value,
-        numeroPoliza: document.getElementById('mNumeroPolizaCliente').value.trim(),
-        inicioVigencia: document.getElementById('mInicioVigenciaCliente').value,
-        formaPago: document.getElementById('mFormaPagoCliente').value,
-        vehiculoMarca: document.getElementById('mVehiculoMarca').value.trim(),
-        vehiculoModelo: document.getElementById('mVehiculoModelo').value.trim(),
-        vehiculoAnio: document.getElementById('mVehiculoAnio').value,
-        placa: document.getElementById('mPlaca').value.trim(),
-        usoVehiculo: document.getElementById('mUsoVehiculo').value,
-        bancoEndosatario: document.getElementById('mBancoEndosatario').value.trim(),
-        sumaAsegurada: document.getElementById('mSumaAsegurada').value,
-        motor: document.getElementById('mMotor').value.trim(),
-        chasis: document.getElementById('mChasis').value.trim(),
         estadoContacto: document.getElementById('mEstadoContacto').value,
+        etiquetas: Array.from(document.querySelectorAll('.mEtiqueta:checked')).map(el=>el.value),
         datosAdicionales: document.getElementById('mDatosAdicionales').value.trim(),
       };
       if(!data.nombre){ alert('Escribe el nombre del cliente.'); return; }
@@ -2471,6 +2843,10 @@ function wireModal(){
       });
     }
     save(); closeModal(); render();
+   }catch(err){
+     console.error('Error al guardar:', err);
+     mostrarErrorModal('Ocurrió un error inesperado y no se pudo guardar. Detalle técnico: ' + err.message + '. Por favor avisa a soporte con este mensaje.');
+   }
   };
 }
 
@@ -2482,7 +2858,6 @@ render = function(){
   if(tab==='cobro_comisiones') wireCobroComisiones();
   if(tab==='pago_comisiones') wirePagoComisiones();
   if(tab==='polizas') wirePolizas();
-  if(tab==='renovaciones') wireRenovaciones();
   if(tab==='asesores') wireAsesores();
   if(tab==='clientes') wireClientes();
 };
