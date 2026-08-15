@@ -904,6 +904,16 @@ function viewDashboard(){
   const totalTareas = alertas.cuotasAtrasadas.length + alertas.porVencer.length + cumples.length;
   const diasRespaldo = diasDesdeUltimoRespaldo();
 
+  // ---- Ranking de aseguradoras por comisión FG generada (histórico) ----
+  const porAseguradoraRanking = {};
+  state.ventas.filter(ventaSeguroActiva).forEach(v=>{
+    const key = v.aseguradora || 'Sin especificar';
+    if(!porAseguradoraRanking[key]) porAseguradoraRanking[key] = 0;
+    porAseguradoraRanking[key] += comisionFGSoles(v);
+  });
+  const rankingAseguradoras = Object.entries(porAseguradoraRanking).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxRanking = rankingAseguradoras.length ? rankingAseguradoras[0][1] : 1;
+
   return `
     <div class="page-head">
       <div style="display:flex;align-items:center;gap:12px;"><img src="${LOGO_ICON}" alt="FG" style="height:44px;width:auto;"><div><h1>Panel general</h1><p>Resumen de ventas, pólizas y comisiones — actualizado al ${fmtDate(todayISO())}</p></div></div>
@@ -913,6 +923,24 @@ function viewDashboard(){
       <div style="font-size:13px;">💾 ${diasRespaldo===999 ? 'Aún no has hecho un respaldo desde este dispositivo.' : `Han pasado ${diasRespaldo} días desde tu último respaldo.`} Se recomienda respaldar al menos una vez por semana.</div>
       <button class="btn btn-sm" id="btnRespaldoRecordatorio">Hacer respaldo ahora</button>
     </div>` : ''}
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card">
+        <div class="panel-title" style="margin-top:0;">Comisión FG — este mes vs. mes anterior</div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px;">
+          <div class="num" style="font-size:24px;font-weight:700;">${fmtMoney(cur.empresa)}</div>
+          <div style="font-size:13px;font-weight:600;color:${dEmpresa>=0?'#3D6B52':'#B8483A'};">${dEmpresa>=0?'▲':'▼'} ${Math.abs(dEmpresa).toFixed(0)}%</div>
+        </div>
+        <div class="hint">Mes anterior: ${fmtMoney(prev.empresa)} — ${cur.count} venta(s) este mes vs. ${prev.count||0} el mes pasado</div>
+      </div>
+      <div class="card">
+        <div class="panel-title" style="margin-top:0;">Ranking de aseguradoras (comisión FG histórica)</div>
+        ${rankingAseguradoras.length===0 ? `<div class="hint" style="margin-top:8px;">Aún no hay ventas registradas.</div>` : rankingAseguradoras.map(([nombre,monto])=>`
+          <div style="margin-top:8px;">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;"><span>${nombre}</span><span class="num" style="font-weight:600;">${fmtMoney(monto)}</span></div>
+            <div style="background:var(--border);height:6px;border-radius:3px;margin-top:3px;"><div style="background:var(--primary);height:6px;border-radius:3px;width:${maxRanking?(monto/maxRanking*100):0}%;"></div></div>
+          </div>`).join('')}
+      </div>
+    </div>
     ${totalTareas>0 ? `
     <div class="card" style="padding:14px 16px;margin-bottom:16px;border:1px solid var(--danger);background:var(--danger-soft);">
       <div style="font-weight:600;color:var(--danger);margin-bottom:8px;">✅ Tareas de hoy (${totalTareas})</div>
@@ -1214,8 +1242,9 @@ function viewVentas(){
   return `
     <div class="page-head">
       <div><h1>${tit.h1}</h1><p>${tit.sub}</p></div>
-      <div style="display:flex;gap:8px;"><button class="btn" id="btnExportVentas">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevaVenta">+ Registrar venta</button></div>
+      <div style="display:flex;gap:8px;"><button class="btn" id="btnPlantillaVentas">Plantilla histórico</button><button class="btn" id="btnCargaMasivaVentas">⬆ Cargar años pasados (Excel)</button><button class="btn" id="btnExportVentas">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevaVenta">+ Registrar venta</button></div>
     </div>
+    <input type="file" id="inputCargaMasivaVentas" accept=".xlsx,.xls" style="display:none;">
     ${esAsesorSesion() ? '' : seccionFlujoGlobal(`Comisiones de esta bitácora — ${tit.h1}`, resBitacora, true, soloPEN)}
     ${esAsesorSesion() ? '' : (bit==='oncologicos' || bit==='asesorias')
       ? `<div style="margin-bottom:16px;">${seccionFlujoGlobal('Canal directo', resDirecto, false, soloPEN)}</div>`
@@ -1283,6 +1312,87 @@ function wireVentas(){
     });
     exportExcel('ventas.xlsx', headers, rows);
   };
+  const btnPlantillaV = document.getElementById('btnPlantillaVentas'); if(btnPlantillaV) btnPlantillaV.onclick = () => {
+    const headers = ['Fecha de venta (AAAA-MM-DD)','Cliente','Documento cliente','Aseguradora','N° de póliza','Producto','Moneda (PEN/USD)','Prima bruta','% comisión aseguradora','% FG','Asesor (nombre, vacío = directa)','Forma de pago (contado/cupones/debito_automatico)','Inicio vigencia (AAAA-MM-DD)','Fin vigencia (AAAA-MM-DD)','Estado (Emitida/Anulada)'];
+    const ejemplo = ['2024-03-15', 'Textiles Andinos SAC', '20481234567', 'Rímac Seguros', 'RG-00123', 'Seguros Vehiculares', 'PEN', '1500', '18', '70', '', 'contado', '2024-03-15', '2025-03-15', 'Emitida'];
+    exportExcel('plantilla-carga-ventas-historicas.xlsx', headers, [ejemplo]);
+  };
+  const btnCargaV = document.getElementById('btnCargaMasivaVentas');
+  const inputCargaV = document.getElementById('inputCargaMasivaVentas');
+  if(btnCargaV && inputCargaV){
+    btnCargaV.onclick = () => inputCargaV.click();
+    inputCargaV.onchange = (e) => {
+      const file = e.target.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try{
+          const wb = XLSX.read(ev.target.result, { type:'binary' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const filas = XLSX.utils.sheet_to_json(ws, { defval:'' });
+          if(!filas.length){ alert('El archivo no tiene filas de datos.'); return; }
+          const norm = s => String(s||'').toLowerCase().trim();
+          const buscar = (fila, ...claves) => {
+            for(const key of Object.keys(fila)){
+              const k = norm(key);
+              if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim();
+            }
+            return '';
+          };
+          const buscarProducto = (fila) => {
+            const txt = norm(buscar(fila, 'producto'));
+            if(!txt) return 'seguros_vehiculares';
+            const match = todosLosProductos().find(r=> txt.includes(norm(r.label)) || norm(r.label).includes(txt));
+            return match ? match.id : 'seguros_vehiculares';
+          };
+          let creadas=0, clientesCreados=0, omitidas=0;
+          filas.forEach(fila => {
+            const nombreCliente = buscar(fila, 'cliente');
+            const fecha = buscar(fila, 'fecha de venta', 'fecha venta', 'fecha');
+            if(!nombreCliente || !fecha){ omitidas++; return; }
+            let cli = state.clientes.find(c=> norm(c.nombre)===norm(nombreCliente));
+            if(!cli){
+              cli = { id: uid(), nombre: nombreCliente, documento: buscar(fila,'documento'), tipoDocumento: buscar(fila,'documento').length===11?'RUC':'DNI', estadoContacto:'cliente', etiquetas:[] };
+              state.clientes.push(cli);
+              clientesCreados++;
+            }
+            const nombreAsesor = buscar(fila, 'asesor');
+            const asesor = nombreAsesor ? state.asesores.find(a=> norm(a.nombre)===norm(nombreAsesor)) : null;
+            const moneda = norm(buscar(fila,'moneda'))==='usd' ? 'USD' : 'PEN';
+            const primaBruta = parseFloat(buscar(fila,'prima bruta'))||0;
+            const pctAseguradora = parseFloat(buscar(fila,'% comisión aseguradora','comision aseguradora'))||0;
+            const primaNeta = primaBruta / FACTOR_PRIMA_NETA;
+            const comisionTotal = Math.round(primaNeta * (pctAseguradora/100) * 100)/100;
+            const porcentajeFG = parseFloat(buscar(fila,'% fg','fg'))||70;
+            const formaPago = norm(buscar(fila,'forma de pago')) || 'contado';
+            const estadoTxt = norm(buscar(fila,'estado'));
+            const nuevaVenta = {
+              id: uid(), folio: ++state.folioVenta,
+              clienteId: cli.id, asesorId: asesor?asesor.id:'', canalVenta:'directo',
+              aseguradora: buscar(fila,'aseguradora'), numeroPoliza: buscar(fila,'n° de póliza','n de poliza','poliza'),
+              tipoProducto: buscarProducto(fila), tipoVenta:'nueva',
+              fechaVenta: fecha, moneda, primaBruta, porcentajeComisionAseguradora: pctAseguradora,
+              modoComisionAseguradora:'porcentaje', comisionTotal, porcentajeFG,
+              tipoComisionAsesor: asesor ? 'porcentaje' : 'ninguna', valorComisionAsesor: 30,
+              formaPago: (formaPago==='cupones'||formaPago==='debito_automatico') ? formaPago : 'contado',
+              vigenciaInicio: buscar(fila,'inicio vigencia')||fecha, vigenciaFin: buscar(fila,'fin vigencia'),
+              estadoVenta: estadoTxt.includes('anulad') ? 'anulada' : 'emitida',
+              estadoComision:'pagada', estadoCobroFG:'cobrado', notas:'Cargada desde histórico',
+            };
+            state.ventas.push(nuevaVenta);
+            creadas++;
+          });
+          save(); render();
+          alert(`Carga completada: ${creadas} venta(s) histórica(s) agregada(s)${clientesCreados?`, ${clientesCreados} cliente(s) nuevo(s) creado(s)`:''}${omitidas?`, ${omitidas} fila(s) omitida(s) por falta de cliente o fecha`:''}.\n\nSe ordenan automáticamente por fecha en todas las pantallas.`);
+        }catch(err){
+          console.error(err);
+          alert('No se pudo leer el archivo. Verifica que sea un Excel válido con el formato de la plantilla.');
+        }
+      };
+      reader.readAsBinaryString(file);
+      e.target.value = '';
+    };
+  }
   const btn = document.getElementById('btnNuevaVenta'); if(btn) btn.onclick = () => {
     const bit = bitacoraDeTab();
     const productoFijo = bit==='oncologicos' ? 'seguro_oncologico' : bit==='asesorias' ? 'asesoria_contable' : null;
@@ -1308,9 +1418,6 @@ function wireVentas(){
     render();
   });
 }
-
-// ================= 2. REGISTRO DE POLIZAS =================
-let filtroPProducto='todos', filtroPTexto='';
 
 // ================= 3. REGISTRO DE COMISIONES =================
 let filtroComEstado='todas', filtroComAsesor='todos', filtroComMes='todos', filtroComAnio='todos';
@@ -1701,7 +1808,8 @@ function viewPolizas(){
     .reduce((s,v)=> s + (v.cantidadCuotas && v.comisionTotal ? 0 : 0) + (v.cronogramaCuotas && v.cronogramaCuotas.length ? (v.cronogramaCuotas.find(cc=>cc.fecha===v.proximaCuotaFecha)?.monto||0) : (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0)), 0);
 
   return `
-    <div class="page-head"><div><h1>Pólizas y Renovaciones</h1><p>Seguimiento de lo ya vendido: vigencia, cuotas y renovación. Para registrar una venta nueva, ve a "Venta de Seguros".</p></div><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div>
+    <div class="page-head"><div><h1>Pólizas y Renovaciones</h1><p>Seguimiento de lo ya vendido: vigencia, cuotas y renovación. Para registrar una venta nueva, ve a "Venta de Seguros".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button><button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
+    <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Cuotas atrasadas</div>
@@ -1798,6 +1906,97 @@ function wirePolizas(){
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; render(); };
   const e2 = document.getElementById('fPolCuota'); if(e2) e2.onchange = e=>{ filtroPolCuota=e.target.value; render(); };
   const btnQuitarTexto = document.getElementById('btnQuitarFiltroPolTexto'); if(btnQuitarTexto) btnQuitarTexto.onclick = () => { filtroPolTexto=''; render(); };
+  const btnPlantillaTPA = document.getElementById('btnPlantillaComisionesTPA'); if(btnPlantillaTPA) btnPlantillaTPA.onclick = () => {
+    const headers = ['Aseguradora','C_Nombre o Razón Social','Ramo','Asesor','N° de póliza','Estado','TPA S/','TPA $'];
+    const ejemplo = ['Rimac','CHIRINOS ALARCON ROCIO VIOLETA','Vehicular','Eduardo Flores','1637661','Vigente','','84.83'];
+    exportExcel('plantilla-comisiones-tpa.xlsx', headers, [ejemplo]);
+  };
+  const btnCargaTPA = document.getElementById('btnCargaComisionesTPA');
+  const inputCargaTPA = document.getElementById('inputCargaComisionesTPA');
+  if(btnCargaTPA && inputCargaTPA){
+    btnCargaTPA.onclick = () => inputCargaTPA.click();
+    inputCargaTPA.onchange = (e) => {
+      const file = e.target.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try{
+          const wb = XLSX.read(ev.target.result, { type:'binary' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const filas = XLSX.utils.sheet_to_json(ws, { defval:'' });
+          if(!filas.length){ alert('El archivo no tiene filas de datos.'); return; }
+          const norm = s => String(s||'').toLowerCase().trim();
+          const buscar = (fila, ...claves) => {
+            for(const key of Object.keys(fila)){
+              const k = norm(key);
+              if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim();
+            }
+            return '';
+          };
+          const buscarProducto = (ramoTxt) => {
+            const txt = norm(ramoTxt);
+            if(!txt) return 'seguros_vehiculares';
+            const match = todosLosProductos().find(r=> txt.includes(norm(r.label)) || norm(r.label).includes(txt));
+            return match ? match.id : 'seguros_vehiculares';
+          };
+          let actualizadas=0, creadas=0, clientesCreados=0, omitidas=0;
+          filas.forEach(fila => {
+            const numeroPoliza = buscar(fila, 'n° de póliza','n de poliza','póliza','poliza');
+            const nombreCliente = buscar(fila, 'c_nombre','razón social','razon social','nombre','cliente');
+            if(!numeroPoliza || !nombreCliente){ omitidas++; return; }
+            const tpaSoles = parseFloat(buscar(fila,'tpa s/','tpa soles'))||0;
+            const tpaDolares = parseFloat(buscar(fila,'tpa $','tpa usd','tpa dolares'))||0;
+            const moneda = tpaDolares>0 ? 'USD' : 'PEN';
+            const monto = tpaDolares>0 ? tpaDolares : tpaSoles;
+            const estadoTxt = norm(buscar(fila,'estado'));
+            const aseguradora = buscar(fila,'aseguradora');
+            const ramo = buscar(fila,'ramo');
+            const nombreAsesor = buscar(fila,'asesor');
+
+            let venta = state.ventas.find(v => v.numeroPoliza && norm(v.numeroPoliza)===norm(numeroPoliza));
+            if(venta){
+              venta.comisionTotal = monto || venta.comisionTotal;
+              venta.moneda = monto ? moneda : venta.moneda;
+              venta.modoComisionAseguradora = 'fijo';
+              if(estadoTxt) venta.estadoVenta = estadoTxt.includes('anulad')||estadoTxt.includes('vencid') ? (estadoTxt.includes('anulad')?'anulada':venta.estadoVenta) : 'emitida';
+              if(aseguradora) venta.aseguradora = aseguradora;
+              actualizadas++;
+            } else {
+              let cli = state.clientes.find(c=> norm(c.nombre)===norm(nombreCliente));
+              if(!cli){
+                cli = { id: uid(), nombre: nombreCliente, estadoContacto:'cliente', etiquetas:[] };
+                state.clientes.push(cli);
+                clientesCreados++;
+              }
+              const asesor = nombreAsesor ? state.asesores.find(a=> norm(a.nombre)===norm(nombreAsesor)) : null;
+              const nuevaVenta = {
+                id: uid(), folio: ++state.folioVenta,
+                clienteId: cli.id, asesorId: asesor?asesor.id:'', canalVenta:'directo',
+                aseguradora: aseguradora, numeroPoliza: numeroPoliza,
+                tipoProducto: buscarProducto(ramo), tipoVenta:'nueva',
+                fechaVenta: todayISO(), moneda, comisionTotal: monto,
+                modoComisionAseguradora:'fijo', porcentajeFG: 70,
+                tipoComisionAsesor: asesor ? 'porcentaje' : 'ninguna', valorComisionAsesor: 30,
+                formaPago:'contado',
+                vigenciaInicio: todayISO(), vigenciaFin:'',
+                estadoVenta: estadoTxt.includes('anulad') ? 'anulada' : 'emitida',
+                estadoComision:'pagada', estadoCobroFG:'cobrado', notas:'Creada desde carga de comisiones TPA — revisar fecha y vigencia.',
+              };
+              state.ventas.push(nuevaVenta);
+              creadas++;
+            }
+          });
+          save(); render();
+          alert(`Carga de comisiones completada:\n• ${actualizadas} póliza(s) existente(s) actualizada(s) con su comisión\n• ${creadas} póliza(s) nueva(s) creada(s)${clientesCreados?` (${clientesCreados} cliente(s) nuevo(s))`:''}\n${omitidas?`• ${omitidas} fila(s) omitida(s) por falta de N° de póliza o cliente\n`:''}\nLas pólizas nuevas se crearon sin fecha de vigencia — revísalas y complétalas en "Editar".`);
+        }catch(err){
+          console.error(err);
+          alert('No se pudo leer el archivo. Verifica que sea un Excel válido con el formato de la plantilla TPA.');
+        }
+      };
+      reader.readAsBinaryString(file);
+      e.target.value = '';
+    };
+  }
   document.querySelectorAll('[data-wa-cuota]').forEach(b=> b.onclick = () => {
     const v = state.ventas.find(v=>v.id===b.dataset.waCuota);
     if(!v) return;
@@ -1992,13 +2191,30 @@ function viewFichaCliente(id){
   const comisionTotalGenerada = ventasCliente.filter(v=>v.estadoVenta!=='anulada').reduce((s,v)=> s + fmtMonedaANumeroPEN(v.comisionTotal, v.moneda), 0);
   const est = ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo')) || ESTADOS_CONTACTO[0];
   const tagsHtml = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?`<span class="pill ${t.clase}" style="margin-right:4px;">${t.label}</span>`:''; }).join('') || '<span class="hint">Sin etiquetas</span>';
+
+  // ---- Riesgo de fuga: pólizas vencidas hace más de 30 días sin renovar ----
+  const polizasVencidasSinRenovar = ventasCliente.filter(v=> esSeguro(v.tipoProducto) && ventaActiva(v) && v.vigenciaFin && daysUntil(v.vigenciaFin) < -30);
+  const enRiesgo = polizasVencidasSinRenovar.length > 0;
+
+  // ---- Venta cruzada: productos de seguro que el cliente NO tiene contratados (activos) ----
+  const productosQueTiene = new Set(ventasCliente.filter(v=>ventaSeguroActiva(v)).map(v=>v.tipoProducto));
+  const sugerenciasCruzadas = todosLosProductos().filter(r=> r.categoria==='seguro' && !esOncologico(r.id) && !productosQueTiene.has(r.id)).slice(0,4);
+
   return `
     <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div>
+    ${enRiesgo ? `<div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--danger);background:var(--danger-soft);">
+      <div style="font-weight:600;color:var(--danger);">⚠ Cliente en riesgo de fuga</div>
+      <div style="font-size:13px;margin-top:4px;">Tiene ${polizasVencidasSinRenovar.length} póliza(s) vencida(s) hace más de 30 días sin renovar (${polizasVencidasSinRenovar.map(v=>prodLabel(v.tipoProducto)).join(', ')}). Contáctalo antes de que se vaya con otra compañía.</div>
+    </div>` : ''}
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card"><div class="label">Estado de contacto</div><div style="margin-top:6px;"><span class="pill pill-gold">${est.label}</span></div></div>
       <div class="card"><div class="label">Etiquetas</div><div style="margin-top:6px;">${tagsHtml}</div></div>
       <div class="card"><div class="label">Comisión total generada</div><div class="value num" style="margin-top:4px;">S/ ${comisionTotalGenerada.toFixed(2)}</div></div>
     </div>
+    ${sugerenciasCruzadas.length ? `<div class="card" style="margin-bottom:16px;background:var(--primary-soft);">
+      <div class="panel-title" style="margin-top:0;">💡 Oportunidad de venta cruzada</div>
+      <div style="font-size:13px;">Este cliente todavía no tiene: ${sugerenciasCruzadas.map(p=>`<span class="pill pill-gray" style="margin-right:4px;">${p.label}</span>`).join('')}</div>
+    </div>` : ''}
     <div class="card" style="margin-bottom:16px;">
       <div class="panel-title" style="margin-top:0;">Datos de contacto</div>
       <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:13.5px;">
@@ -2106,7 +2322,8 @@ function viewClientes(){
             const est = estadoInfo(c.estadoContacto);
             const colorContacto = { nuevo:'pill-gray', contactado:'pill-gold', interesado:'pill-gold', cotizacion_enviada:'pill-gold', cita_agendada:'pill-gold', cliente:'pill-green', no_interesado:'pill-red' }[est.id] || 'pill-gray';
             const tagsHtml = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?`<span class="pill ${t.clase}" style="margin-right:4px;">${t.label}</span>`:''; }).join('');
-            return `<tr><td><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);font-weight:600;">${c.nombre}</a></td><td>${c.documento?(c.tipoDocumento||'DNI')+' '+c.documento:'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tagsHtml||'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
+            const enRiesgo = ventasCliente.some(v=> esSeguro(v.tipoProducto) && ventaActiva(v) && v.vigenciaFin && daysUntil(v.vigenciaFin) < -30);
+            return `<tr><td><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);font-weight:600;">${c.nombre}</a>${enRiesgo?' <span class="pill pill-red" title="Póliza vencida hace más de 30 días sin renovar">⚠ Riesgo</span>':''}</td><td>${c.documento?(c.tipoDocumento||'DNI')+' '+c.documento:'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tagsHtml||'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -2500,6 +2717,8 @@ function wireModal(){
   let cronogramaActual = [];
   const cancel = document.getElementById('mCancel'); if(cancel) cancel.onclick = closeModal;
   const del = document.getElementById('mDelete'); if(del) del.onclick = () => {
+    const etiquetas = { venta:'esta venta', asesor:'este asesor', cliente:'este cliente (y perderás su historial de contacto)' };
+    if(!confirm(`¿Seguro que quieres eliminar ${etiquetas[editing.type]||'este registro'}? Esta acción no se puede deshacer.`)) return;
     if(editing.type==='venta'){ state.ventas = state.ventas.filter(v=>v.id!==editing.id); }
     if(editing.type==='asesor') state.asesores = state.asesores.filter(a=>a.id!==editing.id);
     if(editing.type==='cliente') state.clientes = state.clientes.filter(c=>c.id!==editing.id);
