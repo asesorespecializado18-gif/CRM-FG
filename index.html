@@ -314,6 +314,30 @@ let charts = {};
 let rankingPeriodo = 'mes';
 
 const uid = () => Math.random().toString(36).slice(2,10);
+function similitudNombres(a, b){
+  const s1 = String(a||'').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const s2 = String(b||'').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if(!s1 || !s2) return 0;
+  if(s1===s2) return 1;
+  const len1 = s1.length, len2 = s2.length;
+  const dp = Array.from({length:len1+1}, (_,i)=>[i, ...Array(len2).fill(0)]);
+  for(let j=0;j<=len2;j++) dp[0][j]=j;
+  for(let i=1;i<=len1;i++){
+    for(let j=1;j<=len2;j++){
+      dp[i][j] = s1[i-1]===s2[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  const dist = dp[len1][len2];
+  return 1 - dist / Math.max(len1, len2);
+}
+function buscarClientesDuplicados(nombre, documento, excluirId){
+  return state.clientes.filter(c=>{
+    if(c.id===excluirId) return false;
+    const mismoDoc = documento && c.documento && String(c.documento).trim()===String(documento).trim();
+    const nombreSimilar = similitudNombres(c.nombre, nombre) >= 0.87;
+    return mismoDoc || nombreSimilar;
+  });
+}
 const fmtMoney = n => 'S/ ' + (Number(n)||0).toLocaleString('es-PE', {minimumFractionDigits:2, maximumFractionDigits:2});
 const fmtUSD = n => 'US$ ' + (Number(n)||0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 const fmtMonedaVal = (n, moneda) => moneda==='USD' ? fmtUSD(n) : fmtMoney(n);
@@ -458,6 +482,19 @@ async function load(){
       if(!state.oficinas) state.oficinas = [];
       if(!state.tema) state.tema = 'claro';
       if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', passwordHash:null };
+      // Migración: completar tipoDocumento en clientes antiguos que no lo tenían (detecta RUC por longitud de 11 dígitos)
+      if(!state.tipoDocumentoMigrado && Array.isArray(state.clientes)){
+        let reparados = 0;
+        state.clientes.forEach(c=>{
+          if(!c.tipoDocumento){
+            const soloNumeros = String(c.documento||'').replace(/\D/g,'');
+            c.tipoDocumento = soloNumeros.length===11 ? 'RUC' : soloNumeros.length===8 ? 'DNI' : 'DNI';
+            reparados++;
+          }
+        });
+        state.tipoDocumentoMigrado = true;
+        if(reparados>0) save();
+      }
     }
   }catch(e){ console.error('No se pudo cargar', e); }
   seedIfEmpty();
@@ -2273,7 +2310,7 @@ function viewClientes(){
   const estadoInfo = id => ESTADOS_CONTACTO.find(e=>e.id===id) || ESTADOS_CONTACTO[0];
   const productosSeguro = todosLosProductos().filter(r=>r.categoria==='seguro');
   return `
-    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">Exportar a Excel</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
+    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">Exportar a Excel</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
     <div class="grid stat-row" style="margin-bottom:16px;">
       <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
@@ -2362,11 +2399,21 @@ function wireClientes(){
     exportExcel('clientes.xlsx', headers, rows);
   };
   const btnPlantilla = document.getElementById('btnPlantillaClientes'); if(btnPlantilla) btnPlantilla.onclick = () => {
-    const headers = ['Nombre / Razón social','DNI/RUC','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Marca','Modelo','Año','Suma Asegurada','Placa','Motor','Serie','Uso del vehículo','Aseguradora','N° Póliza','Inicio vigencia','Forma de pago','Banco Endosatario','Producto','OBS'];
-    const ejemplo = ['Textiles Andinos SAC', '20481234567', 'Av. Argentina 1234, Lima', 'Lima', '999888777', '', 'contacto@ejemplo.com', '', 'Toyota', 'Corolla', '2022', '25000', 'ABC-123', 'MT12345', 'SR98765', 'Particular', 'Rímac Seguros', 'RG-00123', '2026-08-01', 'Cupones', 'BBVA', 'Vehicular', 'Cliente referido'];
+    const headers = ['Nombre / Razón social','Tipo de documento (DNI/RUC/CE)','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Fecha de nacimiento','OBS'];
+    const ejemplo = ['Textiles Andinos SAC', 'RUC', '20481234567', 'Av. Argentina 1234, Lima', 'Lima', '999888777', '', 'contacto@ejemplo.com', '', 'Juan Pérez - Gerente', '', 'Cliente referido'];
     exportExcel('plantilla-carga-clientes.xlsx', headers, [ejemplo]);
   };
   const btn = document.getElementById('btnNuevoCliente'); if(btn) btn.onclick = ()=>{ editing={type:'cliente', id:null}; render(); };
+  const btnEliminarTodos = document.getElementById('btnEliminarTodosClientes'); if(btnEliminarTodos) btnEliminarTodos.onclick = () => {
+    const total = state.clientes.length;
+    if(total===0){ alert('No hay clientes registrados.'); return; }
+    if(!confirm(`Vas a eliminar TODOS los ${total} clientes registrados. Esta acción no se puede deshacer.\n\nRecomendación: haz un respaldo antes de continuar (botón "Guardar respaldo" en el menú lateral).\n\n¿Deseas continuar?`)) return;
+    const texto = prompt(`Para confirmar, escribe la palabra ELIMINAR en mayúsculas:`);
+    if(texto !== 'ELIMINAR'){ alert('No se eliminó nada — el texto no coincidió.'); return; }
+    state.clientes = [];
+    save(); render();
+    alert('Se eliminaron todos los clientes. Las ventas registradas se conservan, pero quedarán sin cliente asociado hasta que vuelvas a cargarlos.');
+  };
   document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
 
   const btnCarga = document.getElementById('btnCargaMasiva');
@@ -2391,13 +2438,18 @@ function wireClientes(){
             }
             return '';
           };
-          const buscarProducto = (fila) => {
-            const txt = norm(buscar(fila, 'producto', 'tipo de seguro', 'tipo seguro', 'ramo'));
-            if(!txt) return '';
-            const match = TIPOS_SEGURO_CLIENTE.find(t=> txt.includes(norm(t.label)) || txt.includes(t.id));
-            return match ? match.id : '';
+          const buscarTipoDoc = (fila, documento) => {
+            const txt = norm(buscar(fila, 'tipo de documento', 'tipo documento'));
+            if(txt.includes('ruc')) return 'RUC';
+            if(txt.includes('ce') || txt.includes('extranjer')) return 'CE';
+            if(txt.includes('dni')) return 'DNI';
+            const soloNumeros = String(documento||'').replace(/\D/g,'');
+            if(soloNumeros.length===11) return 'RUC';
+            if(soloNumeros.length===8) return 'DNI';
+            return 'DNI';
           };
-          let creados=0, actualizados=0, omitidos=0;
+          let creados=0, actualizados=0, omitidos=0, posiblesDuplicados=0;
+          const nombresDuplicados = [];
           filas.forEach(fila => {
             const nombre = buscar(fila, 'nombre', 'razón', 'razon');
             if(!nombre){ omitidos++; return; }
@@ -2405,6 +2457,7 @@ function wireClientes(){
             const data = {
               nombre,
               documento,
+              tipoDocumento: buscarTipoDoc(fila, documento),
               celular1: buscar(fila, 'celular 1', 'celular1', 'telefono', 'teléfono', 'celular'),
               celular2: buscar(fila, 'celular 2', 'celular2'),
               email: buscar(fila, 'correo 1', 'correo1', 'correo', 'email'),
@@ -2412,29 +2465,26 @@ function wireClientes(){
               direccion: buscar(fila, 'dirección', 'direccion'),
               ciudad: buscar(fila, 'ciudad'),
               personaContacto: buscar(fila, 'persona de contacto', 'contacto'),
-              tipoSeguro: buscarProducto(fila),
-              aseguradoraPreferida: buscar(fila, 'aseguradora'),
-              numeroPoliza: buscar(fila, 'n° póliza', 'n poliza', 'poliza', 'nro poliza'),
-              inicioVigencia: buscar(fila, 'inicio vigencia', 'vigencia'),
-              formaPago: buscar(fila, 'forma de pago', 'forma pago'),
-              vehiculoMarca: buscar(fila, 'marca'),
-              vehiculoModelo: buscar(fila, 'modelo'),
-              vehiculoAnio: buscar(fila, 'año', 'anio'),
-              sumaAsegurada: buscar(fila, 'suma asegurada'),
-              placa: buscar(fila, 'placa'),
-              motor: buscar(fila, 'motor'),
-              chasis: buscar(fila, 'serie', 'chasis'),
-              usoVehiculo: buscar(fila, 'uso del vehiculo', 'uso vehiculo', 'uso'),
-              bancoEndosatario: buscar(fila, 'banco endosatario', 'banco'),
+              fechaNacimiento: buscar(fila, 'fecha de nacimiento', 'fecha nacimiento', 'nacimiento'),
               datosAdicionales: buscar(fila, 'obs', 'observaciones', 'datos adicionales'),
             };
             const existente = documento ? state.clientes.find(c=>c.documento && c.documento===documento) : null;
-            if(existente){ Object.assign(existente, data); actualizados++; }
-            else { data.id = uid(); state.clientes.push(data); creados++; }
+            if(existente){ Object.assign(existente, data); actualizados++; return; }
+            // sin coincidencia exacta de documento: revisar si el nombre es muy parecido a uno ya existente (posible duplicado)
+            const parecido = state.clientes.find(c=> similitudNombres(c.nombre, nombre) >= 0.87);
+            if(parecido){
+              posiblesDuplicados++;
+              nombresDuplicados.push(`${nombre} (parecido a: ${parecido.nombre})`);
+              return; // no se crea automáticamente; hay que revisarlo a mano
+            }
+            data.id = uid(); data.estadoContacto='nuevo'; data.etiquetas=[]; state.clientes.push(data); creados++;
           });
           save();
           render();
-          alert(`Carga masiva completada:\n• ${creados} clientes nuevos\n• ${actualizados} actualizados (mismo documento)\n${omitidos ? `• ${omitidos} filas omitidas (sin nombre)` : ''}`);
+          let msg = `Carga masiva completada:\n• ${creados} clientes nuevos\n• ${actualizados} actualizados (mismo documento)`;
+          if(omitidos) msg += `\n• ${omitidos} filas omitidas (sin nombre)`;
+          if(posiblesDuplicados) msg += `\n• ${posiblesDuplicados} fila(s) NO se crearon por parecer duplicadas de un cliente ya existente:\n${nombresDuplicados.slice(0,10).join('\n')}${nombresDuplicados.length>10?'\n...':''}\n\nRevísalas manualmente si quieres agregarlas de todas formas.`;
+          alert(msg);
         }catch(err){
           console.error(err);
           alert('No se pudo leer el archivo. Verifica que sea un Excel (.xlsx) y que tenga la columna "Nombre".');
@@ -2622,6 +2672,7 @@ function modalVenta(){
     <div class="field-row">
       <div class="field"><label>Estado de la venta</label><select id="mEstadoVenta" style="width:100%;"><option value="emitida" ${v.estadoVenta==='emitida'?'selected':''}>Emitida</option><option value="anulada" ${v.estadoVenta==='anulada'?'selected':''}>Anulada</option></select></div>
       <div class="field"><label>Estado de pago al asesor</label><select id="mEstadoPago" style="width:100%;"><option value="pendiente" ${v.estadoComision==='pendiente'?'selected':''}>Pendiente</option><option value="pagada" ${v.estadoComision==='pagada'?'selected':''}>Pagada</option></select></div>
+      <div class="field" id="mFilaFechaPagoComision" style="${v.estadoComision==='pagada'?'':'display:none;'}"><label>Fecha de pago de la comisión</label><input type="date" id="mFechaPagoComision" style="width:100%;" value="${v.fechaPagoComision||''}"></div>
     </div>
     <div class="field"><label>Notas</label><textarea id="mNotas" style="width:100%;min-height:56px;">${v.notas||''}</textarea></div>
     <div class="modal-actions">
@@ -2847,6 +2898,13 @@ function wireModal(){
     prodSel.onchange = () => { if(!editing.id){ tipoSel.value = esSeguro(prodSel.value) ? 'porcentaje' : 'fijo'; } toggleModoComision(); };
     if(vigenciaInicioInput) vigenciaInicioInput.onchange = () => { if(vigenciaInicioInput.value) vigenciaFinInput.value = addYears(vigenciaInicioInput.value, 1); };
     const formaPagoSel = document.getElementById('mFormaPago');
+    const estadoPagoSel = document.getElementById('mEstadoPago');
+    const filaFechaPagoComision = document.getElementById('mFilaFechaPagoComision');
+    if(estadoPagoSel && filaFechaPagoComision) estadoPagoSel.onchange = () => {
+      filaFechaPagoComision.style.display = estadoPagoSel.value==='pagada' ? '' : 'none';
+      const fechaInput = document.getElementById('mFechaPagoComision');
+      if(estadoPagoSel.value==='pagada' && fechaInput && !fechaInput.value) fechaInput.value = todayISO();
+    };
     const filaCuotas = document.getElementById('mFilaCantidadCuotas');
     const cantidadCuotasInput = document.getElementById('mCantidadCuotas');
     const filaSeguimientoCuotas = document.getElementById('mFilaSeguimientoCuotas');
@@ -3003,6 +3061,7 @@ function wireModal(){
         valorComisionAsesor: parseFloat(document.getElementById('mValorComAsesor').value)||0,
         estadoVenta: document.getElementById('mEstadoVenta').value,
         estadoComision: document.getElementById('mEstadoPago').value,
+        fechaPagoComision: document.getElementById('mEstadoPago').value==='pagada' ? (document.getElementById('mFechaPagoComision').value || todayISO()) : '',
         notas: document.getElementById('mNotas').value,
       };
       if(pendingPolizaPDF!==undefined){
@@ -3051,6 +3110,12 @@ function wireModal(){
         datosAdicionales: document.getElementById('mDatosAdicionales').value.trim(),
       };
       if(!data.nombre){ alert('Escribe el nombre del cliente.'); return; }
+      const duplicados = buscarClientesDuplicados(data.nombre, data.documento, editing.id);
+      if(duplicados.length && !editing.duplicadoConfirmado){
+        const lista = duplicados.slice(0,5).map(c=>`• ${c.nombre}${c.documento?' — '+c.documento:''}`).join('\n');
+        if(!confirm(`Ya existe${duplicados.length>1?'n':''} ${duplicados.length} cliente(s) con el mismo documento o un nombre muy parecido:\n\n${lista}\n\n¿Seguro que quieres guardar esto como un cliente nuevo/distinto?`)) return;
+        editing.duplicadoConfirmado = true;
+      }
       if(editing.id){ Object.assign(state.clientes.find(c=>c.id===editing.id), data); }
       else{ data.id = uid(); state.clientes.push(data); }
       if(editing.returnTo==='venta'){ const newId = editing.id || data.id; editing = { type:'venta', id: editing.ventaEditId||null, productoFijo: editing.productoFijo, preselectClienteId: newId }; render(); return; }
