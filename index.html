@@ -954,6 +954,7 @@ function viewDashboard(){
   return `
     <div class="page-head">
       <div style="display:flex;align-items:center;gap:12px;"><img src="${LOGO_ICON}" alt="FG" style="height:44px;width:auto;"><div><h1>Panel general</h1><p>Resumen de ventas, pólizas y comisiones — actualizado al ${fmtDate(todayISO())}</p></div></div>
+      <div style="display:flex;gap:8px;"><button class="btn" id="btnSimuladorComision">🧮 Simulador de comisión</button><button class="btn" id="btnExportarTodo">⬇ Exportar todo (Excel)</button></div>
     </div>
     ${diasRespaldo >= 7 ? `
     <div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--border);background:var(--primary-soft);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -991,7 +992,7 @@ function viewDashboard(){
         return `<div style="font-size:13px;margin-bottom:3px;display:flex;justify-content:space-between;gap:8px;"><span>📅 Vence en ${d} día(s) — <b>${cli?cli.nombre:'—'}</b> (${prodLabel(v.tipoProducto)})</span><button class="btn btn-ghost btn-sm" data-tarea-wa-renov="${v.id}">📲</button></div>`;
       }).join('')}
       ${alertas.porVencer.length > urgentes.length ? `<div style="font-size:13px;margin-bottom:3px;">📅 <b>${alertas.porVencer.length - urgentes.length}</b> póliza(s) más por vencer en 30 días — <a href="#" class="link-inline" data-goto="polizas">ver todas</a></div>` : ''}
-      ${cumples.map(({c,diff})=>`<div style="font-size:13px;margin-bottom:3px;">🎂 ${diff===0?'Hoy':'En '+diff+' día(s)'} cumple años <b>${c.nombre}</b></div>`).join('')}
+      ${cumples.map(({c,diff})=>`<div style="font-size:13px;margin-bottom:3px;display:flex;justify-content:space-between;gap:8px;"><span>🎂 ${diff===0?'Hoy':'En '+diff+' día(s)'} cumple años <b>${c.nombre}</b></span>${(c.celular1||c.telefono) ? `<button class="btn btn-ghost btn-sm" data-tarea-wa-cumple="${c.id}">📲</button>` : ''}</div>`).join('')}
       ${alertas.cuotasAtrasadas.length ? `<div style="font-size:12px;margin-top:6px;"><a href="#" class="link-inline" data-goto="polizas">Ver todas las cuotas atrasadas</a></div>` : ''}
       <button class="btn btn-sm" id="btnWhatsAppResumen" style="margin-top:8px;">📲 Enviarme este resumen por WhatsApp</button>
     </div>` : ''}
@@ -1194,7 +1195,88 @@ function drawDashboardCharts(){
   });
 }
 
+function abrirSimuladorComision(){
+  const host = document.createElement('div');
+  host.id = 'simuladorHost';
+  host.innerHTML = `
+    <div class="modal-backdrop"><div class="modal">
+      <h2>🧮 Simulador de comisión</h2>
+      <p class="modal-hint">Calcula rápido cuánto te correspondería, sin registrar la venta todavía.</p>
+      <div class="field"><label>Prima bruta</label><input type="number" step="0.01" id="simPrimaBruta" style="width:100%;" placeholder="Monto con impuestos"></div>
+      <div class="field-row">
+        <div class="field"><label>Moneda</label><select id="simMoneda" style="width:100%;"><option value="PEN">Soles (S/)</option><option value="USD">Dólares (US$)</option></select></div>
+        <div class="field"><label>% comisión aseguradora</label><input type="number" step="0.01" id="simPctAseguradora" style="width:100%;" placeholder="Ej. 18"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>% FG sobre el total</label><select id="simPctFG" style="width:100%;"><option value="50">50%</option><option value="60">60%</option><option value="70" selected>70%</option><option value="100">100%</option></select></div>
+        <div class="field"><label>% para el asesor (sobre el total)</label><input type="number" step="0.01" id="simPctAsesor" style="width:100%;" placeholder="Ej. 30"></div>
+      </div>
+      <div id="simResultado" style="background:var(--primary-soft);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:10px;font-size:13.5px;"></div>
+      <div class="modal-actions"><button class="btn" id="simCerrar">Cerrar</button></div>
+    </div></div>`;
+  document.body.appendChild(host);
+  const calcular = () => {
+    const primaBruta = parseFloat(document.getElementById('simPrimaBruta').value)||0;
+    const moneda = document.getElementById('simMoneda').value;
+    const pctAseguradora = parseFloat(document.getElementById('simPctAseguradora').value)||0;
+    const pctFG = parseFloat(document.getElementById('simPctFG').value)||70;
+    const pctAsesor = parseFloat(document.getElementById('simPctAsesor').value)||0;
+    const primaNeta = primaBruta / FACTOR_PRIMA_NETA;
+    const comisionTotal = primaNeta * (pctAseguradora/100);
+    const comisionFGMonto = comisionTotal * (pctFG/100);
+    const comisionAsesorMonto = comisionTotal * (pctAsesor/100);
+    const margenFG = comisionFGMonto - comisionAsesorMonto;
+    const simbolo = moneda==='USD' ? 'US$' : 'S/';
+    document.getElementById('simResultado').innerHTML = `
+      <div>Prima neta: <b class="num">${simbolo} ${primaNeta.toFixed(2)}</b></div>
+      <div>Comisión total de la aseguradora (100%): <b class="num">${simbolo} ${comisionTotal.toFixed(2)}</b></div>
+      <div>Comisión FG (${pctFG}%): <b class="num">${simbolo} ${comisionFGMonto.toFixed(2)}</b></div>
+      <div>Comisión para el asesor: <b class="num">${simbolo} ${comisionAsesorMonto.toFixed(2)}</b></div>
+      <div>Margen neto para FG: <b class="num">${simbolo} ${margenFG.toFixed(2)}</b></div>
+    `;
+  };
+  ['simPrimaBruta','simMoneda','simPctAseguradora','simPctFG','simPctAsesor'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', calcular);
+    document.getElementById(id).addEventListener('change', calcular);
+  });
+  calcular();
+  document.getElementById('simCerrar').onclick = () => host.remove();
+}
+function exportarTodoExcel(){
+  const wb = XLSX.utils.book_new();
+  const wsClientes = XLSX.utils.aoa_to_sheet([
+    ['Nombre','Tipo doc','Documento','Celular 1','Correo','Ciudad','Estado de contacto'],
+    ...state.clientes.map(c=>[c.nombre, c.tipoDocumento||'DNI', c.documento||'', c.celular1||c.telefono||'', c.email||'', c.ciudad||'', (ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo'))||{}).label||''])
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsClientes, 'Clientes');
+  const wsVentas = XLSX.utils.aoa_to_sheet([
+    ['Folio','Cliente','Aseguradora','N° póliza','Producto','Asesor','Fecha','Moneda','Comisión 100%','Comisión asesor','Estado'],
+    ...state.ventas.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      const ase = state.asesores.find(a=>a.id===v.asesorId);
+      return [folioV(v.folio), cli?cli.nombre:'', v.aseguradora||'', v.numeroPoliza||'', prodLabel(v.tipoProducto), ase?ase.nombre:'Directa', v.fechaVenta, v.moneda==='USD'?'USD':'PEN', Number(v.comisionTotal)||0, comisionAsesor(v), v.estadoVenta==='anulada'?'Anulada':'Emitida'];
+    })
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsVentas, 'Ventas');
+  const wsComisiones = XLSX.utils.aoa_to_sheet([
+    ['Folio','Cliente','Asesor','Comisión FG','Comisión asesor','Estado pago','Fecha de pago'],
+    ...state.ventas.filter(v=>ventaSeguroActiva(v)).map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      const ase = state.asesores.find(a=>a.id===v.asesorId);
+      return [folioV(v.folio), cli?cli.nombre:'', ase?ase.nombre:'Directa', comisionFG(v), comisionAsesor(v), v.estadoComision==='pagada'?'Pagada':'Pendiente', v.estadoComision==='pagada'?v.fechaPagoComision:''];
+    })
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsComisiones, 'Comisiones');
+  const wsAsesores = XLSX.utils.aoa_to_sheet([
+    ['Nombre','Teléfono','Email','# Ventas'],
+    ...state.asesores.map(a=>[a.nombre, a.telefono||'', a.email||'', state.ventas.filter(v=>v.asesorId===a.id && ventaSeguroActiva(v)).length])
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsAsesores, 'Asesores');
+  XLSX.writeFile(wb, `crm-fg-exportacion-completa-${todayISO()}.xlsx`);
+}
 function wireDashboard(){
+  const btnSim = document.getElementById('btnSimuladorComision'); if(btnSim) btnSim.onclick = abrirSimuladorComision;
+  const btnExpTodo = document.getElementById('btnExportarTodo'); if(btnExpTodo) btnExpTodo.onclick = exportarTodoExcel;
   const btn = document.getElementById('btnEditarMetas'); if(btn) btn.onclick = () => { editing = {type:'metas'}; render(); };
   const btnResp = document.getElementById('btnRespaldoRecordatorio'); if(btnResp) btnResp.onclick = descargarRespaldo;
   const sel = document.getElementById('fRankingPeriodo'); if(sel) sel.onchange = e => { rankingPeriodo = e.target.value; render(); };
@@ -1214,6 +1296,12 @@ function wireDashboard(){
     const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que su ${prodLabel(v.tipoProducto)} con ${v.aseguradora||'nuestra compañía'} vence el ${fmtDate(v.vigenciaFin)}.\nPor favor coordine con nosotros la renovación para evitar interrupciones en su cobertura.\n\nQuedamos atentos.`;
     const tel = cli ? (cli.celular1||cli.telefono||'') : '';
     window.open(linkWhatsApp(tel, mensaje), '_blank');
+  });
+  document.querySelectorAll('[data-tarea-wa-cumple]').forEach(b=> b.onclick = () => {
+    const cli = state.clientes.find(c=>c.id===b.dataset.tareaWaCumple);
+    if(!cli) return;
+    const mensaje = `¡Feliz cumpleaños, ${cli.nombre}! 🎉 Te deseamos un día increíble. Un gran abrazo de parte de todo el equipo.`;
+    window.open(linkWhatsApp(cli.celular1||cli.telefono||'', mensaje), '_blank');
   });
   const btnWA = document.getElementById('btnWhatsAppResumen'); if(btnWA) btnWA.onclick = () => {
     const alertas = alertasPendientes();
@@ -3072,6 +3160,13 @@ function wireModal(){
       if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
       if(esSeguro(tipoProductoSel) && modoComisionAseguradora!=='fijo' && !data.primaBruta){ irAPestanaModal('comisiones'); const el=document.getElementById('mPrimaBruta'); if(el) el.style.borderColor='var(--danger)'; mostrarErrorModal('Falta ingresar la Prima bruta (pestaña "Comisiones").'); return; }
       if(!data.comisionTotal || data.comisionTotal<=0){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
+      if(data.numeroPoliza){
+        const polizaDuplicada = state.ventas.find(v=> v.id!==editing.id && v.numeroPoliza && String(v.numeroPoliza).trim().toLowerCase()===String(data.numeroPoliza).trim().toLowerCase());
+        if(polizaDuplicada){
+          const cliDup = state.clientes.find(c=>c.id===polizaDuplicada.clienteId);
+          if(!confirm(`Ya existe otra venta con el N° de póliza "${data.numeroPoliza}" (folio ${folioV(polizaDuplicada.folio)}, cliente: ${cliDup?cliDup.nombre:'—'}).\n\n¿Es un error de tipeo? Cancela para revisar. Si estás seguro de que es correcto (por ejemplo, una renovación con el mismo número), presiona Aceptar para continuar.`)) { irAPestanaModal('poliza'); return; }
+        }
+      }
       if(editing.id){
         const existing = state.ventas.find(v=>v.id===editing.id);
         if(data.estadoComision==='pagada' && existing.estadoComision!=='pagada') data.fechaPagoComision = todayISO();
