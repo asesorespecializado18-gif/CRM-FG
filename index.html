@@ -170,7 +170,11 @@
     <button class="nav-btn" data-tab="cobro_comisiones"><span class="nav-icon">④</span>Cobro de comisiones</button>
     <button class="nav-btn" data-tab="pago_comisiones"><span class="nav-icon">⑤</span>Pago de comisiones</button>
     <div class="nav-group-label">Seguimiento</div>
-    <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Pólizas y Renovaciones</button>
+    <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
+    <button class="nav-btn" data-tab="cobranzas"><span class="nav-icon">💰</span>Cobranzas</button>
+    <button class="nav-btn" data-tab="soat"><span class="nav-icon">🚗</span>SOAT y Beneficios</button>
+    <button class="nav-btn" data-tab="pipeline"><span class="nav-icon">🗂</span>Pipeline de prospectos</button>
+    <button class="nav-btn" data-tab="siniestros"><span class="nav-icon">⚠</span>Siniestros</button>
     <div class="nav-group-label">Directorio</div>
     <button class="nav-btn" data-tab="asesores"><span class="nav-icon">☺</span>Asesores</button>
     <div class="sidebar-foot">
@@ -210,6 +214,53 @@ try{
   fbDb.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
 }catch(e){ console.error('No se pudo inicializar Firebase', e); }
 const FB_DOC_REF = () => fbDb.collection('crm').doc('main');
+const FB_FILES_COL = () => fbDb.collection('crm_archivos');
+const FB_ARCHIVO_REF = () => fbDb.collection('crm_historico').doc('ventas_archivadas');
+async function archivarVentasAntiguas(){
+  const hace24Meses = new Date(); hace24Meses.setMonth(hace24Meses.getMonth()-24);
+  const hace24MesesISO = hace24Meses.toISOString().slice(0,10);
+  const aArchivar = state.ventas.filter(v => v.estadoVenta==='anulada' || (v.vigenciaFin && v.vigenciaFin < hace24MesesISO));
+  if(aArchivar.length===0){ alert('No hay ventas antiguas para archivar por ahora (más de 24 meses vencidas, o anuladas).'); return; }
+  if(!confirm(`Se van a archivar ${aArchivar.length} venta(s) antigua(s) (anuladas o vencidas hace más de 24 meses).\n\nNo se borran — quedan guardadas aparte en la nube, y las puedes descargar en Excel cuando quieras. Solo se quitan de la vista principal para liberar espacio.\n\n¿Continuar?`)) return;
+  try{
+    const snap = await FB_ARCHIVO_REF().get();
+    const existentes = snap.exists ? (snap.data().ventas||[]) : [];
+    await FB_ARCHIVO_REF().set({ ventas: existentes.concat(aArchivar), actualizado: new Date().toISOString() });
+    const idsArchivados = new Set(aArchivar.map(v=>v.id));
+    state.ventas = state.ventas.filter(v=>!idsArchivados.has(v.id));
+    save(); render();
+    alert(`Listo: se archivaron ${aArchivar.length} venta(s). Tu documento principal ahora pesa menos.`);
+  }catch(err){
+    alert('No se pudo archivar: ' + err.message);
+  }
+}
+async function descargarVentasArchivadas(){
+  try{
+    const snap = await FB_ARCHIVO_REF().get();
+    const ventas = snap.exists ? (snap.data().ventas||[]) : [];
+    if(ventas.length===0){ alert('No tienes ventas archivadas todavía.'); return; }
+    const headers = ['Folio','Cliente','Aseguradora','N° póliza','Producto','Fecha','Estado','Comisión 100%'];
+    const rows = ventas.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [folioV(v.folio), cli?cli.nombre:'', v.aseguradora||'', v.numeroPoliza||'', prodLabel(v.tipoProducto), v.fechaVenta||'', v.estadoVenta==='anulada'?'Anulada':'Vencida (archivada)', Number(v.comisionTotal)||0];
+    });
+    exportExcel('ventas-archivadas.xlsx', headers, rows);
+  }catch(err){
+    alert('No se pudo descargar: ' + err.message);
+  }
+}
+async function guardarArchivoFirebase(nombre, dataUrl){
+  const id = uid() + Date.now().toString(36);
+  await FB_FILES_COL().doc(id).set({ nombre, data: dataUrl, fecha: new Date().toISOString() });
+  return id;
+}
+async function obtenerArchivoFirebase(id){
+  const snap = await FB_FILES_COL().doc(id).get();
+  return snap.exists ? snap.data() : null;
+}
+async function eliminarArchivoFirebase(id){
+  try{ await FB_FILES_COL().doc(id).delete(); }catch(e){ console.error('No se pudo eliminar el archivo de la nube', e); }
+}
 
 (function(){
 
@@ -220,6 +271,7 @@ const GOOGLE_CLIENT_ID = '1088791422687-j8ho3uu4ntc0mqu6qdi62jk8bkao6sdd.apps.go
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const PRODUCTOS = [
   { id:'seguros_vehiculares', label:'Seguros Vehiculares', categoria:'seguro' },
+  { id:'soat', label:'SOAT', categoria:'seguro' },
   { id:'sctr_pension', label:'SCTR Pensión', categoria:'seguro' },
   { id:'sctr_salud', label:'SCTR Salud', categoria:'seguro' },
   { id:'vida_ley', label:'Vida Ley', categoria:'seguro' },
@@ -256,6 +308,18 @@ const ASEGURADORAS_DEFAULT = [
   'Rigel','Vida Cámara','Sura Perú','Pacífico EPS','Rímac EPS','Mapfre EPS','Sanitas Perú EPS',
 ];
 
+const TIPOS_BENEFICIO = [
+  { id:'soat_gratis', label:'SOAT Gratis' },
+  { id:'gps', label:'GPS' },
+  { id:'cuota_gratis', label:'Cuota Gratis' },
+  { id:'otro', label:'Otro beneficio' },
+];
+const ESTADOS_SINIESTRO = [
+  { id:'reportado', label:'Reportado', clase:'pill-gray' },
+  { id:'en_evaluacion', label:'En evaluación', clase:'pill-gold' },
+  { id:'liquidado', label:'Liquidado', clase:'pill-green' },
+  { id:'rechazado', label:'Rechazado', clase:'pill-red' },
+];
 const TIPOS_SEGURO_CLIENTE = [
   { id:'vehicular', label:'Vehicular' },
   { id:'soat', label:'SOAT' },
@@ -302,7 +366,7 @@ const CIUDADES_PERU = [
   'Otuzco','Virú','Casma','Pativilca','Supe','Vitarte','San Vicente de Cañete','Otra ciudad',
 ];
 
-let state = { clientes: [], asesores: [], ventas: [], folioVenta: 0, metas: { general: 0, porAsesor: {} }, aseguradoras: ASEGURADORAS_DEFAULT.slice(), oficinas: [], tipoCambio: 3.75, productosPersonalizados: [], tema: 'claro', auth: { email: 'asesorespecializado18@gmail.com', passwordHash: null } };
+let state = { clientes: [], asesores: [], ventas: [], siniestros: [], folioVenta: 0, folioSiniestro: 0, metas: { general: 0, porAsesor: {} }, aseguradoras: ASEGURADORAS_DEFAULT.slice(), oficinas: [], tipoCambio: 3.75, productosPersonalizados: [], tema: 'claro', auth: { email: 'asesorespecializado18@gmail.com', dni: '46806411', passwordHash: null } };
 let sesionIniciada = false;
 let sesionUsuario = null; // { rol:'admin' } o { rol:'asesor', asesorId, nombre }
 function esAsesorSesion(){ return !!(sesionUsuario && sesionUsuario.rol==='asesor'); }
@@ -352,6 +416,7 @@ const monthKey = d => d ? d.slice(0,7) : '';
 const monthLabel = (key) => { const [y,m]=key.split('-'); const names=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']; return names[parseInt(m,10)-1]+' '+y.slice(2); };
 const todayISO = () => new Date().toISOString().slice(0,10);
 const addYears = (d,n) => { const dt = new Date(d); dt.setFullYear(dt.getFullYear()+n); return dt.toISOString().slice(0,10); };
+const addDaysISO = (d,n) => { const dt = new Date(d); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date(todayISO())) / 86400000);
 
 function normalizarTelefonoPeru(tel){
@@ -473,15 +538,18 @@ async function load(){
     }
     if(raw){
       const d = JSON.parse(raw);
-      state = Object.assign({clientes:[],asesores:[],ventas:[],folioVenta:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',passwordHash:null}}, d);
+      state = Object.assign({clientes:[],asesores:[],ventas:[],siniestros:[],folioVenta:0,folioSiniestro:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',dni:'46806411',passwordHash:null}}, d);
       if(!state.productosPersonalizados) state.productosPersonalizados = [];
       if(!state.metas) state.metas = { general:0, porAsesor:{} };
       if(!state.metas.porAsesor) state.metas.porAsesor = {};
       if(!state.aseguradorasMigradas3){ state.aseguradoras = ASEGURADORAS_DEFAULT.slice(); state.aseguradorasMigradas3 = true; }
       else if(!state.aseguradoras || !state.aseguradoras.length) state.aseguradoras = ASEGURADORAS_DEFAULT.slice();
       if(!state.oficinas) state.oficinas = [];
+      if(!state.siniestros) state.siniestros = [];
+      if(!state.folioSiniestro) state.folioSiniestro = 0;
       if(!state.tema) state.tema = 'claro';
-      if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', passwordHash:null };
+      if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', dni:'46806411', passwordHash:null };
+      if(!state.auth.dni) state.auth.dni = '46806411';
       // Migración: completar tipoDocumento en clientes antiguos que no lo tenían (detecta RUC por longitud de 11 dígitos)
       if(!state.tipoDocumentoMigrado && Array.isArray(state.clientes)){
         let reparados = 0;
@@ -618,7 +686,7 @@ function renderLogin(){
         <img src="${LOGO_FULL}" alt="Flores & Gonzales Asociados" style="max-width:220px;width:100%;height:auto;margin-bottom:10px;">
         <p>Ingresa con tu correo y contraseña.</p>
         <div id="loginError"></div>
-        <div class="field"><label>Correo electrónico</label><input type="text" id="lEmail" style="width:100%;" placeholder="correo@ejemplo.com"></div>
+        <div class="field"><label>Correo electrónico o DNI</label><input type="text" id="lEmail" style="width:100%;" placeholder="correo@ejemplo.com o tu DNI"></div>
         <div class="field"><label>Contraseña</label><input type="password" id="lPass" style="width:100%;" placeholder="••••••••"></div>
         <button class="btn btn-primary" id="btnLogin" style="width:100%;margin-top:6px;">Ingresar</button>
         <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--ink-faint);">¿Es tu primera vez en este dispositivo?<br><a href="#" id="lnkRestaurarLogin" class="link-inline">Restaurar datos desde un respaldo</a></div>
@@ -651,9 +719,11 @@ function renderLogin(){
       checkAuthAndRender();
     } else {
       const correo = document.getElementById('lEmail').value.trim().toLowerCase();
-      if(!correo){ errEl.innerHTML = `<div class="login-error">Escribe tu correo.</div>`; return; }
-      if(correo===state.auth.email.toLowerCase()){
-        if(hashSimple(pass)!==state.auth.passwordHash){ errEl.innerHTML = `<div class="login-error">Correo o contraseña incorrectos.</div>`; return; }
+      if(!correo){ errEl.innerHTML = `<div class="login-error">Escribe tu correo o DNI.</div>`; return; }
+      const esAdminPorCorreo = correo===state.auth.email.toLowerCase();
+      const esAdminPorDni = state.auth.dni && correo===state.auth.dni.toLowerCase();
+      if(esAdminPorCorreo || esAdminPorDni){
+        if(hashSimple(pass)!==state.auth.passwordHash){ errEl.innerHTML = `<div class="login-error">Correo/DNI o contraseña incorrectos.</div>`; return; }
         sesionUsuario = { rol:'admin' };
         sesionIniciada = true;
         checkAuthAndRender();
@@ -680,6 +750,10 @@ function render(){
   else if(tab==='cobro_comisiones') el.innerHTML = viewCobroComisiones();
   else if(tab==='pago_comisiones') el.innerHTML = viewPagoComisiones();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
+  else if(tab==='cobranzas') el.innerHTML = viewCobranzas();
+  else if(tab==='soat') el.innerHTML = viewSoat();
+  else if(tab==='pipeline') el.innerHTML = viewPipeline();
+  else if(tab==='siniestros') el.innerHTML = viewSiniestros();
   else if(tab==='asesores') el.innerHTML = viewAsesores();
   else if(tab==='clientes') el.innerHTML = fichaClienteId ? viewFichaCliente(fichaClienteId) : viewClientes();
   wireCommon();
@@ -780,6 +854,18 @@ async function descargarRespaldo(){
   URL.revokeObjectURL(url);
   localStorage.setItem('crm-fg-ultimo-respaldo', fecha);
 
+  // Además del respaldo JSON, descarga también un Excel de la cartera de clientes actualizado
+  try{
+    const headers = ['Nombre / Razón social','Tipo doc','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Estado de contacto','Etiquetas','OBS','# Ventas'];
+    const rows = state.clientes.map(c=>{
+      const n = state.ventas.filter(v=>v.clienteId===c.id).length;
+      const est = ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo'));
+      const tags = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?t.label:''; }).filter(Boolean).join(', ');
+      return [c.nombre, c.tipoDocumento||'DNI', c.documento||'', c.direccion||'', c.ciudad||'', c.celular1||c.telefono||'', c.celular2||'', c.email||'', c.email2||'', c.personaContacto||'', est?est.label:'', tags, c.datosAdicionales||'', n];
+    });
+    exportExcel(`clientes-respaldo-${fecha}.xlsx`, headers, rows);
+  }catch(e){ console.error('No se pudo generar el Excel de clientes junto al respaldo', e); }
+
   const btn = document.getElementById('btnDescargarRespaldo');
   const textoOriginal = btn ? btn.innerHTML : '';
   try{
@@ -796,6 +882,19 @@ function diasDesdeUltimoRespaldo(){
   const f = localStorage.getItem('crm-fg-ultimo-respaldo');
   if(!f) return 999;
   return Math.floor((new Date(todayISO()) - new Date(f)) / 86400000);
+}
+function tamanoDatosBytes(){
+  try{ return new Blob([JSON.stringify(state)]).size; }catch(e){ return JSON.stringify(state).length; }
+}
+function tamanoDatosInfo(){
+  const bytes = tamanoDatosBytes();
+  const limite = 1024*1024; // 1 MB, límite real de Firestore por documento
+  const pct = Math.min(100, Math.round((bytes/limite)*100));
+  const kb = (bytes/1024).toFixed(0);
+  let nivel = 'ok';
+  if(pct>=90) nivel = 'critico';
+  else if(pct>=70) nivel = 'alerta';
+  return { bytes, kb, pct, nivel, limite };
 }
 
 function restaurarRespaldo(e){
@@ -828,14 +927,15 @@ function monthlyAgg(){
     const k = monthKey(v.fechaVenta);
     if(!k) return;
     if(!map[k]) map[k] = { total:0, empresa:0, asesor:0, count:0, nuevas:0, renovaciones:0, totalUSD:0, empresaUSD:0, asesorUSD:0 };
-    map[k].total += comisionTotalSoles(v);
-    map[k].empresa += comisionEmpresaSoles(v);
-    map[k].asesor += comisionAsesorSoles(v);
     map[k].count += 1;
     if(v.moneda==='USD'){
       map[k].totalUSD += Number(v.comisionTotal)||0;
       map[k].empresaUSD += comisionEmpresa(v);
       map[k].asesorUSD += comisionAsesor(v);
+    } else {
+      map[k].total += Number(v.comisionTotal)||0;
+      map[k].empresa += comisionEmpresa(v);
+      map[k].asesor += comisionAsesor(v);
     }
     if(v.tipoVenta==='nueva') map[k].nuevas += 1; else if(v.tipoVenta==='renovacion') map[k].renovaciones += 1;
   });
@@ -896,6 +996,7 @@ function viewDashboard(){
   const delta = (a,b) => b===0 ? (a>0?100:0) : ((a-b)/b*100);
   const dTotal = delta(cur.total, prev.total);
   const dEmpresa = delta(cur.empresa, prev.empresa);
+  const dEmpresaUSD = delta(cur.empresaUSD, prev.empresaUSD);
 
   const pendientes = state.ventas.filter(v=>ventaSeguroActiva(v) && v.estadoComision==='pendiente' && v.tipoComisionAsesor!=='ninguna');
   const pendientesPEN = pendientes.filter(v=>v.moneda!=='USD');
@@ -907,8 +1008,8 @@ function viewDashboard(){
   const porVenta = { nueva:0, renovacion:0 };
   const porVentaUSD = { nueva:0, renovacion:0 };
   state.ventas.filter(ventaSeguroActiva).forEach(v=>{
-    porVenta[v.tipoVenta] = (porVenta[v.tipoVenta]||0) + comisionTotalSoles(v);
     if(v.moneda==='USD') porVentaUSD[v.tipoVenta] = (porVentaUSD[v.tipoVenta]||0) + (Number(v.comisionTotal)||0);
+    else porVenta[v.tipoVenta] = (porVenta[v.tipoVenta]||0) + (Number(v.comisionTotal)||0);
   });
 
   const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -941,15 +1042,26 @@ function viewDashboard(){
   const totalTareas = alertas.cuotasAtrasadas.length + alertas.porVencer.length + cumples.length;
   const diasRespaldo = diasDesdeUltimoRespaldo();
 
-  // ---- Ranking de aseguradoras por comisión FG generada (histórico) ----
+  // ---- Ranking de aseguradoras por comisión FG generada (histórico), separado por moneda ----
   const porAseguradoraRanking = {};
   state.ventas.filter(ventaSeguroActiva).forEach(v=>{
     const key = v.aseguradora || 'Sin especificar';
-    if(!porAseguradoraRanking[key]) porAseguradoraRanking[key] = 0;
-    porAseguradoraRanking[key] += comisionFGSoles(v);
+    if(!porAseguradoraRanking[key]) porAseguradoraRanking[key] = { pen:0, usd:0 };
+    if(v.moneda==='USD') porAseguradoraRanking[key].usd += comisionFG(v);
+    else porAseguradoraRanking[key].pen += comisionFG(v);
   });
-  const rankingAseguradoras = Object.entries(porAseguradoraRanking).sort((a,b)=>b[1]-a[1]).slice(0,5);
-  const maxRanking = rankingAseguradoras.length ? rankingAseguradoras[0][1] : 1;
+  const rankingAseguradoras = Object.entries(porAseguradoraRanking).sort((a,b)=> (b[1].pen+b[1].usd*(Number(state.tipoCambio)||1)) - (a[1].pen+a[1].usd*(Number(state.tipoCambio)||1))).slice(0,5);
+  const maxRankingPEN = rankingAseguradoras.length ? Math.max(...rankingAseguradoras.map(([,v])=>v.pen)) : 1;
+  const maxRankingUSD = rankingAseguradoras.length ? Math.max(...rankingAseguradoras.map(([,v])=>v.usd)) : 1;
+
+  // ---- Tasa de renovación / persistencia de cartera (últimos 12 meses) ----
+  const hace12Meses = new Date(); hace12Meses.setMonth(hace12Meses.getMonth()-12);
+  const hace12MesesISO = hace12Meses.toISOString().slice(0,10);
+  const vencidasParaRenovar = state.ventas.filter(v=> esSeguro(v.tipoProducto) && v.vigenciaFin && v.vigenciaFin >= hace12MesesISO && v.vigenciaFin < todayISO());
+  const fueRenovada = vOrig => state.ventas.some(v2=> v2.clienteId===vOrig.clienteId && v2.tipoProducto===vOrig.tipoProducto && v2.id!==vOrig.id && v2.vigenciaInicio && v2.vigenciaInicio >= vOrig.vigenciaFin && v2.vigenciaInicio <= addDaysISO(vOrig.vigenciaFin, 15));
+  const renovadas = vencidasParaRenovar.filter(fueRenovada);
+  const tasaRenovacion = vencidasParaRenovar.length ? Math.round((renovadas.length/vencidasParaRenovar.length)*100) : null;
+  const tamano = tamanoDatosInfo();
 
   return `
     <div class="page-head">
@@ -961,22 +1073,62 @@ function viewDashboard(){
       <div style="font-size:13px;">💾 ${diasRespaldo===999 ? 'Aún no has hecho un respaldo desde este dispositivo.' : `Han pasado ${diasRespaldo} días desde tu último respaldo.`} Se recomienda respaldar al menos una vez por semana.</div>
       <button class="btn btn-sm" id="btnRespaldoRecordatorio">Hacer respaldo ahora</button>
     </div>` : ''}
+    <div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid ${tamano.nivel==='critico'?'var(--danger)':'var(--border)'};background:${tamano.nivel==='critico'?'var(--danger-soft)':tamano.nivel==='alerta'?'#FBF2E3':'var(--surface)'};">
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;">
+        <span>📦 Espacio usado en la nube (documento principal)</span>
+        <span class="num" style="font-weight:600;">${tamano.kb} KB de 1024 KB (${tamano.pct}%)</span>
+      </div>
+      <div style="height:7px;border-radius:4px;background:var(--border);overflow:hidden;">
+        <div style="height:100%;width:${tamano.pct}%;background:${tamano.nivel==='critico'?'var(--danger)':tamano.nivel==='alerta'?'#B8823D':'var(--primary)'};border-radius:4px;"></div>
+      </div>
+      ${tamano.nivel==='critico' ? `<div style="font-size:12.5px;color:var(--danger);margin-top:6px;font-weight:600;">⚠ Muy cerca del límite — el guardado en la nube puede empezar a fallar. Avísame para archivar datos antiguos.</div>` : tamano.nivel==='alerta' ? `<div style="font-size:12.5px;color:#B8823D;margin-top:6px;">Vas subiendo — cuando quieras, podemos archivar ventas antiguas para liberar espacio.</div>` : ''}
+      <div style="margin-top:8px;"><button class="btn btn-sm" id="btnArchivarVentas">Archivar ventas antiguas</button><button class="btn btn-ghost btn-sm" id="btnDescargarArchivadas" style="margin-left:6px;">Descargar archivadas (Excel)</button></div>
+    </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card">
         <div class="panel-title" style="margin-top:0;">Comisión FG — este mes vs. mes anterior</div>
-        <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px;">
-          <div class="num" style="font-size:24px;font-weight:700;">${fmtMoney(cur.empresa)}</div>
-          <div style="font-size:13px;font-weight:600;color:${dEmpresa>=0?'#3D6B52':'#B8483A'};">${dEmpresa>=0?'▲':'▼'} ${Math.abs(dEmpresa).toFixed(0)}%</div>
+        <div style="margin-top:6px;">
+          <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Soles</div>
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <div class="num" style="font-size:22px;font-weight:700;">${fmtMoney(cur.empresa)}</div>
+            <div style="font-size:12.5px;font-weight:600;color:${dEmpresa>=0?'#3D6B52':'#B8483A'};">${dEmpresa>=0?'▲':'▼'} ${Math.abs(dEmpresa).toFixed(0)}%</div>
+          </div>
+          <div class="hint">Mes anterior: ${fmtMoney(prev.empresa)}</div>
         </div>
-        <div class="hint">Mes anterior: ${fmtMoney(prev.empresa)} — ${cur.count} venta(s) este mes vs. ${prev.count||0} el mes pasado</div>
+        <div style="margin-top:10px;">
+          <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Dólares</div>
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <div class="num" style="font-size:22px;font-weight:700;">${fmtUSD(cur.empresaUSD)}</div>
+            <div style="font-size:12.5px;font-weight:600;color:${dEmpresaUSD>=0?'#3D6B52':'#B8483A'};">${dEmpresaUSD>=0?'▲':'▼'} ${Math.abs(dEmpresaUSD).toFixed(0)}%</div>
+          </div>
+          <div class="hint">Mes anterior: ${fmtUSD(prev.empresaUSD)}</div>
+        </div>
+        <div class="hint" style="margin-top:8px;">${cur.count} venta(s) este mes vs. ${prev.count||0} el mes pasado</div>
       </div>
       <div class="card">
         <div class="panel-title" style="margin-top:0;">Ranking de aseguradoras (comisión FG histórica)</div>
-        ${rankingAseguradoras.length===0 ? `<div class="hint" style="margin-top:8px;">Aún no hay ventas registradas.</div>` : rankingAseguradoras.map(([nombre,monto])=>`
-          <div style="margin-top:8px;">
-            <div style="display:flex;justify-content:space-between;font-size:12.5px;"><span>${nombre}</span><span class="num" style="font-weight:600;">${fmtMoney(monto)}</span></div>
-            <div style="background:var(--border);height:6px;border-radius:3px;margin-top:3px;"><div style="background:var(--primary);height:6px;border-radius:3px;width:${maxRanking?(monto/maxRanking*100):0}%;"></div></div>
+        ${rankingAseguradoras.length===0 ? `<div class="hint" style="margin-top:8px;">Aún no hay ventas registradas.</div>` : rankingAseguradoras.map(([nombre,v])=>`
+          <div style="margin-top:10px;">
+            <div style="font-size:12.5px;font-weight:600;margin-bottom:3px;">${nombre}</div>
+            ${v.pen>0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);"><span>Soles</span><span class="num">${fmtMoney(v.pen)}</span></div>
+            <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px;margin-bottom:5px;"><div style="background:var(--primary);height:6px;border-radius:3px;width:${maxRankingPEN?(v.pen/maxRankingPEN*100):0}%;"></div></div>` : ''}
+            ${v.usd>0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);"><span>Dólares</span><span class="num">${fmtUSD(v.usd)}</span></div>
+            <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px;"><div style="background:#8A6D3B;height:6px;border-radius:3px;width:${maxRankingUSD?(v.usd/maxRankingUSD*100):0}%;"></div></div>` : ''}
           </div>`).join('')}
+      </div>
+      <div class="card">
+        <div class="panel-title" style="margin-top:0;">Tasa de renovación de cartera</div>
+        <div class="panel-sub" style="margin-bottom:6px;">Pólizas que vencieron en los últimos 12 meses y sí renovaste</div>
+        ${tasaRenovacion===null ? `<div class="hint" style="margin-top:8px;">Aún no hay pólizas vencidas en este período para calcular la tasa.</div>` : `
+          <div style="display:flex;align-items:baseline;gap:10px;margin-top:6px;">
+            <div class="num" style="font-size:28px;font-weight:700;color:${tasaRenovacion>=70?'#3D6B52':tasaRenovacion>=40?'#B8823D':'#B8483A'};">${tasaRenovacion}%</div>
+            <div class="hint">${renovadas.length} de ${vencidasParaRenovar.length} pólizas renovadas</div>
+          </div>
+          <div style="background:var(--border);height:8px;border-radius:4px;margin-top:8px;overflow:hidden;">
+            <div style="background:${tasaRenovacion>=70?'#3D6B52':tasaRenovacion>=40?'#B8823D':'#B8483A'};height:8px;width:${tasaRenovacion}%;"></div>
+          </div>
+          <div class="hint" style="margin-top:6px;">${vencidasParaRenovar.length - renovadas.length} póliza(s) se perdieron sin renovar — <a href="#" class="link-inline" data-goto="polizas">revisar en Pólizas</a></div>
+        `}
       </div>
     </div>
     ${totalTareas>0 ? `
@@ -1151,8 +1303,8 @@ function drawDashboardCharts(){
   const porVenta = { nueva:0, renovacion:0 };
   const porVentaUSD2 = { nueva:0, renovacion:0 };
   state.ventas.filter(ventaSeguroActiva).forEach(v=>{
-    porVenta[v.tipoVenta] = (porVenta[v.tipoVenta]||0) + comisionTotalSoles(v);
     if(v.moneda==='USD') porVentaUSD2[v.tipoVenta] = (porVentaUSD2[v.tipoVenta]||0) + (Number(v.comisionTotal)||0);
+    else porVenta[v.tipoVenta] = (porVenta[v.tipoVenta]||0) + (Number(v.comisionTotal)||0);
   });
   charts.tipoVenta = new Chart(document.getElementById('chartTipoVenta'), {
     type:'doughnut',
@@ -1279,6 +1431,8 @@ function wireDashboard(){
   const btnExpTodo = document.getElementById('btnExportarTodo'); if(btnExpTodo) btnExpTodo.onclick = exportarTodoExcel;
   const btn = document.getElementById('btnEditarMetas'); if(btn) btn.onclick = () => { editing = {type:'metas'}; render(); };
   const btnResp = document.getElementById('btnRespaldoRecordatorio'); if(btnResp) btnResp.onclick = descargarRespaldo;
+  const btnArch = document.getElementById('btnArchivarVentas'); if(btnArch) btnArch.onclick = archivarVentasAntiguas;
+  const btnDescArch = document.getElementById('btnDescargarArchivadas'); if(btnDescArch) btnDescArch.onclick = descargarVentasArchivadas;
   const sel = document.getElementById('fRankingPeriodo'); if(sel) sel.onchange = e => { rankingPeriodo = e.target.value; render(); };
   document.querySelectorAll('[data-goto]').forEach(a=> a.onclick = (e) => { e.preventDefault(); tab = a.dataset.goto; render(); });
   document.querySelectorAll('[data-tarea-wa-cuota]').forEach(b=> b.onclick = () => {
@@ -1351,7 +1505,7 @@ function viewVentas(){
   let rows = filteredVentas();
   const bit = bitacoraDeTab();
   const titulos = {
-    seguros: { h1:'Venta de Seguros', sub:'Registro de ventas nuevas — cliente, aseguradora, producto, prima y comisión. Para vigencia y cobranza, ve a "Pólizas y Renovaciones".' },
+    seguros: { h1:'Venta de Seguros', sub:'Registro de ventas nuevas — cliente, aseguradora, producto, prima y comisión. Para vigencia, ve a "Vigencias y Renovaciones"; para cobranza, ve a "Cobranzas".' },
     oncologicos: { h1:'Ventas Auna - Oncosalud', sub:'Seguros oncológicos: prima, comisión de la aseguradora y comisión FG/asesor, igual que un seguro regular.' },
     asesorias: { h1:'Venta de Asesoría y Consultoría', sub:'Asesoría contable, cartas fianza, consultorías y otros servicios.' },
   };
@@ -1538,8 +1692,8 @@ function wireVentas(){
     render();
   };
   document.querySelectorAll('[data-ver-cobranza]').forEach(b=> b.onclick = () => {
-    filtroPolTexto = b.dataset.verCobranza;
-    tab = 'polizas';
+    filtroCobranzaTexto = b.dataset.verCobranza;
+    tab = 'cobranzas';
     render();
   });
 }
@@ -1727,7 +1881,7 @@ function viewPagoComisiones(){
   let rows = filteredComisiones();
 
   const porAsesor = {};
-  state.ventas.filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna' && (filtroComAsesor==='todos' || v.asesorId===filtroComAsesor)).forEach(v=>{
+  misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.tipoComisionAsesor!=='ninguna' && (filtroComAsesor==='todos' || v.asesorId===filtroComAsesor)).forEach(v=>{
     const key = v.asesorId || '__directa__';
     if(!porAsesor[key]) porAsesor[key] = { pagadoPEN:0, pendientePEN:0, pagadoUSD:0, pendienteUSD:0, count:0 };
     const monto = comisionAsesor(v);
@@ -1893,18 +2047,10 @@ function setEstadoComision(id, estado){
 }
 
 // ================= RENOVACIONES Y COBRANZA =================
-let filtroPolEstado='todas', filtroPolCuota='todas', filtroPolTexto='';
+let filtroPolEstado='todas', filtroPolTexto='';
 function viewPolizas(){
   let rows = misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto) && v.numeroPoliza)
     .sort((a,b)=> (b.fechaVenta||'').localeCompare(a.fechaVenta||'') || b.folio-a.folio);
-
-  const conCuotasVencidas = v => {
-    if(!(v.formaPago==='cupones' || v.formaPago==='debito_automatico')) return false;
-    if(v.cuotasAlDia===false) return true;
-    if(v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha) < 0) return true;
-    return false;
-  };
-  const diasAtraso = v => v.proximaCuotaFecha ? Math.max(0, -daysUntil(v.proximaCuotaFecha)) : 0;
 
   if(filtroPolEstado==='vigentes') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) >= 0);
   else if(filtroPolEstado==='por_renovar_mes') rows = rows.filter(v=> ventaActiva(v) && v.vigenciaFin && (v.vigenciaFin||'').slice(0,7)===todayISO().slice(0,7));
@@ -1913,8 +2059,6 @@ function viewPolizas(){
   else if(filtroPolEstado==='vencidas') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) < 0);
   else if(filtroPolEstado==='anuladas') rows = rows.filter(v=> !ventaActiva(v));
   else rows = rows.filter(v=> ventaActiva(v));
-  if(filtroPolCuota==='atrasadas'){ rows = rows.filter(conCuotasVencidas).sort((a,b)=> diasAtraso(b)-diasAtraso(a)); }
-  else if(filtroPolCuota==='al_dia') rows = rows.filter(v=> (v.formaPago==='cupones'||v.formaPago==='debito_automatico') && !conCuotasVencidas(v));
   if(filtroPolTexto){
     const texto = filtroPolTexto.toLowerCase();
     rows = rows.filter(v=>{
@@ -1924,23 +2068,14 @@ function viewPolizas(){
   }
 
   const todasActivas = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v));
-  const totalAtrasadas = todasActivas.filter(conCuotasVencidas).length;
   const totalPorVencer = todasActivas.filter(v=>v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=30).length;
   const totalPorVencer15 = todasActivas.filter(v=>v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=15).length;
   const totalPorRenovarEsteMes = todasActivas.filter(v=> v.vigenciaFin && (v.vigenciaFin||'').slice(0,7)===todayISO().slice(0,7)).length;
-  const cuotasEstaSemana = todasActivas.filter(v=>(v.formaPago==='cupones'||v.formaPago==='debito_automatico') && v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha)>=0 && daysUntil(v.proximaCuotaFecha)<=7);
-  const totalPorCobrarMes = todasActivas.filter(v=>(v.formaPago==='cupones'||v.formaPago==='debito_automatico') && v.proximaCuotaFecha && (v.proximaCuotaFecha||'').slice(0,7)===todayISO().slice(0,7))
-    .reduce((s,v)=> s + (v.cantidadCuotas && v.comisionTotal ? 0 : 0) + (v.cronogramaCuotas && v.cronogramaCuotas.length ? (v.cronogramaCuotas.find(cc=>cc.fecha===v.proximaCuotaFecha)?.monto||0) : (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0)), 0);
 
   return `
-    <div class="page-head"><div><h1>Pólizas y Renovaciones</h1><p>Seguimiento de lo ya vendido: vigencia, cuotas y renovación. Para registrar una venta nueva, ve a "Venta de Seguros".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button><button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
+    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button><button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
     <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
-    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
-      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">Cuotas atrasadas</div>
-        <div class="value num" style="color:#fff;">${totalAtrasadas}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">pólizas con pago pendiente vencido</div>
-      </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Por renovar este mes</div>
         <div class="value num" style="color:#fff;">${totalPorRenovarEsteMes}</div>
@@ -1956,16 +2091,6 @@ function viewPolizas(){
         <div class="value num" style="color:#fff;">${totalPorVencer15}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">urgentes, contactar ya</div>
       </div>
-      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">Cuotas por vencer esta semana</div>
-        <div class="value num" style="color:#fff;">${cuotasEstaSemana.length}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">próximos 7 días</div>
-      </div>
-      <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">Aprox. por cobrar este mes</div>
-        <div class="value num" style="color:#fff;">S/ ${totalPorCobrarMes.toFixed(2)}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">cuotas con vencimiento este mes</div>
-      </div>
     </div>
     <div class="toolbar">
       <select id="fPolEstado">
@@ -1977,18 +2102,13 @@ function viewPolizas(){
         <option value="vencidas" ${filtroPolEstado==='vencidas'?'selected':''}>Vencidas</option>
         <option value="anuladas" ${filtroPolEstado==='anuladas'?'selected':''}>Anuladas</option>
       </select>
-      <select id="fPolCuota">
-        <option value="todas" ${filtroPolCuota==='todas'?'selected':''}>Todas las cuotas</option>
-        <option value="atrasadas" ${filtroPolCuota==='atrasadas'?'selected':''}>Con cuotas atrasadas (morosidad, mayor a menor)</option>
-        <option value="al_dia" ${filtroPolCuota==='al_dia'?'selected':''}>Cuotas al día</option>
-      </select>
     </div>
     ${filtroPolTexto ? `<div class="toolbar"><span class="pill pill-gray">Filtrando por: ${filtroPolTexto}</span><button class="btn btn-ghost btn-sm" id="btnQuitarFiltroPolTexto">Quitar filtro</button></div>` : ''}
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Vigencia</th><th>Forma de pago</th><th>Próxima cuota</th><th>Estado cuotas</th><th></th></tr></thead>
+        <thead><tr><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Vigencia</th><th>Forma de pago</th><th></th></tr></thead>
         <tbody>
-          ${rows.length===0 ? `<tr class="empty-row"><td colspan="9">No hay pólizas que coincidan con el filtro.</td></tr>` : rows.map(v=>{
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="7">No hay pólizas que coincidan con el filtro.</td></tr>` : rows.map(v=>{
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const d = v.vigenciaFin ? daysUntil(v.vigenciaFin) : null;
             let vigenciaPill = '<span class="pill pill-gray">—</span>';
@@ -2000,9 +2120,7 @@ function viewPolizas(){
               else vigenciaPill = `<span class="pill pill-green">Vigente</span>`;
             }
             const enCuotas = v.formaPago==='cupones' || v.formaPago==='debito_automatico';
-            const atrasada = ventaActiva(v) && conCuotasVencidas(v);
             const cercaDeVencer = ventaActiva(v) && d!==null && d<=60;
-            const cuotaPill = !enCuotas ? '<span class="pill pill-gray">Al contado</span>' : (atrasada ? `<span class="pill pill-red">Atrasada${diasAtraso(v)?' · '+diasAtraso(v)+' días':''}</span>` : '<span class="pill pill-green">Al día</span>');
             return `<tr>
               <td class="folio">${v.numeroPoliza}</td>
               <td>${cli?cli.nombre:'—'}</td>
@@ -2010,11 +2128,8 @@ function viewPolizas(){
               <td>${prodLabel(v.tipoProducto)}</td>
               <td>${v.vigenciaFin?fmtDate(v.vigenciaFin):'—'} ${vigenciaPill}</td>
               <td>${enCuotas ? (v.formaPago==='cupones'?'Cupones':'Débito automático') + (v.cantidadCuotas?` (${v.cantidadCuotas})`:'') : 'Al contado'}</td>
-              <td>${v.proximaCuotaFecha ? fmtDate(v.proximaCuotaFecha) : '—'}</td>
-              <td>${cuotaPill}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>
-                ${atrasada ? `<button class="btn btn-sm" data-wa-cuota="${v.id}" style="margin-left:6px;">📲 Cobranza</button>` : ''}
                 ${cercaDeVencer ? `<button class="btn btn-ghost btn-sm" data-aviso="${v.id}" style="margin-left:6px;">Aviso de renovación</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}" style="margin-left:6px;">📲 Renovación</button><button class="btn btn-sm" data-renovar="${v.id}" style="margin-left:6px;">Generar renovación</button>` : ''}
               </td>
             </tr>`;
@@ -2029,7 +2144,6 @@ function wirePolizas(){
   const btn = document.getElementById('btnNuevaPoliza'); if(btn) btn.onclick = () => { editing = {type:'venta', id:null}; render(); };
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; render(); };
-  const e2 = document.getElementById('fPolCuota'); if(e2) e2.onchange = e=>{ filtroPolCuota=e.target.value; render(); };
   const btnQuitarTexto = document.getElementById('btnQuitarFiltroPolTexto'); if(btnQuitarTexto) btnQuitarTexto.onclick = () => { filtroPolTexto=''; render(); };
   const btnPlantillaTPA = document.getElementById('btnPlantillaComisionesTPA'); if(btnPlantillaTPA) btnPlantillaTPA.onclick = () => {
     const headers = ['Aseguradora','C_Nombre o Razón Social','Ramo','Asesor','N° de póliza','Estado','TPA S/','TPA $'];
@@ -2122,14 +2236,6 @@ function wirePolizas(){
       e.target.value = '';
     };
   }
-  document.querySelectorAll('[data-wa-cuota]').forEach(b=> b.onclick = () => {
-    const v = state.ventas.find(v=>v.id===b.dataset.waCuota);
-    if(!v) return;
-    const cli = state.clientes.find(c=>c.id===v.clienteId);
-    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que tiene una cuota pendiente de pago de su póliza ${v.numeroPoliza||''} (${prodLabel(v.tipoProducto)}${v.aseguradora?' - '+v.aseguradora:''}).\n${v.proximaCuotaFecha ? 'Fecha de vencimiento: '+fmtDate(v.proximaCuotaFecha)+'.' : ''}\n\nPor favor regularice a la brevedad para evitar la pérdida de cobertura.\n\nQuedamos atentos.`;
-    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
-    window.open(linkWhatsApp(tel, mensaje), '_blank');
-  });
   document.querySelectorAll('[data-wa-renovacion]').forEach(b=>{
     b.onclick = () => {
       const v = state.ventas.find(v=>v.id===b.dataset.waRenovacion);
@@ -2223,6 +2329,361 @@ function wireAsesoria(){
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing = {type:'venta', id:b.dataset.editVenta}; render(); });
 }
 
+// ================= COBRANZAS =================
+let filtroCobranzaDias = 'todas', filtroCobranzaTexto = '';
+function ventaConCuota(v){ return v.formaPago==='cupones' || v.formaPago==='debito_automatico'; }
+function diasAtrasoVenta(v){ return v.proximaCuotaFecha ? Math.max(0, -daysUntil(v.proximaCuotaFecha)) : 0; }
+function estaAtrasada(v){
+  if(!ventaConCuota(v)) return false;
+  if(v.cuotasAlDia===false) return true;
+  if(v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha) < 0) return true;
+  return false;
+}
+function viewCobranzas(){
+  let atrasadas = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && estaAtrasada(v));
+  if(filtroCobranzaTexto){
+    const texto = filtroCobranzaTexto.toLowerCase();
+    atrasadas = atrasadas.filter(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return cli && cli.nombre && cli.nombre.toLowerCase().includes(texto);
+    });
+  }
+  const bucket7 = atrasadas.filter(v=> diasAtrasoVenta(v) >= 7 && diasAtrasoVenta(v) < 15);
+  const bucket15 = atrasadas.filter(v=> diasAtrasoVenta(v) >= 15 && diasAtrasoVenta(v) < 30);
+  const bucket30 = atrasadas.filter(v=> diasAtrasoVenta(v) >= 30);
+  const bucketMenos7 = atrasadas.filter(v=> diasAtrasoVenta(v) < 7);
+  let rows = atrasadas;
+  if(filtroCobranzaDias==='7') rows = bucket7;
+  else if(filtroCobranzaDias==='15') rows = bucket15;
+  else if(filtroCobranzaDias==='30') rows = bucket30;
+  else if(filtroCobranzaDias==='menos7') rows = bucketMenos7;
+  rows = rows.slice().sort((a,b)=> diasAtrasoVenta(b)-diasAtrasoVenta(a));
+  const totalMontoPEN = rows.filter(v=>v.moneda!=='USD').reduce((s,v)=> s + (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0), 0);
+  const totalMontoUSD = rows.filter(v=>v.moneda==='USD').reduce((s,v)=> s + (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0), 0);
+
+  return `
+    <div class="page-head"><div><h1>Cobranzas</h1><p>Cuotas atrasadas de tus clientes, para hacer seguimiento y recuperar cartera.</p></div><div style="display:flex;gap:8px;"><button class="btn" id="btnExportCobranzaPDF">Descargar PDF</button><button class="btn" id="btnExportCobranza">Exportar a Excel</button></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#8A6D3B;color:#fff;padding:16px;cursor:pointer;" data-bucket="menos7">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Atrasadas (&lt; 7 días)</div>
+        <div class="value num" style="color:#fff;">${bucketMenos7.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;cursor:pointer;" data-bucket="7">
+        <div class="label" style="color:rgba(255,255,255,0.85);">7 – 14 días</div>
+        <div class="value num" style="color:#fff;">${bucket7.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#B8483A;color:#fff;padding:16px;cursor:pointer;" data-bucket="15">
+        <div class="label" style="color:rgba(255,255,255,0.85);">15 – 29 días</div>
+        <div class="value num" style="color:#fff;">${bucket15.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;cursor:pointer;" data-bucket="30">
+        <div class="label" style="color:rgba(255,255,255,0.85);">30+ días</div>
+        <div class="value num" style="color:#fff;">${bucket30.length}</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <select id="fCobranzaDias">
+        <option value="todas" ${filtroCobranzaDias==='todas'?'selected':''}>Todas las atrasadas</option>
+        <option value="menos7" ${filtroCobranzaDias==='menos7'?'selected':''}>Menos de 7 días</option>
+        <option value="7" ${filtroCobranzaDias==='7'?'selected':''}>7 a 14 días</option>
+        <option value="15" ${filtroCobranzaDias==='15'?'selected':''}>15 a 29 días</option>
+        <option value="30" ${filtroCobranzaDias==='30'?'selected':''}>30 días o más</option>
+      </select>
+      <input type="text" id="fCobranzaTexto" placeholder="Buscar por cliente" value="${filtroCobranzaTexto}" style="min-width:200px;">
+    </div>
+    <div class="card" style="padding:10px 16px;margin-bottom:16px;font-size:13px;">Monto aproximado en cobranza (cuota pendiente): <b class="num">${fmtMoney(totalMontoPEN)}</b> · <b class="num">${fmtUSD(totalMontoUSD)}</b> — ${rows.length} póliza(s)</div>
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Cliente</th><th>Celular</th><th>N° póliza</th><th>Aseguradora</th><th>Producto</th><th>Cuota vencida</th><th>Días de atraso</th><th></th></tr></thead>
+        <tbody>
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="8">No hay cuotas atrasadas en este filtro — ¡cartera al día!</td></tr>` : rows.map(v=>{
+            const cli = state.clientes.find(c=>c.id===v.clienteId);
+            const dias = diasAtrasoVenta(v);
+            const colorPill = dias>=30 ? 'pill-red' : dias>=15 ? 'pill-gold' : 'pill-gray';
+            return `<tr>
+              <td>${cli?cli.nombre:'—'}</td>
+              <td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td>
+              <td>${v.numeroPoliza||'—'}</td>
+              <td>${v.aseguradora||'—'}</td>
+              <td>${prodLabel(v.tipoProducto)}</td>
+              <td>${v.proximaCuotaFecha?fmtDate(v.proximaCuotaFecha):'—'}</td>
+              <td><span class="pill ${colorPill}">${dias} días</span></td>
+              <td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-cobranza="${v.id}" style="margin-left:6px;">📲 Cobranza</button>`:''}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+function wireCobranzas(){
+  document.querySelectorAll('[data-bucket]').forEach(el=> el.onclick = () => { filtroCobranzaDias = el.dataset.bucket; render(); });
+  const fd = document.getElementById('fCobranzaDias'); if(fd) fd.onchange = e=>{ filtroCobranzaDias=e.target.value; render(); };
+  const ft = document.getElementById('fCobranzaTexto'); if(ft) ft.oninput = e=>{ filtroCobranzaTexto=e.target.value; render(); };
+  document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
+  document.querySelectorAll('[data-wa-cobranza]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.waCobranza);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que tiene una cuota pendiente de pago de su póliza ${v.numeroPoliza||''} (${prodLabel(v.tipoProducto)}${v.aseguradora?' - '+v.aseguradora:''}), vencida hace ${diasAtrasoVenta(v)} día(s).\n\nPor favor regularice a la brevedad para evitar la pérdida de cobertura.\n\nQuedamos atentos.`;
+    window.open(linkWhatsApp(cli?(cli.celular1||cli.telefono||''):'', mensaje), '_blank');
+  });
+  const btnEx = document.getElementById('btnExportCobranza'); if(btnEx) btnEx.onclick = () => {
+    const atrasadas = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && estaAtrasada(v)).sort((a,b)=> diasAtrasoVenta(b)-diasAtrasoVenta(a));
+    const headers = ['Cliente','Celular','N° póliza','Aseguradora','Producto','Cuota vencida','Días de atraso'];
+    const rows = atrasadas.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [cli?cli.nombre:'', cli?(cli.celular1||cli.telefono||''):'', v.numeroPoliza||'', v.aseguradora||'', prodLabel(v.tipoProducto), v.proximaCuotaFecha||'', diasAtrasoVenta(v)];
+    });
+    exportExcel('cobranzas-pendientes.xlsx', headers, rows);
+  };
+  const btnPdf = document.getElementById('btnExportCobranzaPDF'); if(btnPdf) btnPdf.onclick = () => {
+    const atrasadas = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && estaAtrasada(v)).sort((a,b)=> diasAtrasoVenta(b)-diasAtrasoVenta(a));
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text('Reporte de cobranzas pendientes', 14, 16);
+    doc.setFontSize(10); doc.text(`Generado el ${fmtDate(todayISO())}`, 14, 23);
+    const body = atrasadas.map(v=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [cli?cli.nombre:'—', cli?(cli.celular1||cli.telefono||'—'):'—', v.numeroPoliza||'—', v.aseguradora||'—', String(diasAtrasoVenta(v))+' días'];
+    });
+    doc.autoTable({ startY: 28, head: [['Cliente','Celular','N° póliza','Aseguradora','Días atraso']], body });
+    doc.save('cobranzas-pendientes.pdf');
+  };
+}
+
+// ================= SOAT Y BENEFICIOS =================
+function todosLosSoat(){
+  const directos = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='soat' && v.vigenciaFin)
+    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.vigenciaFin, aseguradora:v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, origen:'SOAT (venta directa)' }));
+  const enVehicular = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='seguros_vehiculares' && v.tieneSoat && v.soatVigenciaFin)
+    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.soatVigenciaFin, aseguradora:v.soatAseguradora||v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, origen:'SOAT (dentro de póliza vehicular)' }));
+  return [...directos, ...enVehicular];
+}
+let filtroSoatVista = 'vencimientos', filtroSoatAnio = 'todos';
+function viewSoat(){
+  const soatTodos = todosLosSoat();
+  const en30 = soatTodos.filter(s=> daysUntil(s.vigenciaFin)>=0 && daysUntil(s.vigenciaFin)<=30);
+  const en7 = soatTodos.filter(s=> daysUntil(s.vigenciaFin)>=0 && daysUntil(s.vigenciaFin)<=7);
+  const vencidos = soatTodos.filter(s=> daysUntil(s.vigenciaFin)<0);
+  const listaVencimientos = [...soatTodos.filter(s=>daysUntil(s.vigenciaFin)>=0)].sort((a,b)=>daysUntil(a.vigenciaFin)-daysUntil(b.vigenciaFin)).concat(vencidos.sort((a,b)=>daysUntil(b.vigenciaFin)-daysUntil(a.vigenciaFin)));
+
+  const gratis = [];
+  misVentas(state.ventas).filter(v=>ventaActiva(v)).forEach(v=>{
+    (v.beneficios||[]).forEach(b=> gratis.push({ v, b }));
+  });
+  const añosDisponibles = Array.from(new Set([String(new Date().getFullYear()), ...gratis.map(g=>(g.v.fechaVenta||'').slice(0,4)).filter(Boolean)])).sort((a,b)=>b.localeCompare(a));
+  const gratisAnio = filtroSoatAnio==='todos' ? gratis : gratis.filter(g=>(g.v.fechaVenta||'').slice(0,4)===filtroSoatAnio);
+  const totalInvertidoPEN = gratisAnio.filter(g=>g.b.moneda!=='USD').reduce((s,g)=>s+(Number(g.b.monto)||0),0);
+  const totalInvertidoUSD = gratisAnio.filter(g=>g.b.moneda==='USD').reduce((s,g)=>s+(Number(g.b.monto)||0),0);
+  const esteMesGratis = gratis.filter(g=>(g.v.fechaVenta||'').slice(0,7)===todayISO().slice(0,7));
+
+  // ---- Rentabilidad del SOAT de regalo ----
+  const soatRegalo = misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.tipoProducto==='soat' && v.quienPagoPrima==='fg_regalo');
+  const soatRegaloAnio = filtroSoatAnio==='todos' ? soatRegalo : soatRegalo.filter(v=>(v.fechaVenta||'').slice(0,4)===filtroSoatAnio);
+  const comisionRecibidaPEN = soatRegaloAnio.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const comisionRecibidaUSD = soatRegaloAnio.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const costoPrimaPEN = soatRegaloAnio.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+(Number(v.primaBruta)||0),0);
+  const costoPrimaUSD = soatRegaloAnio.filter(v=>v.moneda==='USD').reduce((s,v)=>s+(Number(v.primaBruta)||0),0);
+  const netoPEN = comisionRecibidaPEN - costoPrimaPEN;
+  const netoUSD = comisionRecibidaUSD - costoPrimaUSD;
+
+  return `
+    <div class="page-head"><div><h1>SOAT y Beneficios</h1><p>Vencimientos de SOAT (de todos tus clientes vehiculares) y control de beneficios gratuitos entregados.</p></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Por vencer en 30 días</div>
+        <div class="value num" style="color:#fff;">${en30.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#B8483A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Por vencer en 7 días</div>
+        <div class="value num" style="color:#fff;">${en7.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">SOAT vencidos</div>
+        <div class="value num" style="color:#fff;">${vencidos.length}</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <select id="fSoatVista">
+        <option value="vencimientos" ${filtroSoatVista==='vencimientos'?'selected':''}>Vencimientos de SOAT (todos)</option>
+        <option value="30" ${filtroSoatVista==='30'?'selected':''}>Solo por vencer en 30 días</option>
+        <option value="7" ${filtroSoatVista==='7'?'selected':''}>Solo por vencer en 7 días</option>
+        <option value="beneficios" ${filtroSoatVista==='beneficios'?'selected':''}>Beneficios gratuitos entregados</option>
+        <option value="rentabilidad" ${filtroSoatVista==='rentabilidad'?'selected':''}>Rentabilidad del SOAT de regalo</option>
+      </select>
+      ${(filtroSoatVista==='beneficios'||filtroSoatVista==='rentabilidad') ? `<select id="fSoatAnio"><option value="todos" ${filtroSoatAnio==='todos'?'selected':''}>Todos los años</option>${añosDisponibles.map(a=>`<option value="${a}" ${filtroSoatAnio===a?'selected':''}>Año ${a}</option>`).join('')}</select>` : ''}
+    </div>
+    ${filtroSoatVista==='rentabilidad' ? `
+    <div class="card" style="padding:16px;margin-bottom:16px;">
+      <div class="panel-title" style="margin-top:0;">Rentabilidad del SOAT de regalo ${filtroSoatAnio==='todos'?'(histórico)':'— año '+filtroSoatAnio}</div>
+      <div class="hint">Comisión que sí recibes de la aseguradora, menos la prima que tú cubriste por el cliente.</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:12px;">
+        <div><div class="label">Comisión recibida</div><div class="num" style="font-size:19px;font-weight:700;">${fmtMoney(comisionRecibidaPEN)} · ${fmtUSD(comisionRecibidaUSD)}</div></div>
+        <div><div class="label">Prima cubierta por FG</div><div class="num" style="font-size:19px;font-weight:700;">${fmtMoney(costoPrimaPEN)} · ${fmtUSD(costoPrimaUSD)}</div></div>
+        <div><div class="label">Resultado neto</div><div class="num" style="font-size:19px;font-weight:700;color:${(netoPEN>=0&&netoUSD>=0)?'#3D6B52':'#B8483A'};">${fmtMoney(netoPEN)} · ${fmtUSD(netoUSD)}</div></div>
+      </div>
+      <div class="hint" style="margin-top:8px;">${soatRegaloAnio.length} SOAT de regalo en este período.</div>
+    </div>
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Cliente</th><th>Fecha</th><th>Prima cubierta</th><th>Comisión recibida</th><th>Neto</th><th></th></tr></thead>
+        <tbody>
+          ${soatRegaloAnio.length===0 ? `<tr class="empty-row"><td colspan="6">No hay SOAT de regalo registrados en este período.</td></tr>` : soatRegaloAnio.slice().sort((a,b)=>(b.fechaVenta||'').localeCompare(a.fechaVenta||'')).map(v=>{
+            const cli = state.clientes.find(c=>c.id===v.clienteId);
+            const com = comisionFG(v);
+            const costo = Number(v.primaBruta)||0;
+            const neto = com - costo;
+            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${fmtDate(v.fechaVenta)}</td><td class="num">${fmtMonedaVal(costo, v.moneda)}</td><td class="num">${fmtMonedaVal(com, v.moneda)}</td><td class="num" style="color:${neto>=0?'#3D6B52':'#B8483A'};">${fmtMonedaVal(neto, v.moneda)}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button></td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>` :
+    filtroSoatVista!=='beneficios' ? (() => {
+      const lista = filtroSoatVista==='30' ? en30 : filtroSoatVista==='7' ? en7 : listaVencimientos;
+      return `
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Cliente</th><th>Celular</th><th>Origen</th><th>N° póliza</th><th>Aseguradora</th><th>Vencimiento</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          ${lista.length===0 ? `<tr class="empty-row"><td colspan="8">No hay SOAT en este filtro.</td></tr>` : lista.map(s=>{
+            const cli = state.clientes.find(c=>c.id===s.clienteId);
+            const d = daysUntil(s.vigenciaFin);
+            const pill = d<0 ? `<span class="pill pill-red">Vencido</span>` : d<=7 ? `<span class="pill pill-red">${d} días</span>` : d<=15 ? `<span class="pill pill-gold">${d} días</span>` : `<span class="pill pill-gray">${d} días</span>`;
+            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td><td class="hint">${s.origen}</td><td>${s.numeroPoliza||'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.vigenciaFin)}</td><td>${pill}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${s.ventaId}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-soat="${s.ventaId}" data-soat-fin="${s.vigenciaFin}" style="margin-left:6px;">📲 Avisar</button>`:''}</td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+    })() : `
+    <div class="card" style="padding:10px 16px;margin-bottom:16px;font-size:13px;">Beneficios entregados (${filtroSoatAnio==='todos'?'histórico':'año '+filtroSoatAnio}): <b>${gratisAnio.length}</b> (${esteMesGratis.length} este mes) — Total invertido: <b class="num">${fmtMoney(totalInvertidoPEN)} · ${fmtUSD(totalInvertidoUSD)}</b></div>
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Cliente</th><th>Fecha</th><th>Tipo de beneficio</th><th>Producto</th><th>Costo para FG</th><th></th></tr></thead>
+        <tbody>
+          ${gratisAnio.length===0 ? `<tr class="empty-row"><td colspan="6">No hay beneficios registrados en este período.</td></tr>` : gratisAnio.slice().sort((a,b)=>(b.v.fechaVenta||'').localeCompare(a.v.fechaVenta||'')).map(({v,b})=>{
+            const cli = state.clientes.find(c=>c.id===v.clienteId);
+            const tipo = TIPOS_BENEFICIO.find(t=>t.id===b.tipo);
+            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${fmtDate(v.fechaVenta)}</td><td>${tipo?tipo.label:'—'}</td><td>${prodLabel(v.tipoProducto)}</td><td class="num">${fmtMonedaVal(b.monto||0, b.moneda)}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button></td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`}
+  `;
+}
+function wireSoat(){
+  const fv = document.getElementById('fSoatVista'); if(fv) fv.onchange = e=>{ filtroSoatVista=e.target.value; render(); };
+  const fa = document.getElementById('fSoatAnio'); if(fa) fa.onchange = e=>{ filtroSoatAnio=e.target.value; render(); };
+  document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
+  document.querySelectorAll('[data-wa-soat]').forEach(b=> b.onclick = () => {
+    const v = state.ventas.find(v=>v.id===b.dataset.waSoat);
+    if(!v) return;
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    const vigenciaFin = b.dataset.soatFin;
+    const d = daysUntil(vigenciaFin);
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que su SOAT ${d<0?'venció el':'vence el'} ${fmtDate(vigenciaFin)}. Es importante renovarlo a tiempo para evitar multas y mantener su cobertura.\n\nQuedamos atentos para coordinar la renovación.`;
+    window.open(linkWhatsApp(cli?(cli.celular1||cli.telefono||''):'', mensaje), '_blank');
+  });
+}
+
+// ================= PIPELINE DE PROSPECTOS =================
+function viewPipeline(){
+  const columnas = ESTADOS_CONTACTO.filter(e=>e.id!=='no_interesado');
+  return `
+    <div class="page-head"><div><h1>Pipeline de prospectos</h1><p>Vista tipo tablero de tus clientes según su etapa comercial. Arrastra o usa "Mover" para cambiarlos de columna.</p></div></div>
+    <div style="display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;">
+      ${columnas.map(col=>{
+        const clientesCol = state.clientes.filter(c=> (c.estadoContacto||'nuevo')===col.id);
+        return `<div style="min-width:250px;flex:0 0 250px;">
+          <div class="card" style="background:var(--primary-soft);padding:10px 12px;margin-bottom:8px;">
+            <div style="font-weight:600;font-size:13.5px;">${col.label}</div>
+            <div class="hint">${clientesCol.length} cliente(s)</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${clientesCol.length===0 ? `<div class="hint" style="padding:8px;">Vacío</div>` : clientesCol.map(c=>`
+              <div class="card" style="padding:10px 12px;">
+                <div style="font-weight:600;font-size:13px;"><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);">${c.nombre}</a></div>
+                <div class="hint" style="margin:4px 0;">${c.celular1||c.telefono||'Sin teléfono'}</div>
+                <select class="pipeline-mover" data-cliente-id="${c.id}" style="width:100%;font-size:12px;padding:4px;">
+                  ${ESTADOS_CONTACTO.map(e=>`<option value="${e.id}" ${(c.estadoContacto||'nuevo')===e.id?'selected':''}>${e.label}</option>`).join('')}
+                </select>
+              </div>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+function wirePipeline(){
+  document.querySelectorAll('[data-ficha-cliente]').forEach(a=> a.onclick = (e)=>{ e.preventDefault(); fichaClienteId=a.dataset.fichaCliente; tab='clientes'; render(); });
+  document.querySelectorAll('.pipeline-mover').forEach(sel=> sel.onchange = () => {
+    const c = state.clientes.find(c=>c.id===sel.dataset.clienteId);
+    if(c){ c.estadoContacto = sel.value; save(); render(); }
+  });
+}
+
+// ================= SINIESTROS =================
+let filtroSiniestroEstado = 'todas';
+function viewSiniestros(){
+  let rows = state.siniestros.slice();
+  if(filtroSiniestroEstado!=='todas') rows = rows.filter(s=>s.estado===filtroSiniestroEstado);
+  rows.sort((a,b)=> (b.fechaEvento||'').localeCompare(a.fechaEvento||''));
+  const abiertos = state.siniestros.filter(s=>s.estado==='reportado'||s.estado==='en_evaluacion').length;
+  return `
+    <div class="page-head"><div><h1>Siniestros</h1><p>Acompañamiento a tus clientes cuando ocurre un evento — el seguimiento que más fideliza.</p></div><button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Siniestros abiertos</div>
+        <div class="value num" style="color:#fff;">${abiertos}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">reportados o en evaluación</div>
+      </div>
+      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Total registrados</div>
+        <div class="value num" style="color:#fff;">${state.siniestros.length}</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <select id="fSiniestroEstado"><option value="todas">Todos los estados</option>${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${filtroSiniestroEstado===e.id?'selected':''}>${e.label}</option>`).join('')}</select>
+    </div>
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Aseguradora</th><th>Fecha del evento</th><th>Estado</th><th>Documentos pendientes</th><th></th></tr></thead>
+        <tbody>
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="7">No hay siniestros registrados.</td></tr>` : rows.map(s=>{
+            const cli = state.clientes.find(c=>c.id===s.clienteId);
+            const est = ESTADOS_SINIESTRO.find(e=>e.id===s.estado) || ESTADOS_SINIESTRO[0];
+            return `<tr><td class="folio">SN-${String(s.folio).padStart(4,'0')}</td><td>${cli?cli.nombre:'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.fechaEvento)}</td><td><span class="pill ${est.clase}">${est.label}</span></td><td>${s.documentosPendientes||'—'}</td><td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+function modalSiniestro(){
+  const s = editing.id ? state.siniestros.find(x=>x.id===editing.id) : { clienteId:'', ventaId:'', aseguradora:'', fechaEvento: todayISO(), estado:'reportado', documentosPendientes:'', notas:'' };
+  return `<div class="modal-backdrop"><div class="modal">
+    <h2>${editing.id?'Editar siniestro':'Registrar siniestro'}</h2>
+    <div class="field"><label>Cliente</label><select id="mSinCliente" style="width:100%;"><option value="">Seleccionar…</option>${state.clientes.map(c=>`<option value="${c.id}" ${s.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Aseguradora</label><select id="mSinAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Fecha del evento</label><input type="date" id="mSinFecha" style="width:100%;" value="${s.fechaEvento||''}"></div>
+    </div>
+    <div class="field"><label>Estado del trámite</label><select id="mSinEstado" style="width:100%;">${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${s.estado===e.id?'selected':''}>${e.label}</option>`).join('')}</select></div>
+    <div class="field"><label>Documentos pendientes</label><input type="text" id="mSinDocs" style="width:100%;" value="${s.documentosPendientes||''}" placeholder="Ej. Fotos del daño, denuncia policial"></div>
+    <div class="field"><label>Notas de seguimiento</label><textarea id="mSinNotas" style="width:100%;min-height:70px;">${s.notas||''}</textarea></div>
+    <div class="modal-actions">
+      ${editing.id ? `<button class="btn btn-danger-ghost" id="mSinDelete">Eliminar</button>` : ''}
+      <button class="btn" id="mSinCancel">Cancelar</button>
+      <button class="btn btn-primary" id="mSinSave">Guardar</button>
+    </div>
+  </div></div>`;
+}
+function wireSiniestros(){
+  const btn = document.getElementById('btnNuevoSiniestro'); if(btn) btn.onclick = () => { editing={type:'siniestro', id:null}; render(); };
+  document.querySelectorAll('[data-edit-siniestro]').forEach(b=> b.onclick = () => { editing={type:'siniestro', id:b.dataset.editSiniestro}; render(); });
+  const fe = document.getElementById('fSiniestroEstado'); if(fe) fe.onchange = e=>{ filtroSiniestroEstado=e.target.value; render(); };
+}
+
 // ================= ASESORES =================
 let filtroAsesorPeriodo = 'actual', filtroAsesorNombre = '';
 function viewAsesores(){
@@ -2307,7 +2768,28 @@ function wireAsesores(){
 }
 
 // ================= CLIENTES =================
-let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos';
+let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos';
+function valorHistoricoClientes(){
+  const valorCliente = {};
+  state.clientes.forEach(c=>{
+    const ventasCliente = state.ventas.filter(v=>v.clienteId===c.id && v.estadoVenta!=='anulada');
+    valorCliente[c.id] = ventasCliente.reduce((s,v)=> s + fmtMonedaANumeroPEN(v.comisionTotal, v.moneda), 0);
+  });
+  const valoresOrdenados = Object.values(valorCliente).filter(v=>v>0).sort((a,b)=>b-a);
+  const umbral = valoresOrdenados.length ? valoresOrdenados[Math.max(0, Math.floor(valoresOrdenados.length*0.2)-1)] : Infinity;
+  return { valorCliente, umbral };
+}
+function clientesFiltrados(){
+  const { valorCliente, umbral } = valorHistoricoClientes();
+  let listado = state.clientes.slice();
+  if(filtroClienteContacto!=='todos') listado = listado.filter(c=>(c.estadoContacto||'nuevo')===filtroClienteContacto);
+  if(filtroClienteEtiqueta!=='todas') listado = listado.filter(c=>(c.etiquetas||[]).includes(filtroClienteEtiqueta));
+  if(filtroClienteTipo!=='todos') listado = listado.filter(c=>(c.tipoDocumento||'DNI')===(filtroClienteTipo==='empresa'?'RUC':filtroClienteTipo==='dni'?'DNI':'CE'));
+  if(filtroClienteProducto!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===filtroClienteProducto));
+  if(filtroClienteAsesor!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.asesorId===filtroClienteAsesor));
+  if(filtroClienteValor==='alto') listado = listado.filter(c=> valorCliente[c.id]>0 && valorCliente[c.id]>=umbral);
+  return listado;
+}
 let fichaClienteId = null;
 function viewFichaCliente(id){
   const c = state.clientes.find(x=>x.id===id);
@@ -2364,6 +2846,30 @@ function viewFichaCliente(id){
         </tbody>
       </table>
     </div>
+    <div class="panel-title">Bóveda de documentos</div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field"><label>Tipo de documento</label><select id="fichaDocTipo" style="width:100%;">
+          <option value="dni_ruc">DNI / RUC</option>
+          <option value="tarjeta_propiedad">Tarjeta de propiedad</option>
+          <option value="brevete">Brevete</option>
+          <option value="foto_vehiculo">Foto del vehículo</option>
+          <option value="otro">Otro</option>
+        </select></div>
+        <div class="field" style="flex:1;"><label>Archivo (PDF o imagen)</label><input type="file" id="fichaDocArchivo" accept="application/pdf,image/*" style="width:100%;"></div>
+        <div class="field" style="flex:0;"><button class="btn btn-primary btn-sm" id="btnAgregarDocumento">+ Subir</button></div>
+      </div>
+      <div class="hint">Máx. 700 KB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
+      <div style="margin-top:10px;">
+        ${(c.documentos||[]).length===0 ? '<div class="hint">Sin documentos guardados todavía.</div>' : (c.documentos||[]).map((d,i)=>{
+          const tipoLabel = {dni_ruc:'DNI / RUC', tarjeta_propiedad:'Tarjeta de propiedad', brevete:'Brevete', foto_vehiculo:'Foto del vehículo', otro:'Otro'}[d.tipo] || d.tipo;
+          return `<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;">
+            <div><b>${tipoLabel}</b> — ${d.nombre} <span class="hint">(${fmtDate(d.fecha)})</span></div>
+            <div><a href="#" data-ver-doc="${i}" style="margin-right:10px;">ver / descargar</a><a href="#" data-quitar-doc="${i}" style="color:var(--danger);">quitar</a></div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
     <div class="panel-title">Registro de interacciones</div>
     <div class="card" style="margin-bottom:16px;">
       <div class="field-row" style="align-items:flex-end;">
@@ -2390,15 +2896,16 @@ function viewClientes(){
   const clientesConProducto = (prodId) => state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===prodId)).length;
   const totalEmpresas = state.clientes.filter(c=>c.tipoDocumento==='RUC').length;
   const totalPersonas = state.clientes.length - totalEmpresas;
-  let listado = state.clientes.slice();
-  if(filtroClienteContacto!=='todos') listado = listado.filter(c=>(c.estadoContacto||'nuevo')===filtroClienteContacto);
-  if(filtroClienteEtiqueta!=='todas') listado = listado.filter(c=>(c.etiquetas||[]).includes(filtroClienteEtiqueta));
-  if(filtroClienteTipo!=='todos') listado = listado.filter(c=>(c.tipoDocumento||'DNI')===(filtroClienteTipo==='empresa'?'RUC':filtroClienteTipo==='dni'?'DNI':'CE'));
-  if(filtroClienteProducto!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===filtroClienteProducto));
+
+  // ---- Valor histórico por cliente (para segmentar "Alto valor") ----
+  const { valorCliente, umbral: umbralAltoValor } = valorHistoricoClientes();
+
+  let listado = clientesFiltrados();
   const estadoInfo = id => ESTADOS_CONTACTO.find(e=>e.id===id) || ESTADOS_CONTACTO[0];
   const productosSeguro = todosLosProductos().filter(r=>r.categoria==='seguro');
+  const hayFiltroActivo = filtroClienteContacto!=='todos' || filtroClienteEtiqueta!=='todas' || filtroClienteTipo!=='todos' || filtroClienteProducto!=='todos' || filtroClienteAsesor!=='todos' || filtroClienteValor!=='todos';
   return `
-    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">Exportar a Excel</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
+    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
     <div class="grid stat-row" style="margin-bottom:16px;">
       <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
@@ -2435,6 +2942,14 @@ function viewClientes(){
         <option value="todos" ${filtroClienteProducto==='todos'?'selected':''}>Todos los productos</option>
         ${productosSeguro.map(p=>`<option value="${p.id}" ${filtroClienteProducto===p.id?'selected':''}>${p.label} (${clientesConProducto(p.id)})</option>`).join('')}
       </select>
+      <select id="fClienteAsesor">
+        <option value="todos" ${filtroClienteAsesor==='todos'?'selected':''}>Todos los asesores</option>
+        ${state.asesores.map(a=>`<option value="${a.id}" ${filtroClienteAsesor===a.id?'selected':''}>${a.nombre}</option>`).join('')}
+      </select>
+      <select id="fClienteValor">
+        <option value="todos" ${filtroClienteValor==='todos'?'selected':''}>Todos los valores</option>
+        <option value="alto" ${filtroClienteValor==='alto'?'selected':''}>⭐ Alto valor (20% principales)</option>
+      </select>
     </div>
     <div class="card" style="padding:0;">
       <table>
@@ -2448,7 +2963,8 @@ function viewClientes(){
             const colorContacto = { nuevo:'pill-gray', contactado:'pill-gold', interesado:'pill-gold', cotizacion_enviada:'pill-gold', cita_agendada:'pill-gold', cliente:'pill-green', no_interesado:'pill-red' }[est.id] || 'pill-gray';
             const tagsHtml = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?`<span class="pill ${t.clase}" style="margin-right:4px;">${t.label}</span>`:''; }).join('');
             const enRiesgo = ventasCliente.some(v=> esSeguro(v.tipoProducto) && ventaActiva(v) && v.vigenciaFin && daysUntil(v.vigenciaFin) < -30);
-            return `<tr><td><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);font-weight:600;">${c.nombre}</a>${enRiesgo?' <span class="pill pill-red" title="Póliza vencida hace más de 30 días sin renovar">⚠ Riesgo</span>':''}</td><td>${c.documento?(c.tipoDocumento||'DNI')+' '+c.documento:'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tagsHtml||'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
+            const esAltoValor = valorCliente[c.id]>0 && valorCliente[c.id]>=umbralAltoValor;
+            return `<tr><td><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);font-weight:600;">${c.nombre}</a>${esAltoValor?' <span class="pill pill-gold" title="Entre el 20% de clientes que más comisión te generan">⭐ Alto valor</span>':''}${enRiesgo?' <span class="pill pill-red" title="Póliza vencida hace más de 30 días sin renovar">⚠ Riesgo</span>':''}</td><td>${c.documento?(c.tipoDocumento||'DNI')+' '+c.documento:'—'}</td><td>${c.celular1||c.telefono||'—'}</td><td>${c.ciudad||'—'}</td><td>${tagsHtml||'—'}</td><td><span class="pill ${colorContacto}">${est.label}</span></td><td class="num">${n}</td><td><span class="pill ${activo?'pill-green':'pill-gray'}">${activo?'Activo':'Sin ventas'}</span></td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -2469,6 +2985,58 @@ function wireClientes(){
       c.interacciones.push({ fecha: todayISO(), nota: txt });
       save(); render();
     };
+    const btnDoc = document.getElementById('btnAgregarDocumento');
+    if(btnDoc) btnDoc.onclick = () => {
+      const input = document.getElementById('fichaDocArchivo');
+      const file = input.files[0];
+      if(!file){ alert('Selecciona un archivo primero.'); return; }
+      if(file.size > 700*1024){ alert('El archivo pesa más de 700 KB. Elige uno más liviano (los archivos en Firebase tienen un límite de 1 MB cada uno).'); return; }
+      const tipo = document.getElementById('fichaDocTipo').value;
+      const textoOriginal = btnDoc.textContent;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        btnDoc.textContent = 'Subiendo…'; btnDoc.disabled = true;
+        try{
+          const archivoId = await guardarArchivoFirebase(file.name, reader.result);
+          const c = state.clientes.find(x=>x.id===fichaClienteId);
+          if(!c){ btnDoc.textContent = textoOriginal; btnDoc.disabled = false; return; }
+          c.documentos = c.documentos || [];
+          c.documentos.push({ tipo, nombre: file.name, archivoId, fecha: todayISO() });
+          save(); render();
+        }catch(err){
+          btnDoc.textContent = textoOriginal; btnDoc.disabled = false;
+          alert('No se pudo subir el archivo a la nube: ' + err.message);
+        }
+      };
+      reader.readAsDataURL(file);
+    };
+    document.querySelectorAll('[data-ver-doc]').forEach(a=> a.onclick = async (e) => {
+      e.preventDefault();
+      const c = state.clientes.find(x=>x.id===fichaClienteId);
+      if(!c) return;
+      const doc = (c.documentos||[])[parseInt(a.dataset.verDoc)];
+      if(!doc) return;
+      const textoOriginal = a.textContent;
+      a.textContent = 'Descargando…';
+      try{
+        const archivo = await obtenerArchivoFirebase(doc.archivoId);
+        if(!archivo){ alert('El archivo ya no está disponible.'); a.textContent = textoOriginal; return; }
+        const link = document.createElement('a'); link.href = archivo.data; link.download = archivo.nombre;
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      }catch(err){ alert('No se pudo descargar: ' + err.message); }
+      a.textContent = textoOriginal;
+    });
+    document.querySelectorAll('[data-quitar-doc]').forEach(a=> a.onclick = (e) => {
+      e.preventDefault();
+      const c = state.clientes.find(x=>x.id===fichaClienteId);
+      if(!c) return;
+      const idx = parseInt(a.dataset.quitarDoc);
+      if(!confirm('¿Quitar este documento?')) return;
+      const doc = c.documentos[idx];
+      if(doc && doc.archivoId) eliminarArchivoFirebase(doc.archivoId);
+      c.documentos.splice(idx,1);
+      save(); render();
+    });
     return;
   }
   const fe = document.getElementById('fClienteEtiqueta'); if(fe) fe.onchange = e=>{ filtroClienteEtiqueta=e.target.value; render(); };
@@ -2476,15 +3044,43 @@ function wireClientes(){
   const fc = document.getElementById('fClienteContacto'); if(fc) fc.onchange = e=>{ filtroClienteContacto=e.target.value; render(); };
   const ft = document.getElementById('fClienteTipo'); if(ft) ft.onchange = e=>{ filtroClienteTipo=e.target.value; render(); };
   const fpr = document.getElementById('fClienteProducto'); if(fpr) fpr.onchange = e=>{ filtroClienteProducto=e.target.value; render(); };
+  const fas = document.getElementById('fClienteAsesor'); if(fas) fas.onchange = e=>{ filtroClienteAsesor=e.target.value; render(); };
+  const fv = document.getElementById('fClienteValor'); if(fv) fv.onchange = e=>{ filtroClienteValor=e.target.value; render(); };
   const btnEx = document.getElementById('btnExportClientes'); if(btnEx) btnEx.onclick = () => {
-    const headers = ['Nombre / Razón social','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Marca','Modelo','Año','Suma Asegurada','Placa','Motor','Serie','Uso del vehículo','Aseguradora','N° Póliza','Inicio vigencia','Forma de pago','Banco endosatario','Producto','Estado de contacto','OBS','# Ventas'];
-    const rows = state.clientes.map(c=>{
+    const headers = ['Nombre / Razón social','Tipo doc','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Estado de contacto','Etiquetas','OBS','# Ventas','Comisión histórica (S/ equiv.)'];
+    const { valorCliente } = valorHistoricoClientes();
+    const rows = clientesFiltrados().map(c=>{
       const n = state.ventas.filter(v=>v.clienteId===c.id).length;
-      const tipo = TIPOS_SEGURO_CLIENTE.find(t=>t.id===c.tipoSeguro);
       const est = ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo'));
-      return [c.nombre, c.documento||'', c.direccion||'', c.ciudad||'', c.celular1||c.telefono||'', c.celular2||'', c.email||'', c.email2||'', c.vehiculoMarca||'', c.vehiculoModelo||'', c.vehiculoAnio||'', c.sumaAsegurada||'', c.placa||'', c.motor||'', c.chasis||'', c.usoVehiculo||'', c.aseguradoraPreferida||'', c.numeroPoliza||'', c.inicioVigencia||'', c.formaPago||'', c.bancoEndosatario||'', tipo?tipo.label:'', est?est.label:'', c.datosAdicionales||'', n];
+      const tags = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?t.label:''; }).filter(Boolean).join(', ');
+      return [c.nombre, c.tipoDocumento||'DNI', c.documento||'', c.direccion||'', c.ciudad||'', c.celular1||c.telefono||'', c.celular2||'', c.email||'', c.email2||'', c.personaContacto||'', est?est.label:'', tags, c.datosAdicionales||'', n, (valorCliente[c.id]||0).toFixed(2)];
     });
     exportExcel('clientes.xlsx', headers, rows);
+  };
+  const btnResumenPDF = document.getElementById('btnResumenCarteraPDF'); if(btnResumenPDF) btnResumenPDF.onclick = () => {
+    const { valorCliente } = valorHistoricoClientes();
+    const activos = state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && ventaActiva(v))).length;
+    const totalEmpresas = state.clientes.filter(c=>c.tipoDocumento==='RUC').length;
+    const facturacionAnualPEN = state.ventas.filter(v=>ventaSeguroActiva(v) && v.moneda!=='USD' && (v.fechaVenta||'').slice(0,4)===todayISO().slice(0,4)).reduce((s,v)=>s+comisionFG(v),0);
+    const facturacionAnualUSD = state.ventas.filter(v=>ventaSeguroActiva(v) && v.moneda==='USD' && (v.fechaVenta||'').slice(0,4)===todayISO().slice(0,4)).reduce((s,v)=>s+comisionFG(v),0);
+    const top10 = Object.entries(valorCliente).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(16); doc.text('Resumen de Cartera de Clientes', 14, 18);
+    doc.setFontSize(10); doc.text(`Flores & Gonzales Asociados — Generado el ${fmtDate(todayISO())}`, 14, 25);
+    doc.autoTable({ startY: 32, head: [['Indicador','Valor']], body: [
+      ['Total de clientes', String(state.clientes.length)],
+      ['Clientes activos (con venta vigente)', String(activos)],
+      ['Empresas (RUC)', String(totalEmpresas)],
+      ['Personas naturales', String(state.clientes.length-totalEmpresas)],
+      [`Comisión FG generada este año (${todayISO().slice(0,4)})`, `${fmtMoney(facturacionAnualPEN)} · ${fmtUSD(facturacionAnualUSD)}`],
+    ]});
+    doc.text('Top 10 clientes por valor histórico (comisión generada):', 14, doc.lastAutoTable.finalY + 12);
+    doc.autoTable({ startY: doc.lastAutoTable.finalY + 16, head: [['Cliente','Comisión histórica (S/ equiv.)']], body: top10.map(([id,val])=>{
+      const c = state.clientes.find(x=>x.id===id);
+      return [c?c.nombre:'—', fmtMoney(val)];
+    }) });
+    doc.save('resumen-cartera.pdf');
   };
   const btnPlantilla = document.getElementById('btnPlantillaClientes'); if(btnPlantilla) btnPlantilla.onclick = () => {
     const headers = ['Nombre / Razón social','Tipo de documento (DNI/RUC/CE)','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Fecha de nacimiento','OBS'];
@@ -2498,6 +3094,7 @@ function wireClientes(){
     if(!confirm(`Vas a eliminar TODOS los ${total} clientes registrados. Esta acción no se puede deshacer.\n\nRecomendación: haz un respaldo antes de continuar (botón "Guardar respaldo" en el menú lateral).\n\n¿Deseas continuar?`)) return;
     const texto = prompt(`Para confirmar, escribe la palabra ELIMINAR en mayúsculas:`);
     if(texto !== 'ELIMINAR'){ alert('No se eliminó nada — el texto no coincidió.'); return; }
+    state.clientes.forEach(c=> (c.documentos||[]).forEach(d=> d.archivoId && eliminarArchivoFirebase(d.archivoId)));
     state.clientes = [];
     save(); render();
     alert('Se eliminaron todos los clientes. Las ventas registradas se conservan, pero quedarán sin cliente asociado hasta que vuelvas a cargarlos.');
@@ -2593,7 +3190,30 @@ function openModal(){
   else if(editing.type==='asesor') host.innerHTML = modalAsesor();
   else if(editing.type==='cliente') host.innerHTML = modalCliente();
   else if(editing.type==='metas') host.innerHTML = modalMetas();
+  else if(editing.type==='siniestro') { host.innerHTML = modalSiniestro(); wireModalSiniestro(); return; }
   wireModal();
+}
+function wireModalSiniestro(){
+  document.getElementById('mSinCancel').onclick = closeModal;
+  const del = document.getElementById('mSinDelete'); if(del) del.onclick = () => {
+    if(!confirm('¿Eliminar este siniestro? Esta acción no se puede deshacer.')) return;
+    state.siniestros = state.siniestros.filter(x=>x.id!==editing.id);
+    save(); closeModal(); render();
+  };
+  document.getElementById('mSinSave').onclick = () => {
+    const data = {
+      clienteId: document.getElementById('mSinCliente').value,
+      aseguradora: document.getElementById('mSinAseguradora').value,
+      fechaEvento: document.getElementById('mSinFecha').value,
+      estado: document.getElementById('mSinEstado').value,
+      documentosPendientes: document.getElementById('mSinDocs').value.trim(),
+      notas: document.getElementById('mSinNotas').value.trim(),
+    };
+    if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
+    if(editing.id){ Object.assign(state.siniestros.find(x=>x.id===editing.id), data); }
+    else{ data.id = uid(); data.folio = ++state.folioSiniestro; state.siniestros.push(data); }
+    save(); closeModal(); render();
+  };
 }
 function closeModal(){ editing = null; const h = document.getElementById('modalHost'); if(h) h.remove(); }
 
@@ -2642,6 +3262,14 @@ function modalVenta(){
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaAseguradora" style="white-space:nowrap;">${bitDeModal==='asesorias' ? '+ Nueva empresa' : '+ Nueva compañía'}</button></div>
     </div>
     <div class="field"><label>${bitDeModal==='asesorias' ? 'N° RUC' : 'N° de póliza'}</label><input type="text" id="mNumeroPoliza" style="width:100%;" value="${v.numeroPoliza||''}" placeholder="${bitDeModal==='asesorias' ? 'Ej. 20481234567' : 'Ej. RG-00123'}"></div>
+    <div class="field" id="mFilaQuienPago" style="${v.tipoProducto==='soat'?'':'display:none;'}">
+      <label>¿Quién pagó la prima del SOAT?</label>
+      <select id="mQuienPagoPrima" style="width:100%;">
+        <option value="cliente" ${v.quienPagoPrima!=='fg_regalo'?'selected':''}>La pagó el cliente (venta normal)</option>
+        <option value="fg_regalo" ${v.quienPagoPrima==='fg_regalo'?'selected':''}>La cubrió FG — SOAT de regalo</option>
+      </select>
+      <div class="hint">Si FG la cubrió, igual registra la Prima bruta y % de comisión en la pestaña "Comisiones" — así queda registrada la comisión que sí recibes de la aseguradora.</div>
+    </div>
 
     <div class="divider"></div>
     <div class="panel-title">3. ${esAsesoriaModal ? 'Servicio' : 'Producto'}</div>
@@ -2655,10 +3283,36 @@ function modalVenta(){
       <div class="field" style="flex:1;"><label>Tipo de venta</label><select id="mTipoVenta" style="width:100%;"><option value="nueva" ${v.tipoVenta==='nueva'?'selected':''}>Nueva</option><option value="renovacion" ${v.tipoVenta==='renovacion'?'selected':''}>Renovación</option><option value="anulacion" ${v.tipoVenta==='anulacion'?'selected':''}>Anulación</option></select></div>
     </div>
     <div class="field"><label>${esAsesoriaModal ? 'Contrato / documento del servicio en PDF (opcional)' : 'Póliza en PDF (opcional)'}</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
-      <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="${v.polizaPDFData}" download="${v.polizaPDFNombre}" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
-      <div class="hint">Máx. ~1.5 MB por archivo (todo el sistema comparte 5 MB de almacenamiento).</div>
+      <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="#" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
+      <div class="hint">Máx. 700 KB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
     </div>
     <div class="field"><label>Detalle del servicio (opcional)</label><input type="text" id="mDetalleServicio" style="width:100%;" value="${v.detalleServicio||''}" placeholder="Ej. Declaración anual + planilla, o descripción específica del servicio"></div>
+
+    <div class="divider"></div>
+    <div class="panel-title">Beneficios entregados al cliente (opcional, hasta 3)</div>
+    <div class="hint">SOAT gratis, GPS, cuota gratis, etc. — independientes de la moneda de la póliza.</div>
+    <div id="mBeneficiosLista">
+      ${[0,1,2].map(i=>{
+        const b = (v.beneficios||[])[i] || {};
+        return `<div class="field-row" style="align-items:flex-end;margin-top:8px;">
+          <div class="field"><label>Beneficio ${i+1}</label><select id="mBenefTipo${i}" style="width:100%;"><option value="">Ninguno</option>${TIPOS_BENEFICIO.map(t=>`<option value="${t.id}" ${b.tipo===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
+          <div class="field"><label>Costo para FG</label><input type="number" step="0.01" min="0" id="mBenefMonto${i}" style="width:100%;" value="${b.monto||''}" placeholder="Ej. 45.00"></div>
+          <div class="field"><label>Moneda</label><select id="mBenefMoneda${i}" style="width:100%;"><option value="PEN" ${b.moneda!=='USD'?'selected':''}>Soles (S/)</option><option value="USD" ${b.moneda==='USD'?'selected':''}>Dólares (US$)</option></select></div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="divider" id="mDividerSoat" style="${v.tipoProducto==='seguros_vehiculares'?'':'display:none;'}"></div>
+    <div id="mBloqueSoatCompleto" style="${v.tipoProducto==='seguros_vehiculares'?'':'display:none;'}">
+    <div class="panel-title">Control de SOAT de este vehículo</div>
+    <div class="hint">Independiente de si el SOAT fue regalado o no — para llevar el vencimiento de TODOS tus clientes vehiculares.</div>
+    <div class="field"><label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="mTieneSoat" ${v.tieneSoat?'checked':''}> Registrar la vigencia del SOAT de este cliente</label></div>
+    <div class="field-row" id="mFilaSoat" style="${v.tieneSoat?'':'display:none;'}">
+      <div class="field"><label>Inicio de vigencia SOAT</label><input type="date" id="mSoatInicio" style="width:100%;" value="${v.soatVigenciaInicio||''}"></div>
+      <div class="field"><label>Fin de vigencia SOAT</label><input type="date" id="mSoatFin" style="width:100%;" value="${v.soatVigenciaFin||''}"></div>
+      <div class="field"><label>Aseguradora del SOAT</label><select id="mSoatAseguradora" style="width:100%;"><option value="">Misma que la póliza</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${v.soatAseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+    </div>
+    </div>
 
     <div class="divider"></div>
     <div class="panel-title">4 · 5. Fechas y moneda</div>
@@ -2858,9 +3512,17 @@ function wireModal(){
   const del = document.getElementById('mDelete'); if(del) del.onclick = () => {
     const etiquetas = { venta:'esta venta', asesor:'este asesor', cliente:'este cliente (y perderás su historial de contacto)' };
     if(!confirm(`¿Seguro que quieres eliminar ${etiquetas[editing.type]||'este registro'}? Esta acción no se puede deshacer.`)) return;
-    if(editing.type==='venta'){ state.ventas = state.ventas.filter(v=>v.id!==editing.id); }
+    if(editing.type==='venta'){
+      const ventaAEliminar = state.ventas.find(v=>v.id===editing.id);
+      if(ventaAEliminar && ventaAEliminar.polizaPDFId) eliminarArchivoFirebase(ventaAEliminar.polizaPDFId);
+      state.ventas = state.ventas.filter(v=>v.id!==editing.id);
+    }
     if(editing.type==='asesor') state.asesores = state.asesores.filter(a=>a.id!==editing.id);
-    if(editing.type==='cliente') state.clientes = state.clientes.filter(c=>c.id!==editing.id);
+    if(editing.type==='cliente'){
+      const cliAEliminar = state.clientes.find(c=>c.id===editing.id);
+      if(cliAEliminar && cliAEliminar.documentos) cliAEliminar.documentos.forEach(d=> d.archivoId && eliminarArchivoFirebase(d.archivoId));
+      state.clientes = state.clientes.filter(c=>c.id!==editing.id);
+    }
     save(); closeModal(); render();
   };
 
@@ -2894,7 +3556,7 @@ function wireModal(){
     if(polizaPDFInput) polizaPDFInput.onchange = () => {
       const file = polizaPDFInput.files[0];
       if(!file) return;
-      if(file.size > 1.5*1024*1024){ alert('El archivo pesa más de 1.5 MB. Elige un PDF más liviano — todo el sistema comparte 5 MB de almacenamiento.'); polizaPDFInput.value=''; return; }
+      if(file.size > 700*1024){ alert('El archivo pesa más de 700 KB. Elige un PDF más liviano (los archivos en Firebase tienen un límite de 1 MB cada uno).'); polizaPDFInput.value=''; return; }
       const reader = new FileReader();
       reader.onload = () => {
         pendingPolizaPDF = { name: file.name, dataUrl: reader.result };
@@ -2902,6 +3564,20 @@ function wireModal(){
         if(info) info.innerHTML = `📄 ${file.name} — se guardará al hacer clic en Guardar.`;
       };
       reader.readAsDataURL(file);
+    };
+    const linkVerPDF = document.getElementById('mPolizaPDFLink');
+    if(linkVerPDF) linkVerPDF.onclick = async (e) => {
+      e.preventDefault();
+      const ventaActual = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
+      if(!ventaActual || !ventaActual.polizaPDFId){ alert('No se encontró el archivo.'); return; }
+      linkVerPDF.textContent = 'Descargando…';
+      try{
+        const archivo = await obtenerArchivoFirebase(ventaActual.polizaPDFId);
+        if(!archivo){ alert('El archivo ya no está disponible.'); return; }
+        const a = document.createElement('a'); a.href = archivo.data; a.download = archivo.nombre;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }catch(err){ alert('No se pudo descargar el archivo: ' + err.message); }
+      linkVerPDF.textContent = 'ver / descargar';
     };
     const quitarPDF = document.getElementById('mPolizaPDFQuitar');
     if(quitarPDF) quitarPDF.onclick = (e) => {
@@ -2986,6 +3662,20 @@ function wireModal(){
     prodSel.onchange = () => { if(!editing.id){ tipoSel.value = esSeguro(prodSel.value) ? 'porcentaje' : 'fijo'; } toggleModoComision(); };
     if(vigenciaInicioInput) vigenciaInicioInput.onchange = () => { if(vigenciaInicioInput.value) vigenciaFinInput.value = addYears(vigenciaInicioInput.value, 1); };
     const formaPagoSel = document.getElementById('mFormaPago');
+    const chkTieneSoat = document.getElementById('mTieneSoat');
+    const filaSoat = document.getElementById('mFilaSoat');
+    if(chkTieneSoat && filaSoat) chkTieneSoat.onchange = () => { filaSoat.style.display = chkTieneSoat.checked ? '' : 'none'; };
+    const bloqueSoatCompleto = document.getElementById('mBloqueSoatCompleto');
+    const dividerSoat = document.getElementById('mDividerSoat');
+    const filaQuienPago = document.getElementById('mFilaQuienPago');
+    if(prodSel && bloqueSoatCompleto){
+      prodSel.addEventListener('change', () => {
+        const mostrar = prodSel.value==='seguros_vehiculares';
+        bloqueSoatCompleto.style.display = mostrar ? '' : 'none';
+        if(dividerSoat) dividerSoat.style.display = mostrar ? '' : 'none';
+        if(filaQuienPago) filaQuienPago.style.display = prodSel.value==='soat' ? '' : 'none';
+      });
+    }
     const estadoPagoSel = document.getElementById('mEstadoPago');
     const filaFechaPagoComision = document.getElementById('mFilaFechaPagoComision');
     if(estadoPagoSel && filaFechaPagoComision) estadoPagoSel.onchange = () => {
@@ -3106,7 +3796,7 @@ function wireModal(){
   }
 
   const saveBtn = document.getElementById('mSave');
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
    try{
     if(editing.type==='venta'){
       const tipoProductoSel = document.getElementById('mProducto').value;
@@ -3133,6 +3823,18 @@ function wireModal(){
         canalVenta: document.getElementById('mCanal').value,
         tipoProducto: tipoProductoSel,
         detalleServicio: document.getElementById('mDetalleServicio').value.trim(),
+        beneficios: [0,1,2].map(i=>{
+          const tipoEl = document.getElementById('mBenefTipo'+i);
+          if(!tipoEl || !tipoEl.value) return null;
+          const monto = parseFloat(document.getElementById('mBenefMonto'+i).value)||0;
+          if(monto<=0) return null;
+          return { tipo: tipoEl.value, monto, moneda: document.getElementById('mBenefMoneda'+i).value };
+        }).filter(Boolean),
+        quienPagoPrima: (tipoProductoSel==='soat' && document.getElementById('mQuienPagoPrima')) ? document.getElementById('mQuienPagoPrima').value : 'cliente',
+        tieneSoat: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat')) ? document.getElementById('mTieneSoat').checked : false,
+        soatVigenciaInicio: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat') && document.getElementById('mTieneSoat').checked) ? document.getElementById('mSoatInicio').value : '',
+        soatVigenciaFin: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat') && document.getElementById('mTieneSoat').checked) ? document.getElementById('mSoatFin').value : '',
+        soatAseguradora: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat') && document.getElementById('mTieneSoat').checked) ? document.getElementById('mSoatAseguradora').value : '',
         tipoVenta: document.getElementById('mTipoVenta').value,
         fechaVenta: document.getElementById('mFecha').value,
         vigenciaInicio: document.getElementById('mVigenciaInicio').value,
@@ -3152,9 +3854,23 @@ function wireModal(){
         fechaPagoComision: document.getElementById('mEstadoPago').value==='pagada' ? (document.getElementById('mFechaPagoComision').value || todayISO()) : '',
         notas: document.getElementById('mNotas').value,
       };
+      const ventaExistentePDF = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
       if(pendingPolizaPDF!==undefined){
-        if(pendingPolizaPDF===null){ data.polizaPDFNombre=''; data.polizaPDFData=''; }
-        else { data.polizaPDFNombre = pendingPolizaPDF.name; data.polizaPDFData = pendingPolizaPDF.dataUrl; }
+        if(ventaExistentePDF && ventaExistentePDF.polizaPDFId){ eliminarArchivoFirebase(ventaExistentePDF.polizaPDFId); }
+        if(pendingPolizaPDF===null){ data.polizaPDFNombre=''; data.polizaPDFId=''; }
+        else {
+          saveBtn.textContent = 'Subiendo archivo…'; saveBtn.disabled = true;
+          try{
+            const nuevoId = await guardarArchivoFirebase(pendingPolizaPDF.name, pendingPolizaPDF.dataUrl);
+            data.polizaPDFNombre = pendingPolizaPDF.name;
+            data.polizaPDFId = nuevoId;
+          }catch(err){
+            saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
+            mostrarErrorModal('No se pudo subir el archivo PDF a la nube: ' + err.message + '. Intenta de nuevo o quita el archivo.');
+            return;
+          }
+          saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
+        }
       }
       if(!data.clienteId){ irAPestanaModal('personales'); document.getElementById('mCliente').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
       if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
@@ -3237,6 +3953,10 @@ render = function(){
   if(tab==='cobro_comisiones') wireCobroComisiones();
   if(tab==='pago_comisiones') wirePagoComisiones();
   if(tab==='polizas') wirePolizas();
+  if(tab==='cobranzas') wireCobranzas();
+  if(tab==='soat') wireSoat();
+  if(tab==='pipeline') wirePipeline();
+  if(tab==='siniestros') wireSiniestros();
   if(tab==='asesores') wireAsesores();
   if(tab==='clientes') wireClientes();
 };
