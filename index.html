@@ -173,7 +173,7 @@
     <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
     <button class="nav-btn" data-tab="cobranzas"><span class="nav-icon">💰</span>Cobranzas</button>
     <button class="nav-btn" data-tab="soat"><span class="nav-icon">🚗</span>SOAT y Beneficios</button>
-    <button class="nav-btn" data-tab="pipeline"><span class="nav-icon">🗂</span>Pipeline de prospectos</button>
+    <button class="nav-btn" data-tab="pipeline"><span class="nav-icon">🗂</span>Gestión Comercial</button>
     <button class="nav-btn" data-tab="siniestros"><span class="nav-icon">⚠</span>Siniestros</button>
     <div class="nav-group-label">Directorio</div>
     <button class="nav-btn" data-tab="asesores"><span class="nav-icon">☺</span>Asesores</button>
@@ -195,6 +195,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script>
@@ -214,8 +215,13 @@ try{
   fbDb.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
 }catch(e){ console.error('No se pudo inicializar Firebase', e); }
 const FB_DOC_REF = () => fbDb.collection('crm').doc('main');
+const FB_CLIENTES_COL = () => fbDb.collection('crm_clientes');
+const FB_VENTAS_COL = () => fbDb.collection('crm_ventas');
+const FB_ASESORES_COL = () => fbDb.collection('crm_asesores');
+const FB_SINIESTROS_COL = () => fbDb.collection('crm_siniestros');
 const FB_FILES_COL = () => fbDb.collection('crm_archivos');
 const FB_ARCHIVO_REF = () => fbDb.collection('crm_historico').doc('ventas_archivadas');
+function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
 async function archivarVentasAntiguas(){
   const hace24Meses = new Date(); hace24Meses.setMonth(hace24Meses.getMonth()-24);
   const hace24MesesISO = hace24Meses.toISOString().slice(0,10);
@@ -229,7 +235,7 @@ async function archivarVentasAntiguas(){
     const idsArchivados = new Set(aArchivar.map(v=>v.id));
     state.ventas = state.ventas.filter(v=>!idsArchivados.has(v.id));
     save(); render();
-    alert(`Listo: se archivaron ${aArchivar.length} venta(s). Tu documento principal ahora pesa menos.`);
+    alert(`Listo: se archivaron ${aArchivar.length} venta(s). Siguen disponibles para descargar si las necesitas.`);
   }catch(err){
     alert('No se pudo archivar: ' + err.message);
   }
@@ -260,6 +266,36 @@ async function obtenerArchivoFirebase(id){
 }
 async function eliminarArchivoFirebase(id){
   try{ await FB_FILES_COL().doc(id).delete(); }catch(e){ console.error('No se pudo eliminar el archivo de la nube', e); }
+}
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+async function comprimirPDF(file, targetBytes){
+  const arrayBuffer = await file.arrayBuffer();
+  const intentos = [ {scale:1.3, calidad:0.6}, {scale:1.1, calidad:0.45}, {scale:0.9, calidad:0.35}, {scale:0.75, calidad:0.28} ];
+  for(const intento of intentos){
+    try{
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+      const { jsPDF } = window.jspdf;
+      let doc = null;
+      for(let i=1; i<=pdf.numPages; i++){
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: intento.scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgData = canvas.toDataURL('image/jpeg', intento.calidad);
+        const wMm = viewport.width * 0.264583, hMm = viewport.height * 0.264583;
+        if(!doc) doc = new jsPDF({ orientation: wMm>hMm?'l':'p', unit:'mm', format:[wMm,hMm] });
+        else doc.addPage([wMm,hMm], wMm>hMm?'l':'p');
+        doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm);
+      }
+      const blob = doc.output('blob');
+      if(blob.size <= targetBytes){
+        return new File([blob], file.name, { type:'application/pdf' });
+      }
+    }catch(err){ console.error('Intento de compresión falló', err); }
+  }
+  return null; // no se logró bajar del límite
 }
 
 (function(){
@@ -513,68 +549,105 @@ function actualizarIndicadorNube(estado){
   else if(estado==='local'){ el.textContent = '⚠️ Guardado solo en este dispositivo (sin conexión)'; el.style.color = '#A8483A'; }
   else if(estado==='guardando'){ el.textContent = '☁️ Guardando…'; el.style.color = 'var(--ink-faint,#8A968F)'; }
 }
+let ultimoGuardado = { clientes:{}, ventas:{}, asesores:{}, siniestros:{} };
+function snapshotGuardado(){
+  ultimoGuardado = {
+    clientes: Object.fromEntries(state.clientes.map(c=>[c.id, JSON.stringify(c)])),
+    ventas: Object.fromEntries(state.ventas.map(v=>[v.id, JSON.stringify(v)])),
+    asesores: Object.fromEntries(state.asesores.map(a=>[a.id, JSON.stringify(a)])),
+    siniestros: Object.fromEntries(state.siniestros.map(s=>[s.id, JSON.stringify(s)])),
+  };
+}
+function coreState(){
+  const { clientes, ventas, asesores, siniestros, ...resto } = state;
+  return resto;
+}
 async function load(){
   try{
-    let raw = null;
-    // 1) intentar cargar desde Firebase (la nube) primero
+    let cargadoDeNube = false;
     if(fbDb){
       try{
-        const snap = await FB_DOC_REF().get();
-        if(snap.exists){
-          raw = snap.data().json;
+        const coreSnap = await FB_DOC_REF().get();
+        if(coreSnap.exists && coreSnap.data().migradoARegistros){
+          // ---- Arquitectura nueva: cada cliente/venta es su propio registro ----
+          const [clientesSnap, ventasSnap, asesoresSnap, siniestrosSnap] = await Promise.all([
+            FB_CLIENTES_COL().get(), FB_VENTAS_COL().get(), FB_ASESORES_COL().get(), FB_SINIESTROS_COL().get()
+          ]);
+          const core = coreSnap.data().core || {};
+          state = Object.assign({clientes:[],asesores:[],ventas:[],siniestros:[],folioVenta:0,folioSiniestro:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',dni:'46806411',passwordHash:null}}, core);
+          state.clientes = clientesSnap.docs.map(d=>d.data());
+          state.ventas = ventasSnap.docs.map(d=>d.data());
+          state.asesores = asesoresSnap.docs.map(d=>d.data());
+          state.siniestros = siniestrosSnap.docs.map(d=>d.data());
+          snapshotGuardado();
+          cargadoDeNube = true;
+          actualizarIndicadorNube('ok');
+        } else if(coreSnap.exists && coreSnap.data().json){
+          // ---- Datos en el formato viejo (un solo documento) — migrar automáticamente ----
+          const d = JSON.parse(coreSnap.data().json);
+          state = Object.assign({clientes:[],asesores:[],ventas:[],siniestros:[],folioVenta:0,folioSiniestro:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',dni:'46806411',passwordHash:null}}, d);
+          aplicarMigracionesState();
+          ultimoGuardado = { clientes:{}, ventas:{}, asesores:{}, siniestros:{} }; // forzar que se escriba todo en la primera migración
+          cargadoDeNube = true;
+          console.log('Migrando almacenamiento a registros individuales…');
+          await save(true);
           actualizarIndicadorNube('ok');
         }
       }catch(e){ console.error('No se pudo leer de Firebase, se usará el respaldo local', e); }
     }
-    // 2) si no hay datos en la nube todavía, usar lo que haya localmente
-    if(!raw){
+    if(!cargadoDeNube){
+      let raw = null;
       if(window.storage && typeof window.storage.get==='function'){
         const res = await window.storage.get('crm-data', false);
         raw = res && res.value;
       } else {
         raw = localStorage.getItem('crm-data');
       }
-      if(raw && fbDb) actualizarIndicadorNube('local');
-    }
-    if(raw){
-      const d = JSON.parse(raw);
-      state = Object.assign({clientes:[],asesores:[],ventas:[],siniestros:[],folioVenta:0,folioSiniestro:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',dni:'46806411',passwordHash:null}}, d);
-      if(!state.productosPersonalizados) state.productosPersonalizados = [];
-      if(!state.metas) state.metas = { general:0, porAsesor:{} };
-      if(!state.metas.porAsesor) state.metas.porAsesor = {};
-      if(!state.aseguradorasMigradas3){ state.aseguradoras = ASEGURADORAS_DEFAULT.slice(); state.aseguradorasMigradas3 = true; }
-      else if(!state.aseguradoras || !state.aseguradoras.length) state.aseguradoras = ASEGURADORAS_DEFAULT.slice();
-      if(!state.oficinas) state.oficinas = [];
-      if(!state.siniestros) state.siniestros = [];
-      if(!state.folioSiniestro) state.folioSiniestro = 0;
-      if(!state.tema) state.tema = 'claro';
-      if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', dni:'46806411', passwordHash:null };
-      if(!state.auth.dni) state.auth.dni = '46806411';
-      // Migración: completar tipoDocumento en clientes antiguos que no lo tenían (detecta RUC por longitud de 11 dígitos)
-      if(!state.tipoDocumentoMigrado && Array.isArray(state.clientes)){
-        let reparados = 0;
-        state.clientes.forEach(c=>{
-          if(!c.tipoDocumento){
-            const soloNumeros = String(c.documento||'').replace(/\D/g,'');
-            c.tipoDocumento = soloNumeros.length===11 ? 'RUC' : soloNumeros.length===8 ? 'DNI' : 'DNI';
-            reparados++;
-          }
-        });
-        state.tipoDocumentoMigrado = true;
-        if(reparados>0) save();
+      if(raw){
+        const d = JSON.parse(raw);
+        state = Object.assign({clientes:[],asesores:[],ventas:[],siniestros:[],folioVenta:0,folioSiniestro:0,metas:{general:0,porAsesor:{}},aseguradoras:ASEGURADORAS_DEFAULT.slice(),oficinas:[],tipoCambio:3.75,productosPersonalizados:[],tema:'claro',auth:{email:'asesorespecializado18@gmail.com',dni:'46806411',passwordHash:null}}, d);
+        aplicarMigracionesState();
+        snapshotGuardado();
+        if(fbDb) actualizarIndicadorNube('local');
       }
     }
   }catch(e){ console.error('No se pudo cargar', e); }
   seedIfEmpty();
   checkAuthAndRender();
 }
+function aplicarMigracionesState(){
+  if(!state.productosPersonalizados) state.productosPersonalizados = [];
+  if(!state.metas) state.metas = { general:0, porAsesor:{} };
+  if(!state.metas.porAsesor) state.metas.porAsesor = {};
+  if(!state.aseguradorasMigradas3){ state.aseguradoras = ASEGURADORAS_DEFAULT.slice(); state.aseguradorasMigradas3 = true; }
+  else if(!state.aseguradoras || !state.aseguradoras.length) state.aseguradoras = ASEGURADORAS_DEFAULT.slice();
+  if(!state.oficinas) state.oficinas = [];
+  if(!state.siniestros) state.siniestros = [];
+  if(!state.folioSiniestro) state.folioSiniestro = 0;
+  if(!state.tema) state.tema = 'claro';
+  if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', dni:'46806411', passwordHash:null };
+  if(!state.auth.dni) state.auth.dni = '46806411';
+  if(!state.tipoDocumentoMigrado && Array.isArray(state.clientes)){
+    state.clientes.forEach(c=>{
+      if(!c.tipoDocumento){
+        const soloNumeros = String(c.documento||'').replace(/\D/g,'');
+        c.tipoDocumento = soloNumeros.length===11 ? 'RUC' : soloNumeros.length===8 ? 'DNI' : 'DNI';
+      }
+      if(!c.id) c.id = uid();
+    });
+    state.tipoDocumentoMigrado = true;
+  }
+  state.ventas.forEach(v=>{ if(!v.id) v.id = uid(); });
+  state.asesores.forEach(a=>{ if(!a.id) a.id = uid(); });
+  state.siniestros.forEach(s=>{ if(!s.id) s.id = uid(); });
+}
 let saveTimer=null;
-function save(){
+function save(inmediato){
   clearTimeout(saveTimer);
   actualizarIndicadorNube('guardando');
-  saveTimer = setTimeout(async ()=>{
+  const ejecutar = async () => {
     const payload = JSON.stringify(state);
-    // siempre guarda una copia local, por si se pierde la conexión
+    // siempre guarda una copia local completa, por si se pierde la conexión
     try{
       if(window.storage && typeof window.storage.set==='function'){
         await window.storage.set('crm-data', payload, false);
@@ -582,17 +655,39 @@ function save(){
         localStorage.setItem('crm-data', payload);
       }
     }catch(e){ console.error('No se pudo guardar localmente', e); }
-    // guarda en la nube (Firebase)
-    if(fbDb){
-      try{
-        await FB_DOC_REF().set({ json: payload, actualizado: new Date().toISOString() });
-        actualizarIndicadorNube('ok');
-      }catch(e){
-        console.error('No se pudo guardar en la nube', e);
-        actualizarIndicadorNube('local');
+    if(!fbDb) return;
+    try{
+      const colecciones = [
+        { col: FB_CLIENTES_COL(), items: state.clientes, prev: ultimoGuardado.clientes },
+        { col: FB_VENTAS_COL(), items: state.ventas, prev: ultimoGuardado.ventas },
+        { col: FB_ASESORES_COL(), items: state.asesores, prev: ultimoGuardado.asesores },
+        { col: FB_SINIESTROS_COL(), items: state.siniestros, prev: ultimoGuardado.siniestros },
+      ];
+      const operaciones = [];
+      colecciones.forEach(({col, items, prev})=>{
+        const idsActuales = new Set();
+        items.forEach(item=>{
+          idsActuales.add(item.id);
+          const json = JSON.stringify(item);
+          if(prev[item.id]!==json) operaciones.push({ tipo:'set', ref: col.doc(item.id), data: item });
+        });
+        Object.keys(prev).forEach(id=>{ if(!idsActuales.has(id)) operaciones.push({ tipo:'delete', ref: col.doc(id) }); });
+      });
+      operaciones.push({ tipo:'set', ref: FB_DOC_REF(), data: { core: coreState(), migradoARegistros: true, actualizado: new Date().toISOString() } });
+      for(const grupo of chunkArray(operaciones, 400)){
+        const batch = fbDb.batch();
+        grupo.forEach(op=>{ if(op.tipo==='set') batch.set(op.ref, op.data); else batch.delete(op.ref); });
+        await batch.commit();
       }
+      snapshotGuardado();
+      actualizarIndicadorNube('ok');
+    }catch(e){
+      console.error('No se pudo guardar en la nube', e);
+      actualizarIndicadorNube('local');
     }
-  }, 250);
+  };
+  if(inmediato) return ejecutar();
+  saveTimer = setTimeout(ejecutar, 250);
 }
 
 function seedIfEmpty(){
@@ -888,7 +983,7 @@ function tamanoDatosBytes(){
 }
 function tamanoDatosInfo(){
   const bytes = tamanoDatosBytes();
-  const limite = 1024*1024; // 1 MB, límite real de Firestore por documento
+  const limite = 20*1024*1024; // referencia informativa — con el nuevo formato cada cliente/venta es un registro aparte, ya no hay un límite real de 1 MB
   const pct = Math.min(100, Math.round((bytes/limite)*100));
   const kb = (bytes/1024).toFixed(0);
   let nivel = 'ok';
@@ -1075,13 +1170,13 @@ function viewDashboard(){
     </div>` : ''}
     <div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid ${tamano.nivel==='critico'?'var(--danger)':'var(--border)'};background:${tamano.nivel==='critico'?'var(--danger-soft)':tamano.nivel==='alerta'?'#FBF2E3':'var(--surface)'};">
       <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;">
-        <span>📦 Espacio usado en la nube (documento principal)</span>
-        <span class="num" style="font-weight:600;">${tamano.kb} KB de 1024 KB (${tamano.pct}%)</span>
+        <span>📦 Tamaño total de tus datos (${state.clientes.length} clientes, ${state.ventas.length} ventas)</span>
+        <span class="num" style="font-weight:600;">${tamano.kb} KB</span>
       </div>
       <div style="height:7px;border-radius:4px;background:var(--border);overflow:hidden;">
         <div style="height:100%;width:${tamano.pct}%;background:${tamano.nivel==='critico'?'var(--danger)':tamano.nivel==='alerta'?'#B8823D':'var(--primary)'};border-radius:4px;"></div>
       </div>
-      ${tamano.nivel==='critico' ? `<div style="font-size:12.5px;color:var(--danger);margin-top:6px;font-weight:600;">⚠ Muy cerca del límite — el guardado en la nube puede empezar a fallar. Avísame para archivar datos antiguos.</div>` : tamano.nivel==='alerta' ? `<div style="font-size:12.5px;color:#B8823D;margin-top:6px;">Vas subiendo — cuando quieras, podemos archivar ventas antiguas para liberar espacio.</div>` : ''}
+      <div style="font-size:12px;color:var(--ink-faint);margin-top:6px;">Cada cliente y venta se guarda como registro individual en la nube — ya no hay riesgo de que un límite de tamaño bloquee el guardado.</div>
       <div style="margin-top:8px;"><button class="btn btn-sm" id="btnArchivarVentas">Archivar ventas antiguas</button><button class="btn btn-ghost btn-sm" id="btnDescargarArchivadas" style="margin-left:6px;">Descargar archivadas (Excel)</button></div>
     </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
@@ -1612,51 +1707,67 @@ function wireVentas(){
           if(!filas.length){ alert('El archivo no tiene filas de datos.'); return; }
           const norm = s => String(s||'').toLowerCase().trim();
           const buscar = (fila, ...claves) => {
-            for(const key of Object.keys(fila)){
-              const k = norm(key);
-              if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim();
-            }
+            const keys = Object.keys(fila);
+            for(const key of keys){ if(claves.includes(norm(key))) return String(fila[key]||'').trim(); }
+            for(const key of keys){ const k = norm(key); if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim(); }
             return '';
           };
           const buscarProducto = (fila) => {
-            const txt = norm(buscar(fila, 'producto'));
-            if(!txt) return 'seguros_vehiculares';
-            const match = todosLosProductos().find(r=> txt.includes(norm(r.label)) || norm(r.label).includes(txt));
-            return match ? match.id : 'seguros_vehiculares';
+            const txt = norm(buscar(fila, 'producto', 'ramo'));
+            if(txt){
+              const match = todosLosProductos().find(r=> txt.includes(norm(r.label)) || norm(r.label).includes(txt));
+              if(match) return match.id;
+            }
+            // si hay datos de vehículo (marca, placa) sin producto explícito, asumimos seguro vehicular
+            return 'seguros_vehiculares';
           };
           let creadas=0, clientesCreados=0, omitidas=0;
           filas.forEach(fila => {
-            const nombreCliente = buscar(fila, 'cliente');
-            const fecha = buscar(fila, 'fecha de venta', 'fecha venta', 'fecha');
+            const nombreCliente = buscar(fila, 'nombre o razón social', 'razón social', 'razon social', 'nombre', 'cliente', 'empresa');
+            const fecha = buscar(fila, 'fecha de venta', 'fecha venta', 'fecha solicitud', 'inicio vigencia', 'inicio de vigencia', 'fecha');
             if(!nombreCliente || !fecha){ omitidas++; return; }
+            const documentoCliente = buscar(fila, 'dni/ruc', 'dni o ruc', 'ruc/dni', 'dni cliente', 'documento', 'ruc', 'dni');
             let cli = state.clientes.find(c=> norm(c.nombre)===norm(nombreCliente));
             if(!cli){
-              cli = { id: uid(), nombre: nombreCliente, documento: buscar(fila,'documento'), tipoDocumento: buscar(fila,'documento').length===11?'RUC':'DNI', estadoContacto:'cliente', etiquetas:[] };
+              cli = { id: uid(), nombre: nombreCliente, documento: documentoCliente, tipoDocumento: documentoCliente.replace(/\D/g,'').length===11?'RUC':'DNI',
+                direccion: buscar(fila,'domicilio','dirección','direccion'),
+                celular1: buscar(fila,'celular 1','celular1','teléfonos','telefonos','celular','contacto'),
+                celular2: buscar(fila,'celular 2','celular2'),
+                email: buscar(fila,'correo electrónico','correo electronico','correo'),
+                estadoContacto:'cliente', etiquetas:[] };
               state.clientes.push(cli);
               clientesCreados++;
             }
-            const nombreAsesor = buscar(fila, 'asesor');
-            const asesor = nombreAsesor ? state.asesores.find(a=> norm(a.nombre)===norm(nombreAsesor)) : null;
+            const nombreAsesor = buscar(fila, 'asesor maqfin', 'codigo vendedor', 'código vendedor', 'usuario venta', 'asesor');
+            const asesor = nombreAsesor ? state.asesores.find(a=> norm(a.nombre)===norm(nombreAsesor) || norm(nombreAsesor).includes(norm(a.nombre))) : null;
             const moneda = norm(buscar(fila,'moneda'))==='usd' ? 'USD' : 'PEN';
-            const primaBruta = parseFloat(buscar(fila,'prima bruta'))||0;
-            const pctAseguradora = parseFloat(buscar(fila,'% comisión aseguradora','comision aseguradora'))||0;
+            const primaBruta = parseFloat(buscar(fila,'prima bruta','prima neta anual','precio','valor us$','valor','prima'))||0;
+            const pctAseguradora = parseFloat(buscar(fila,'% comisión aseguradora','comision aseguradora','comisión','comision'))||0;
             const primaNeta = primaBruta / FACTOR_PRIMA_NETA;
-            const comisionTotal = Math.round(primaNeta * (pctAseguradora/100) * 100)/100;
+            const comisionTotal = pctAseguradora>0 ? Math.round(primaNeta * (pctAseguradora/100) * 100)/100 : primaBruta;
             const porcentajeFG = parseFloat(buscar(fila,'% fg','fg'))||70;
-            const formaPago = norm(buscar(fila,'forma de pago')) || 'contado';
-            const estadoTxt = norm(buscar(fila,'estado'));
+            const formaPagoTxt = norm(buscar(fila,'forma de pago','forma  de pago','forma  pago','pago'));
+            const estadoTxt = norm(buscar(fila,'estado de pago','estatus','estado'));
+            const marca = buscar(fila,'marca');
+            const modeloVeh = buscar(fila,'modelo');
+            const placa = buscar(fila,'placa');
+            const detalleVehiculo = [marca,modeloVeh,placa].filter(Boolean).length ? `Vehículo: ${[marca,modeloVeh].filter(Boolean).join(' ')}${placa?' — Placa '+placa:''}` : '';
             const nuevaVenta = {
               id: uid(), folio: ++state.folioVenta,
               clienteId: cli.id, asesorId: asesor?asesor.id:'', canalVenta:'directo',
-              aseguradora: buscar(fila,'aseguradora'), numeroPoliza: buscar(fila,'n° de póliza','n de poliza','poliza'),
+              aseguradora: buscar(fila,'cía. aseguradora','cia aseguradora','compañía','compania','aseguradora'),
+              numeroPoliza: buscar(fila,'n° de póliza','n de poliza','poliza','póliza'),
               tipoProducto: buscarProducto(fila), tipoVenta:'nueva',
               fechaVenta: fecha, moneda, primaBruta, porcentajeComisionAseguradora: pctAseguradora,
-              modoComisionAseguradora:'porcentaje', comisionTotal, porcentajeFG,
+              modoComisionAseguradora: pctAseguradora>0 ? 'porcentaje' : 'fijo', comisionTotal, porcentajeFG,
               tipoComisionAsesor: asesor ? 'porcentaje' : 'ninguna', valorComisionAsesor: 30,
-              formaPago: (formaPago==='cupones'||formaPago==='debito_automatico') ? formaPago : 'contado',
-              vigenciaInicio: buscar(fila,'inicio vigencia')||fecha, vigenciaFin: buscar(fila,'fin vigencia'),
+              formaPago: (formaPagoTxt.includes('cupon')||formaPagoTxt.includes('cuota')) ? 'cupones' : (formaPagoTxt.includes('debito')||formaPagoTxt.includes('débito')) ? 'debito_automatico' : 'contado',
+              vigenciaInicio: buscar(fila,'inicio de vigencia','inicio vigencia')||fecha,
+              vigenciaFin: buscar(fila,'fin de vigencia','fin vigencia'),
               estadoVenta: estadoTxt.includes('anulad') ? 'anulada' : 'emitida',
-              estadoComision:'pagada', estadoCobroFG:'cobrado', notas:'Cargada desde histórico',
+              estadoComision:'pagada', estadoCobroFG:'cobrado',
+              notas: ['Cargada desde histórico', detalleVehiculo, buscar(fila,'observaciones','obs')].filter(Boolean).join(' — '),
+              detalleServicio: detalleVehiculo,
             };
             state.ventas.push(nuevaVenta);
             creadas++;
@@ -2587,27 +2698,83 @@ function wireSoat(){
 }
 
 // ================= PIPELINE DE PROSPECTOS =================
+let filtroPipelineTelefono = 'todos';
+function ultimoContactoCliente(c){
+  const inter = c.interacciones || [];
+  if(inter.length===0) return null;
+  return inter.slice().sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''))[0].fecha;
+}
+function diasSinContacto(c){
+  const ultimo = ultimoContactoCliente(c);
+  if(!ultimo) return null;
+  return Math.max(0, daysUntil(ultimo)*-1);
+}
 function viewPipeline(){
   const columnas = ESTADOS_CONTACTO.filter(e=>e.id!=='no_interesado');
+  const inicioSemana = new Date(); inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay());
+  const inicioSemanaISO = inicioSemana.toISOString().slice(0,10);
+  const contactadosEstaSemana = new Set();
+  state.clientes.forEach(c=> (c.interacciones||[]).forEach(i=>{ if((i.fecha||'')>=inicioSemanaISO) contactadosEstaSemana.add(c.id); }));
+  const metaSemanal = state.metaContactosSemanal || 20;
+  const esteMes = todayISO().slice(0,7);
+  const convertidosEsteMes = state.clientes.filter(c=> c.estadoContacto==='cliente' && (c.fechaCambioEstado||'').slice(0,7)===esteMes).length;
+
   return `
-    <div class="page-head"><div><h1>Pipeline de prospectos</h1><p>Vista tipo tablero de tus clientes según su etapa comercial. Arrastra o usa "Mover" para cambiarlos de columna.</p></div></div>
+    <div class="page-head"><div><h1>Gestión Comercial</h1><p>Vista tipo tablero de tus clientes según su etapa comercial. Usa "Mover" para cambiarlos de columna.</p></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Contactados esta semana</div>
+        <div class="value num" style="color:#fff;">${contactadosEstaSemana.size} / ${metaSemanal}</div>
+        <div style="background:rgba(255,255,255,0.25);height:6px;border-radius:3px;margin-top:6px;"><div style="background:#fff;height:6px;border-radius:3px;width:${Math.min(100,(contactadosEstaSemana.size/metaSemanal*100))}%;"></div></div>
+        <a href="#" id="btnEditarMetaSemanal" style="font-size:11px;color:rgba(255,255,255,0.85);">cambiar meta</a>
+      </div>
+      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Convertidos a cliente este mes</div>
+        <div class="value num" style="color:#fff;">${convertidosEsteMes}</div>
+      </div>
+      <div class="card" style="padding:16px;">
+        <div class="label">Filtro de contacto</div>
+        <select id="fPipelineTelefono" style="width:100%;margin-top:6px;">
+          <option value="todos" ${filtroPipelineTelefono==='todos'?'selected':''}>Todos</option>
+          <option value="con_telefono" ${filtroPipelineTelefono==='con_telefono'?'selected':''}>Solo con teléfono</option>
+          <option value="sin_telefono" ${filtroPipelineTelefono==='sin_telefono'?'selected':''}>Solo sin teléfono</option>
+        </select>
+      </div>
+    </div>
     <div style="display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;">
       ${columnas.map(col=>{
-        const clientesCol = state.clientes.filter(c=> (c.estadoContacto||'nuevo')===col.id);
-        return `<div style="min-width:250px;flex:0 0 250px;">
+        let clientesCol = state.clientes.filter(c=> (c.estadoContacto||'nuevo')===col.id);
+        if(filtroPipelineTelefono==='con_telefono') clientesCol = clientesCol.filter(c=>c.celular1||c.telefono);
+        else if(filtroPipelineTelefono==='sin_telefono') clientesCol = clientesCol.filter(c=>!(c.celular1||c.telefono));
+        clientesCol = clientesCol.slice().sort((a,b)=>{
+          const da = diasSinContacto(a), db = diasSinContacto(b);
+          if(da===null && db===null) return 0;
+          if(da===null) return -1;
+          if(db===null) return 1;
+          return db-da;
+        });
+        return `<div style="min-width:260px;flex:0 0 260px;">
           <div class="card" style="background:var(--primary-soft);padding:10px 12px;margin-bottom:8px;">
             <div style="font-weight:600;font-size:13.5px;">${col.label}</div>
             <div class="hint">${clientesCol.length} cliente(s)</div>
           </div>
           <div style="display:flex;flex-direction:column;gap:8px;">
-            ${clientesCol.length===0 ? `<div class="hint" style="padding:8px;">Vacío</div>` : clientesCol.map(c=>`
+            ${clientesCol.length===0 ? `<div class="hint" style="padding:8px;">Vacío</div>` : clientesCol.map(c=>{
+              const tel = c.celular1||c.telefono;
+              const dias = diasSinContacto(c);
+              const diasTexto = dias===null ? 'Sin contacto registrado' : dias===0 ? 'Contactado hoy' : `Sin contactar hace ${dias} día(s)`;
+              const diasColor = dias===null || dias>=15 ? 'var(--danger)' : dias>=7 ? '#B8823D' : 'var(--ink-faint)';
+              return `
               <div class="card" style="padding:10px 12px;">
                 <div style="font-weight:600;font-size:13px;"><a href="#" data-ficha-cliente="${c.id}" style="color:var(--primary);">${c.nombre}</a></div>
-                <div class="hint" style="margin:4px 0;">${c.celular1||c.telefono||'Sin teléfono'}</div>
-                <select class="pipeline-mover" data-cliente-id="${c.id}" style="width:100%;font-size:12px;padding:4px;">
+                <div class="hint" style="margin:4px 0;">${tel||'⚠ Sin teléfono'}</div>
+                <div style="font-size:11px;color:${diasColor};margin-bottom:6px;">${diasTexto}</div>
+                <select class="pipeline-mover" data-cliente-id="${c.id}" style="width:100%;font-size:12px;padding:4px;margin-bottom:6px;">
                   ${ESTADOS_CONTACTO.map(e=>`<option value="${e.id}" ${(c.estadoContacto||'nuevo')===e.id?'selected':''}>${e.label}</option>`).join('')}
                 </select>
-              </div>`).join('')}
+                ${tel ? `<button class="btn btn-sm" data-wa-pipeline="${c.id}" style="width:100%;">📲 WhatsApp</button>` : ''}
+              </div>`;
+            }).join('')}
           </div>
         </div>`;
       }).join('')}
@@ -2616,9 +2783,35 @@ function viewPipeline(){
 }
 function wirePipeline(){
   document.querySelectorAll('[data-ficha-cliente]').forEach(a=> a.onclick = (e)=>{ e.preventDefault(); fichaClienteId=a.dataset.fichaCliente; tab='clientes'; render(); });
+  const ft = document.getElementById('fPipelineTelefono'); if(ft) ft.onchange = e=>{ filtroPipelineTelefono=e.target.value; render(); };
+  const btnMeta = document.getElementById('btnEditarMetaSemanal'); if(btnMeta) btnMeta.onclick = (e) => {
+    e.preventDefault();
+    const nueva = prompt('¿Cuántos contactos quieres hacer esta semana?', state.metaContactosSemanal || 20);
+    if(nueva===null) return;
+    const n = parseInt(nueva);
+    if(n>0){ state.metaContactosSemanal = n; save(); render(); }
+  };
   document.querySelectorAll('.pipeline-mover').forEach(sel=> sel.onchange = () => {
     const c = state.clientes.find(c=>c.id===sel.dataset.clienteId);
-    if(c){ c.estadoContacto = sel.value; save(); render(); }
+    if(!c) return;
+    const estadoAnterior = c.estadoContacto||'nuevo';
+    const estadoNuevo = sel.value;
+    if(estadoNuevo===estadoAnterior) return;
+    const nota = prompt(`Moviendo a "${c.nombre}" de "${(ESTADOS_CONTACTO.find(e=>e.id===estadoAnterior)||{}).label}" a "${(ESTADOS_CONTACTO.find(e=>e.id===estadoNuevo)||{}).label}".\n\n¿Alguna nota rápida? (opcional, deja vacío para omitir)`);
+    c.estadoContacto = estadoNuevo;
+    c.fechaCambioEstado = todayISO();
+    if(nota && nota.trim()){
+      c.interacciones = c.interacciones || [];
+      c.interacciones.push({ fecha: todayISO(), nota: nota.trim() });
+    }
+    save(); render();
+  });
+  document.querySelectorAll('[data-wa-pipeline]').forEach(b=> b.onclick = () => {
+    const c = state.clientes.find(c=>c.id===b.dataset.waPipeline);
+    if(!c) return;
+    const tel = c.celular1||c.telefono;
+    if(!tel) return;
+    window.open(linkWhatsApp(tel, `Hola ${c.nombre}, le escribo de parte de Flores & Gonzales Asociados para conversar sobre sus seguros. ¿Tiene un momento?`), '_blank');
   });
 }
 
@@ -3117,10 +3310,9 @@ function wireClientes(){
           if(!filas.length){ alert('El archivo no tiene filas de datos.'); return; }
           const norm = s => String(s||'').toLowerCase().trim();
           const buscar = (fila, ...claves) => {
-            for(const key of Object.keys(fila)){
-              const k = norm(key);
-              if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim();
-            }
+            const keys = Object.keys(fila);
+            for(const key of keys){ if(claves.includes(norm(key))) return String(fila[key]||'').trim(); }
+            for(const key of keys){ const k = norm(key); if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim(); }
             return '';
           };
           const buscarTipoDoc = (fila, documento) => {
@@ -3136,22 +3328,22 @@ function wireClientes(){
           let creados=0, actualizados=0, omitidos=0, posiblesDuplicados=0;
           const nombresDuplicados = [];
           filas.forEach(fila => {
-            const nombre = buscar(fila, 'nombre', 'razón', 'razon');
+            const nombre = buscar(fila, 'cliente', 'nombre o razón social', 'razón social', 'razon social', 'empresa', 'nombre', 'razón', 'razon');
             if(!nombre){ omitidos++; return; }
-            const documento = buscar(fila, 'documento', 'dni', 'ruc');
+            const documento = buscar(fila, 'dni/ruc', 'dni o ruc', 'ruc/dni', 'dni cliente', 'dni/ruc', 'documento', 'ruc', 'dni');
             const data = {
               nombre,
               documento,
               tipoDocumento: buscarTipoDoc(fila, documento),
-              celular1: buscar(fila, 'celular 1', 'celular1', 'telefono', 'teléfono', 'celular'),
+              celular1: buscar(fila, 'celular 1', 'celular1', 'teléfonos', 'telefonos', 'celular', 'contacto', 'teléfono', 'telefono'),
               celular2: buscar(fila, 'celular 2', 'celular2'),
-              email: buscar(fila, 'correo 1', 'correo1', 'correo', 'email'),
+              email: buscar(fila, 'correo electrónico', 'correo electronico', 'correo 1', 'correo1', 'correo', 'email'),
               email2: buscar(fila, 'correo 2', 'correo2'),
-              direccion: buscar(fila, 'dirección', 'direccion'),
-              ciudad: buscar(fila, 'ciudad'),
-              personaContacto: buscar(fila, 'persona de contacto', 'contacto'),
+              direccion: buscar(fila, 'domicilio', 'dirección', 'direccion'),
+              ciudad: buscar(fila, 'sucursal', 'ciudad'),
+              personaContacto: buscar(fila, 'representante legal', 'persona de contacto', 'contacto'),
               fechaNacimiento: buscar(fila, 'fecha de nacimiento', 'fecha nacimiento', 'nacimiento'),
-              datosAdicionales: buscar(fila, 'obs', 'observaciones', 'datos adicionales'),
+              datosAdicionales: buscar(fila, 'observaciones', 'obs', 'datos adicionales'),
             };
             const existente = documento ? state.clientes.find(c=>c.documento && c.documento===documento) : null;
             if(existente){ Object.assign(existente, data); actualizados++; return; }
@@ -3284,7 +3476,7 @@ function modalVenta(){
     </div>
     <div class="field"><label>${esAsesoriaModal ? 'Contrato / documento del servicio en PDF (opcional)' : 'Póliza en PDF (opcional)'}</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
       <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="#" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
-      <div class="hint">Máx. 700 KB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
+      <div class="hint">Máx. 730 KB por archivo. Si pesa más, el sistema intenta comprimirlo automáticamente al seleccionarlo.</div>
     </div>
     <div class="field"><label>Detalle del servicio (opcional)</label><input type="text" id="mDetalleServicio" style="width:100%;" value="${v.detalleServicio||''}" placeholder="Ej. Declaración anual + planilla, o descripción específica del servicio"></div>
 
@@ -3553,17 +3745,48 @@ function wireModal(){
     const pctFGSel = document.getElementById('mPctFG');
 
     const polizaPDFInput = document.getElementById('mPolizaPDF');
-    if(polizaPDFInput) polizaPDFInput.onchange = () => {
-      const file = polizaPDFInput.files[0];
-      if(!file) return;
-      if(file.size > 700*1024){ alert('El archivo pesa más de 700 KB. Elige un PDF más liviano (los archivos en Firebase tienen un límite de 1 MB cada uno).'); polizaPDFInput.value=''; return; }
+    const wireQuitarPDF = () => {
+      const btn = document.getElementById('mPolizaPDFQuitar');
+      if(btn) btn.onclick = (e) => {
+        e.preventDefault();
+        pendingPolizaPDF = null;
+        const info = document.getElementById('mPolizaPDFInfo');
+        if(info) info.innerHTML = 'Sin archivo adjunto.';
+        if(polizaPDFInput) polizaPDFInput.value = '';
+      };
+    };
+    const leerYAdjuntar = (fileFinal) => {
       const reader = new FileReader();
       reader.onload = () => {
-        pendingPolizaPDF = { name: file.name, dataUrl: reader.result };
+        pendingPolizaPDF = { name: fileFinal.name, dataUrl: reader.result };
         const info = document.getElementById('mPolizaPDFInfo');
-        if(info) info.innerHTML = `📄 ${file.name} — se guardará al hacer clic en Guardar.`;
+        if(info) info.innerHTML = `📄 ${fileFinal.name} — se guardará al hacer clic en Guardar. <a href="#" id="mPolizaPDFQuitar">quitar</a>`;
+        wireQuitarPDF();
       };
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(fileFinal);
+    };
+    if(polizaPDFInput) polizaPDFInput.onchange = async () => {
+      const file = polizaPDFInput.files[0];
+      if(!file) return;
+      if(file.size <= 730*1024){ leerYAdjuntar(file); return; }
+      const info = document.getElementById('mPolizaPDFInfo');
+      if(info) info.innerHTML = `⏳ Comprimiendo PDF automáticamente (pesa ${(file.size/1024).toFixed(0)} KB)…`;
+      try{
+        const comprimido = await comprimirPDF(file, 730*1024);
+        if(comprimido){
+          leerYAdjuntar(comprimido);
+          if(info) info.innerHTML += ` <span style="color:var(--primary);">— comprimido a ${(comprimido.size/1024).toFixed(0)} KB.</span>`;
+        } else {
+          alert('No se pudo comprimir el archivo lo suficiente (sigue pesando más de 730 KB incluso comprimido). Prueba con una herramienta como ilovepdf.com/compress_pdf antes de subirlo.');
+          if(info) info.innerHTML = 'Sin archivo adjunto.';
+          polizaPDFInput.value = '';
+        }
+      }catch(err){
+        console.error(err);
+        alert('No se pudo comprimir el PDF automáticamente. Prueba con una herramienta como ilovepdf.com/compress_pdf antes de subirlo.');
+        if(info) info.innerHTML = 'Sin archivo adjunto.';
+        polizaPDFInput.value = '';
+      }
     };
     const linkVerPDF = document.getElementById('mPolizaPDFLink');
     if(linkVerPDF) linkVerPDF.onclick = async (e) => {
@@ -3579,14 +3802,7 @@ function wireModal(){
       }catch(err){ alert('No se pudo descargar el archivo: ' + err.message); }
       linkVerPDF.textContent = 'ver / descargar';
     };
-    const quitarPDF = document.getElementById('mPolizaPDFQuitar');
-    if(quitarPDF) quitarPDF.onclick = (e) => {
-      e.preventDefault();
-      pendingPolizaPDF = null;
-      const info = document.getElementById('mPolizaPDFInfo');
-      if(info) info.innerHTML = 'Sin archivo adjunto.';
-      if(polizaPDFInput) polizaPDFInput.value = '';
-    };
+    wireQuitarPDF();
 
     const modoAseguradoraEsFijo = () => modoComAseguradoraSel && modoComAseguradoraSel.value==='fijo';
 
