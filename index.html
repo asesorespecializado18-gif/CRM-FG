@@ -344,6 +344,56 @@ const ASEGURADORAS_DEFAULT = [
   'Rigel','Vida Cámara','Sura Perú','Pacífico EPS','Rímac EPS','Mapfre EPS','Sanitas Perú EPS',
 ];
 
+const MARCAS_VEHICULO_DEFAULT = [
+  'Audi', 'BAIC', 'BMW', 'Brilliance', 'BYD', 'Changan', 'Chery', 'Chevrolet', 'Citroën', 'Daihatsu', 'DFSK',
+  'Dodge', 'Dongfeng', 'DS Automobiles', 'FAW', 'Fiat', 'Ford', 'Foton', 'Fuso', 'Geely', 'Great Wall', 'Haval',
+  'Honda', 'Hyundai', 'Isuzu', 'JAC', 'Jaguar', 'Jeep', 'Jetour', 'Jinbei', 'JMC', 'Joylong', 'Kia', 'Kenbo', 'Land Rover',
+  'Lexus', 'Mahindra', 'Maserati', 'Mazda', 'Mercedes-Benz', 'MG', 'MINI', 'Mitsubishi', 'Nissan', 'Peugeot',
+  'Porsche', 'Renault', 'SEAT', 'Shineray', 'SsangYong', 'Subaru', 'Suzuki', 'Toyota', 'Volkswagen', 'Volvo',
+  'Otra marca',
+];
+const MODELOS_POR_MARCA_DEFAULT = {
+  'BAIC': ['X35', 'X55', 'X65', 'BJ40 Plus (todoterreno)', 'BJ80 (todoterreno premium)', 'D20 Hatchback', 'D20 Sedan', 'MZ40', 'MZ45', 'MZ50', 'MZ70', 'EC3 (eléctrico compacto)', 'EU5 (sedán eléctrico)', 'EX3 (SUV eléctrico)'],
+  'Brilliance': ['V3 1.5L Comfort', 'V3 1.5L Exclusive'],
+  'Citroën': ['C3 Aircross', 'C4 Cactus', 'C5 Aircross', 'C5 X (SUV-Coupé)', 'C3', 'C4', 'C-Elysée', 'Berlingo Van', 'Jumpy', 'Jumper', 'ë-C3 (eléctrico)', 'ë-C4 (eléctrico)', 'ë-Berlingo (eléctrico)', 'ë-Jumpy (eléctrico)', 'ë-SpaceTourer (eléctrico)'],
+  'Jeep': ['Renegade', 'Compass', 'Cherokee', 'Grand Cherokee', 'Grand Cherokee L (3 filas)', 'Wrangler', 'Wrangler Unlimited', 'Gladiator (pick-up todoterreno)', 'Renegade 4xe (híbrido enchufable)', 'Compass 4xe (híbrido enchufable)', 'Wrangler 4xe (híbrido enchufable)', 'Grand Cherokee 4xe (híbrido enchufable)', 'Recon EV (SUV eléctrico)', 'Wagoneer S EV (SUV eléctrico premium)'],
+  'Peugeot': ['208', '308', '408', '508', '2008', '3008', '5008', 'Partner', 'Expert', 'Boxer', 'e-208 (eléctrico)', 'e-2008 (eléctrico)', '3008 Hybrid4 (híbrido enchufable)', '508 PSE Hybrid (híbrido enchufable)'],
+  'MG': ['MG ZS', 'MG ZS EV (eléctrico)', 'MG HS', 'MG RX5', 'MG RX8', 'MG 5', 'MG 6', 'MG 4 EV (hatchback eléctrico)', 'MG Marvel R (SUV eléctrico premium)', 'MG Cyberster (roadster eléctrico deportivo)'],
+  'Foton': ['Tunland V7', 'Tunland V9'],
+  'Fiat': ['Mobi', 'Argo', 'Cronos', 'Pulse', 'Fastback', 'Fiorino', 'Strada (pick-up)', 'Toro (pick-up mediana)', 'Ducato (van de carga y pasajeros)'],
+  'Ford': ['Territory', 'Territory Híbrida', 'Bronco Sport', 'Explorer', 'Explorer ST', 'Expedition', 'Bronco', 'Maverick', 'Maverick Híbrida', 'Ranger', 'Ranger Raptor', 'F-150', 'F-150 Híbrida', 'F-150 Raptor', 'Mustang GT Premium', 'Mustang Dark Horse'],
+  'Toyota': ['RAV4', 'Corolla Cross', 'Fortuner', 'Land Cruiser Prado', 'Land Cruiser 300', 'Hilux', 'Tacoma', 'Tundra', 'Corolla', 'Camry', 'Yaris Sedan', 'Yaris Hatchback', 'Agya', 'Corolla Hybrid', 'RAV4 Hybrid', 'Prius', 'Camry Hybrid', 'bZ4X (eléctrico)', 'Hiace', 'Coaster (bus)'],
+  'Hyundai': ['Grand i10 Hatch', 'i20 Hatch', 'Grand i10 Sedan', 'Accent', 'Elantra', 'Sonata', 'Venue', 'Creta', 'Creta Grand', 'Tucson', 'Santa Fe', 'Palisade', 'Tucson Hybrid', 'Santa Fe Hybrid', 'Palisade Hybrid', 'Kona Electric', 'Ioniq 5', 'Ioniq 6', 'Ioniq 7 (próximamente)', 'H-100', 'HD35', 'EX6', 'EX8', 'EX10', 'EX11', 'Pavise', 'Solati H350', 'County Bus', 'BX8'],
+  'Honda': ['WR-V', 'HR-V', 'BR-V', 'CR-V', 'Pilot', 'Accord', 'Civic', 'City', 'Fit', 'Odyssey', 'Ridgeline'],
+  'Kia': ['Picanto', 'Rio Hatchback', 'Rio Sedan', 'Sonet', 'Seltos', 'Sportage', 'Sorento', 'Telluride', 'Cerato', 'K5 (antes Optima)', 'Stinger', 'Niro Hybrid', 'Niro EV', 'EV6', 'EV9', 'K2700 (camioneta de carga)'],
+  'Chevrolet': ['Spark', 'Sail Hatchback', 'Onix Hatchback', 'Sail Sedan', 'Onix Sedan', 'Cavalier', 'Malibu', 'Tracker', 'Captiva', 'Equinox', 'Traverse', 'Tahoe', 'Suburban', 'Colorado', 'Silverado', 'N300', 'N400', 'Express Van'],
+  'Mitsubishi': ['Destinator', 'Outlander Sport', 'Eclipse Cross', 'Outlander', 'Montero Sport', 'L200 (New L200)', 'Xpander', 'Xpander Cross'],
+  'Volkswagen': ['Polo', 'Golf', 'Golf GTI', 'Golf GTI Roadster', 'Golf Design Vision GTI', 'ID. Polo', 'Jetta', 'Passat', 'Arteon', 'T-Cross', 'Taos', 'Tiguan', 'Tiguan SEL R-Line Turbo', 'Teramont (Atlas)', 'Atlas Cross Sport', 'T-Roc (nueva generación híbrida)', 'ID. Cross', 'ID. Tiguan', 'ID.3', 'ID.4', 'Saveiro', 'Amarok'],
+  'DFSK': ['Glory 500', 'Glory 500 Turbo (CVT)', 'Glory 580 1.8L MT Comfort', 'Glory 580 1.8L CVT Comfort', 'Glory 580 1.5L MT Turbo Comfort', 'Glory 580 1.5L CVT Luxury', 'Glory E5 PHEV Plus (híbrido enchufable, 7 plazas)'],
+  'Audi': ['A3 Sedán', 'A3 Sportback', 'A4', 'A5 Sedán', 'A6 e-tron', 'A7', 'A8', 'RS 5', 'RS 6 Avant', 'Q3', 'Q3 Sportback', 'Q4 e-tron (SUV y Sportback)', 'Q5', 'Q5 Sportback', 'Q6 e-tron', 'Q6 Sportback e-tron', 'Q7', 'Q8', 'Q9 (nuevo maxi SUV)', 'TT', 'R8', 'A2 e-tron (nuevo compacto eléctrico)', 'SQ6 e-tron quattro'],
+  'BMW': ['Serie 1', 'M135i', 'Serie 3', 'Serie 5', 'Serie 7', 'Serie 3 Híbrido', 'i5', 'Serie 2 Coupé', 'M240i', 'Serie 4 Coupé', 'Serie 4 Gran Coupé', 'M440', 'Z4', 'M2', 'M3', 'M4', 'M5', 'XM', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X3 M', 'X4 M', 'X5 M', 'X6 M', 'iX', 'iX1', 'iX2', 'iX3', 'i3 (nueva generación eléctrica)'],
+  'Mercedes-Benz': ['CLA 250 Sedan', 'CLE 450 Convertible', 'CLE 450 Coupé', 'E-Class Sedan', 'E-Class Wagon', 'S-Class Sedan', 'C-Class (incluyendo versión eléctrica)', 'CLA Shooting Brake (eléctrico e híbrido ligero)', 'AMG GT Coupé 4 puertas', 'AMG GT Track Sport', 'GLA 250', 'GLB 250', 'GLC 300', 'GLC eléctrico (nueva generación)', 'GLE 350', 'GLE 450', 'GLE 450e', 'GLE 580', 'GLS 450', 'GLS 580', 'G-Class', 'Maybach EQS 680 SUV', 'EQB 250+ SUV', 'EQB 300 SUV', 'EQB 350 SUV', 'EQE 320 Sedan', 'EQE 320+ SUV', 'EQE 320+ Sedan', 'EQE 350 Sedan', 'EQE 350 SUV', 'EQE 500 Sedan', 'EQE 500 SUV', 'EQS 400 SUV', 'EQS 450 Sedan', 'EQS 450 SUV', 'EQS 550 SUV', 'EQS 580 Sedan', 'EQS 580 SUV', 'eSprinter 2500 Van'],
+  'Jetour': ['Jetour X50', 'Jetour X70FL', 'Jetour X70 Plus', 'Jetour Dashing', 'Jetour Shanhai T1', 'Jetour Traveller T2 (híbrida enchufable)', 'Jetour Zongheng G700'],
+  'Changan': ['CS15', 'CS35 Plus', 'CS55 Plus', 'CS75 Plus', 'UNI-T', 'UNI-K', 'UNI-V', 'Alsvin', 'Eado', 'Raeton CC', 'Benni EV', 'Eado EV', 'CS55 Plus Hybrid', 'CS75 Plus Hybrid', 'Star Truck', 'M201', 'M301', 'M401', 'Hunter (pick-up)', 'Honor', 'X5 Van'],
+  'JAC': ['JS2', 'JS3', 'JS4', 'JS6', 'JS8', 'T6', 'T8', 'T9', 'Sunray', 'M4', 'M5', 'M6', 'N55', 'N75', 'N90', 'E-JS1', 'E-JS4', 'iEV7S', 'iEVS4'],
+  'Subaru': ['Impreza Sport', 'WRX', 'Crosstrek', 'Crosstrek HEV (híbrido)', 'Forester', 'Forester HEV (híbrido)', 'Outback (All New Outback 2026)', 'Trailseeker (All New SUV eléctrico)', 'Evoltis'],
+  'Nissan': ['Kicks', 'Qashqai', 'X-Trail', 'Pathfinder', 'Patrol', 'Frontier NP300', 'Navara', 'Versa', 'Sentra', 'Altima', 'Maxima', 'March', 'Leaf (eléctrico)', 'Ariya (SUV eléctrico)', 'Urvan'],
+  'Mazda': ['Mazda 2', 'Mazda 3 Sedan', 'Mazda 3 Hatchback', 'Mazda 6', 'CX-3', 'CX-30', 'CX-5', 'CX-50', 'CX-60 (híbrido enchufable)', 'CX-70', 'CX-90 (híbrido enchufable)', 'MX-5 Miata', 'MX-30 EV', 'CX-60 PHEV', 'CX-90 PHEV'],
+  'Renault': ['Kwid', 'Logan', 'Sandero', 'Sandero Stepway', 'Duster', 'Duster Oroch (pick-up SUV)', 'Koleos', 'Kangoo Van', 'Master Van', 'Kwid E-Tech (eléctrico)', 'Zoe (eléctrico)', 'Megane E-Tech (eléctrico)'],
+  'Suzuki': ['Alto', 'Celerio', 'Swift', 'Dzire', 'Ignis', 'Baleno', 'Vitara', 'Grand Vitara', 'S-Cross', 'Jimny (3 puertas y 5 puertas)', 'Super Carry', 'Swift Hybrid', 'Vitara Hybrid', 'S-Cross Hybrid'],
+  'Chery': ['Tiggo 2 Pro', 'Tiggo 4 Pro', 'Tiggo 7 Pro', 'Tiggo 8 Pro', 'Tiggo 8 Pro Max', 'Tiggo 9 (SUV premium)', 'Arrizo 5', 'Arrizo 6', 'Arrizo 8', 'eQ1 (eléctrico compacto)', 'eQ7 (SUV eléctrico)', 'Tiggo 8 Pro e+ (híbrido enchufable)', 'Tiggo 9 PHEV (híbrido enchufable)'],
+  'Haval': ['Haval H2', 'Haval H6', 'Haval H6 HEV (híbrido)', 'Haval H6 PHEV (híbrido enchufable)', 'Haval Jolion', 'Haval Jolion HEV (híbrido)', 'Haval Dargo (SUV todoterreno)', 'Haval H6 EV', 'Haval Jolion EV'],
+  'Geely': ['Coolray', 'Azkarra', 'Okavango', 'Tugella', 'Emgrand 7', 'Emgrand GS', 'Emgrand GL', 'Geometry C (SUV eléctrico)', 'Geometry E (compacto eléctrico)', 'Emgrand EV (sedán eléctrico)'],
+  'BYD': ['F3', 'Dolphin (eléctrico)', 'Qin Plus DM-i (híbrido enchufable)', 'Seal (eléctrico sedán deportivo)', 'Song Plus DM-i (híbrido enchufable)', 'Song Pro', 'Yuan Plus (Atto 3, eléctrico)', 'Tang DM-i (híbrido enchufable)', 'Tang EV (eléctrico)', 'Han EV (sedán premium eléctrico)', 'T3 (van eléctrica)', 'e6 (MPV eléctrico)'],
+};
+const ENTIDADES_ENDOSATARIAS_PERU = [
+  'BCP - Banco de Crédito del Perú', 'BBVA Perú', 'Interbank', 'Scotiabank Perú', 'Banco Pichincha', 'Banco Falabella',
+  'Banco Ripley', 'Banco GNB', 'Banco de Comercio', 'Banco BanBif', 'MiBanco', 'Banco Santander Perú', 'Citibank Perú',
+  'Caja Arequipa', 'Caja Huancayo', 'Caja Piura', 'Caja Sullana', 'Caja Trujillo', 'Caja Cusco', 'Caja Ica',
+  'Financiera Confianza', 'Financiera Efectiva', 'Financiera Oh!', 'Compartamos Financiera', 'Crediscotia Financiera',
+  'JJC Contratistas Generales (Fondo Colectivo)', 'La Positiva Fondo Colectivo', 'Consorcio de Fondos Colectivos del Perú (CFCP)',
+  'Otro banco / entidad',
+];
 const TIPOS_BENEFICIO = [
   { id:'soat_gratis', label:'SOAT Gratis' },
   { id:'gps', label:'GPS' },
@@ -579,6 +629,7 @@ async function load(){
           state.ventas = ventasSnap.docs.map(d=>d.data());
           state.asesores = asesoresSnap.docs.map(d=>d.data());
           state.siniestros = siniestrosSnap.docs.map(d=>d.data());
+          aplicarMigracionesState();
           snapshotGuardado();
           cargadoDeNube = true;
           actualizarIndicadorNube('ok');
@@ -621,6 +672,24 @@ function aplicarMigracionesState(){
   if(!state.metas.porAsesor) state.metas.porAsesor = {};
   if(!state.aseguradorasMigradas3){ state.aseguradoras = ASEGURADORAS_DEFAULT.slice(); state.aseguradorasMigradas3 = true; }
   else if(!state.aseguradoras || !state.aseguradoras.length) state.aseguradoras = ASEGURADORAS_DEFAULT.slice();
+  if(!state.marcasModelosMigrados8){
+    state.marcasVehiculo = Array.from(new Set([...MARCAS_VEHICULO_DEFAULT, ...(state.marcasVehiculo||[])]));
+    // migración: pasar de lista plana de modelos (antigua) a modelosPorMarca{marca: [modelos]}
+    const modelosPorMarca = {};
+    Object.entries(MODELOS_POR_MARCA_DEFAULT).forEach(([marca, modelos])=>{ modelosPorMarca[marca] = modelos.slice(); });
+    if(state.modelosPorMarca){
+      Object.entries(state.modelosPorMarca).forEach(([marca, modelos])=>{
+        modelosPorMarca[marca] = Array.from(new Set([...(modelosPorMarca[marca]||[]), ...modelos]));
+      });
+    }
+    state.modelosPorMarca = modelosPorMarca;
+    delete state.modelosVehiculo;
+    state.marcasModelosMigrados8 = true;
+  } else {
+    if(!state.marcasVehiculo || !state.marcasVehiculo.length) state.marcasVehiculo = MARCAS_VEHICULO_DEFAULT.slice();
+    if(!state.modelosPorMarca) state.modelosPorMarca = {};
+  }
+  if(!state.entidadesEndosatarias || !state.entidadesEndosatarias.length) state.entidadesEndosatarias = ENTIDADES_ENDOSATARIAS_PERU.slice();
   if(!state.oficinas) state.oficinas = [];
   if(!state.siniestros) state.siniestros = [];
   if(!state.folioSiniestro) state.folioSiniestro = 0;
@@ -1569,6 +1638,7 @@ let filtroVProducto='todos', filtroVAsesor='todos', filtroVEstado='todas', filtr
 
 function esOncologico(tipoProducto){ return prodInfo(tipoProducto).grupo === 'oncologico'; }
 function esAsesoria(tipoProducto){ return prodInfo(tipoProducto).grupo === 'asesoria'; }
+function esProdVehicular(tipoProducto){ return tipoProducto==='seguros_vehiculares' || tipoProducto==='soat' || tipoProducto==='trec'; }
 function bitacoraDeTab(){
   if(tab==='ventas_oncologicos') return 'oncologicos';
   if(tab==='ventas_asesorias') return 'asesorias';
@@ -3481,17 +3551,62 @@ function modalVenta(){
     <div class="field"><label>Detalle del servicio (opcional)</label><input type="text" id="mDetalleServicio" style="width:100%;" value="${v.detalleServicio||''}" placeholder="Ej. Declaración anual + planilla, o descripción específica del servicio"></div>
 
     <div class="divider"></div>
-    <div class="panel-title">Beneficios entregados al cliente (opcional, hasta 3)</div>
-    <div class="hint">SOAT gratis, GPS, cuota gratis, etc. — independientes de la moneda de la póliza.</div>
-    <div id="mBeneficiosLista">
-      ${[0,1,2].map(i=>{
-        const b = (v.beneficios||[])[i] || {};
-        return `<div class="field-row" style="align-items:flex-end;margin-top:8px;">
-          <div class="field"><label>Beneficio ${i+1}</label><select id="mBenefTipo${i}" style="width:100%;"><option value="">Ninguno</option>${TIPOS_BENEFICIO.map(t=>`<option value="${t.id}" ${b.tipo===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
-          <div class="field"><label>Costo para FG</label><input type="number" step="0.01" min="0" id="mBenefMonto${i}" style="width:100%;" value="${b.monto||''}" placeholder="Ej. 45.00"></div>
-          <div class="field"><label>Moneda</label><select id="mBenefMoneda${i}" style="width:100%;"><option value="PEN" ${b.moneda!=='USD'?'selected':''}>Soles (S/)</option><option value="USD" ${b.moneda==='USD'?'selected':''}>Dólares (US$)</option></select></div>
+    <div class="panel-title">Beneficios entregados al cliente (opcional)</div>
+    <div class="hint">Marca los que aplican — cada uno con su propio costo y moneda, independientes de la moneda de la póliza.</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;">
+      ${TIPOS_BENEFICIO.map(t=>{
+        const b = (v.beneficios||[]).find(x=>x.tipo===t.id) || {};
+        const marcado = (v.beneficios||[]).some(x=>x.tipo===t.id);
+        return `<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:13px;"><input type="checkbox" class="mBenefChk" data-benef="${t.id}" ${marcado?'checked':''}> ${t.label}</label>`;
+      }).join('')}
+    </div>
+    <div id="mBeneficiosLista" style="margin-top:8px;">
+      ${TIPOS_BENEFICIO.map(t=>{
+        const b = (v.beneficios||[]).find(x=>x.tipo===t.id) || {};
+        const marcado = (v.beneficios||[]).some(x=>x.tipo===t.id);
+        return `<div class="field-row mBenefFila" data-benef-fila="${t.id}" style="align-items:flex-end;${marcado?'':'display:none;'}margin-top:4px;">
+          <div class="field"><label>Costo para FG (${t.label})</label><input type="number" step="0.01" min="0" class="mBenefMonto" data-benef="${t.id}" style="width:100%;" value="${b.monto||''}" placeholder="Ej. 45.00"></div>
+          <div class="field"><label>Moneda</label><select class="mBenefMoneda" data-benef="${t.id}" style="width:100%;"><option value="PEN" ${b.moneda!=='USD'?'selected':''}>Soles (S/)</option><option value="USD" ${b.moneda==='USD'?'selected':''}>Dólares (US$)</option></select></div>
         </div>`;
       }).join('')}
+    </div>
+
+    <div class="divider" id="mDividerVehiculo" style="${esProdVehicular(v.tipoProducto)?'':'display:none;'}"></div>
+    <div id="mBloqueVehiculoCompleto" style="${esProdVehicular(v.tipoProducto)?'':'display:none;'}">
+    <div class="panel-title">Datos del vehículo</div>
+    <div class="field-row" style="align-items:flex-end;">
+      <div class="field"><label>Marca</label><select id="mVehMarca" style="width:100%;"><option value="">Seleccionar…</option>${state.marcasVehiculo.map(m=>`<option value="${m}" ${v.vehMarca===m?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaMarcaVeh" style="white-space:nowrap;">+ Agregar marca</button></div>
+      <div class="field"><label>Modelo / Versión</label><select id="mVehModelo" style="width:100%;"><option value="">${v.vehMarca ? 'Seleccionar…' : 'Elige la marca primero'}</option>${(state.modelosPorMarca[v.vehMarca]||[]).slice().sort((a,b)=>a.localeCompare(b)).map(m=>`<option value="${m}" ${v.vehModelo===m?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevoModeloVeh" style="white-space:nowrap;" ${v.vehMarca?'':'disabled'}>+ Agregar modelo</button></div>
+      <div class="field"><label>Año</label><select id="mVehAnio" style="width:100%;"><option value="">Seleccionar…</option>${Array.from({length:2030-1990+1},(_,i)=>2030-i).map(a=>`<option value="${a}" ${String(v.vehAnio)===String(a)?'selected':''}>${a}</option>`).join('')}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Placa</label><input type="text" id="mVehPlaca" style="width:100%;" value="${v.vehPlaca||''}"></div>
+      <div class="field"><label>Serie</label><input type="text" id="mVehSerie" style="width:100%;" value="${v.vehSerie||''}"></div>
+      <div class="field"><label>Color</label><input type="text" id="mVehColor" style="width:100%;" value="${v.vehColor||''}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Uso</label><select id="mVehUso" style="width:100%;">
+        <option value="" ${!v.vehUso?'selected':''}>Seleccionar…</option>
+        <option value="particular" ${v.vehUso==='particular'?'selected':''}>Particular</option>
+        <option value="comercial" ${v.vehUso==='comercial'?'selected':''}>Comercial</option>
+        <option value="taxi" ${v.vehUso==='taxi'?'selected':''}>Taxi / Transporte</option>
+        <option value="carga" ${v.vehUso==='carga'?'selected':''}>Carga pesada</option>
+      </select></div>
+      <div class="field"><label>N° de asientos</label><input type="number" id="mVehAsientos" style="width:100%;" value="${v.vehAsientos||''}" placeholder="Ej. 5"></div>
+      <div class="field"><label>Suma asegurada</label><input type="number" step="0.01" id="mVehSumaAsegurada" style="width:100%;" value="${v.vehSumaAsegurada||''}" placeholder="Monto"></div>
+    </div>
+    <div class="field"><label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="mVehEndosado" ${v.vehEndosado?'checked':''}> Vehículo endosado (banco / fondo colectivo)</label></div>
+    <div class="field-row" id="mFilaVehEndosado" style="align-items:flex-end;${v.vehEndosado?'':'display:none;'}">
+      <div class="field"><label>Entidad endosataria</label><select id="mVehEntidadEndosataria" style="width:100%;">
+        <option value="">Seleccionar…</option>
+        ${state.entidadesEndosatarias.map(e=>`<option value="${e}" ${v.vehEntidadEndosataria===e?'selected':''}>${e}</option>`).join('')}
+      </select></div>
+      <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaEntidadEndosataria" style="white-space:nowrap;">+ Agregar</button></div>
+      <div class="field" id="mFilaVehOtraEntidad" style="${v.vehEntidadEndosataria==='Otro banco / entidad'?'':'display:none;'}"><label>Nombre de la entidad</label><input type="text" id="mVehOtraEntidad" style="width:100%;" value="${v.vehOtraEntidad||''}" placeholder="Escribe el nombre"></div>
+    </div>
+    <div class="field"><label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="mVehGPS" ${v.vehGPS?'checked':''}> El vehículo cuenta con GPS instalado</label></div>
     </div>
 
     <div class="divider" id="mDividerSoat" style="${v.tipoProducto==='seguros_vehiculares'?'':'display:none;'}"></div>
@@ -3507,6 +3622,7 @@ function modalVenta(){
     </div>
 
     <div class="divider"></div>
+
     <div class="panel-title">4 · 5. Fechas y moneda</div>
     <div class="field-row">
       <div class="field"><label>Fecha de emisión</label><input type="date" id="mFecha" style="width:100%;" value="${v.fechaVenta||''}"></div>
@@ -3884,14 +4000,78 @@ function wireModal(){
     const bloqueSoatCompleto = document.getElementById('mBloqueSoatCompleto');
     const dividerSoat = document.getElementById('mDividerSoat');
     const filaQuienPago = document.getElementById('mFilaQuienPago');
+    const bloqueVehiculoCompleto = document.getElementById('mBloqueVehiculoCompleto');
+    const dividerVehiculo = document.getElementById('mDividerVehiculo');
     if(prodSel && bloqueSoatCompleto){
       prodSel.addEventListener('change', () => {
-        const mostrar = prodSel.value==='seguros_vehiculares';
-        bloqueSoatCompleto.style.display = mostrar ? '' : 'none';
-        if(dividerSoat) dividerSoat.style.display = mostrar ? '' : 'none';
+        const mostrarSoat = prodSel.value==='seguros_vehiculares';
+        bloqueSoatCompleto.style.display = mostrarSoat ? '' : 'none';
+        if(dividerSoat) dividerSoat.style.display = mostrarSoat ? '' : 'none';
         if(filaQuienPago) filaQuienPago.style.display = prodSel.value==='soat' ? '' : 'none';
+        const mostrarVeh = esProdVehicular(prodSel.value);
+        if(bloqueVehiculoCompleto) bloqueVehiculoCompleto.style.display = mostrarVeh ? '' : 'none';
+        if(dividerVehiculo) dividerVehiculo.style.display = mostrarVeh ? '' : 'none';
       });
     }
+    document.querySelectorAll('.mBenefChk').forEach(chk=> chk.onchange = () => {
+      const fila = document.querySelector(`.mBenefFila[data-benef-fila="${chk.dataset.benef}"]`);
+      if(fila) fila.style.display = chk.checked ? '' : 'none';
+    });
+    const chkVehEndosado = document.getElementById('mVehEndosado');
+    const filaVehEndosado = document.getElementById('mFilaVehEndosado');
+    if(chkVehEndosado && filaVehEndosado) chkVehEndosado.onchange = () => { filaVehEndosado.style.display = chkVehEndosado.checked ? '' : 'none'; };
+    const selVehEntidad = document.getElementById('mVehEntidadEndosataria');
+    const filaVehOtraEntidad = document.getElementById('mFilaVehOtraEntidad');
+    if(selVehEntidad && filaVehOtraEntidad) selVehEntidad.onchange = () => { filaVehOtraEntidad.style.display = selVehEntidad.value==='Otro banco / entidad' ? '' : 'none'; };
+    const selVehMarca = document.getElementById('mVehMarca');
+    const selVehModelo = document.getElementById('mVehModelo');
+    const btnNuevoModeloVeh = document.getElementById('mNuevoModeloVeh');
+    const repoblarModelos = (marcaPreseleccionada) => {
+      if(!selVehModelo) return;
+      const marca = selVehMarca.value;
+      selVehModelo.innerHTML = `<option value="">${marca ? 'Seleccionar…' : 'Elige la marca primero'}</option>`;
+      (state.modelosPorMarca[marca]||[]).slice().sort((a,b)=>a.localeCompare(b)).forEach(m=>{
+        const opt = document.createElement('option'); opt.value = m; opt.textContent = m;
+        if(m===marcaPreseleccionada) opt.selected = true;
+        selVehModelo.appendChild(opt);
+      });
+      selVehModelo.disabled = !marca;
+      if(btnNuevoModeloVeh) btnNuevoModeloVeh.disabled = !marca;
+    };
+    if(selVehMarca) selVehMarca.onchange = () => repoblarModelos();
+    const btnNuevaMarcaVeh = document.getElementById('mNuevaMarcaVeh');
+    if(btnNuevaMarcaVeh) btnNuevaMarcaVeh.onclick = () => {
+      const nombre = prompt('Nombre de la nueva marca de vehículo:');
+      if(nombre && nombre.trim()){
+        if(!state.marcasVehiculo.includes(nombre.trim())) state.marcasVehiculo.push(nombre.trim());
+        if(!state.modelosPorMarca[nombre.trim()]) state.modelosPorMarca[nombre.trim()] = [];
+        save();
+        const sel = document.getElementById('mVehMarca');
+        const opt = document.createElement('option'); opt.value = nombre.trim(); opt.textContent = nombre.trim(); sel.appendChild(opt); sel.value = nombre.trim();
+        repoblarModelos();
+      }
+    };
+    if(btnNuevoModeloVeh) btnNuevoModeloVeh.onclick = () => {
+      const marca = selVehMarca.value;
+      if(!marca){ alert('Primero elige la marca del vehículo.'); return; }
+      const nombre = prompt(`Nombre del nuevo modelo / versión para ${marca}:`);
+      if(nombre && nombre.trim()){
+        if(!state.modelosPorMarca[marca]) state.modelosPorMarca[marca] = [];
+        if(!state.modelosPorMarca[marca].includes(nombre.trim())) state.modelosPorMarca[marca].push(nombre.trim());
+        save();
+        repoblarModelos(nombre.trim());
+      }
+    };
+    const btnNuevaEntidadEndosataria = document.getElementById('mNuevaEntidadEndosataria');
+    if(btnNuevaEntidadEndosataria) btnNuevaEntidadEndosataria.onclick = () => {
+      const nombre = prompt('Nombre de la nueva entidad endosataria (banco / fondo colectivo):');
+      if(nombre && nombre.trim()){
+        if(!state.entidadesEndosatarias.includes(nombre.trim())) state.entidadesEndosatarias.push(nombre.trim());
+        save();
+        const sel = document.getElementById('mVehEntidadEndosataria');
+        const opt = document.createElement('option'); opt.value = nombre.trim(); opt.textContent = nombre.trim(); sel.appendChild(opt); sel.value = nombre.trim();
+      }
+    };
     const estadoPagoSel = document.getElementById('mEstadoPago');
     const filaFechaPagoComision = document.getElementById('mFilaFechaPagoComision');
     if(estadoPagoSel && filaFechaPagoComision) estadoPagoSel.onchange = () => {
@@ -4039,14 +4219,27 @@ function wireModal(){
         canalVenta: document.getElementById('mCanal').value,
         tipoProducto: tipoProductoSel,
         detalleServicio: document.getElementById('mDetalleServicio').value.trim(),
-        beneficios: [0,1,2].map(i=>{
-          const tipoEl = document.getElementById('mBenefTipo'+i);
-          if(!tipoEl || !tipoEl.value) return null;
-          const monto = parseFloat(document.getElementById('mBenefMonto'+i).value)||0;
-          if(monto<=0) return null;
-          return { tipo: tipoEl.value, monto, moneda: document.getElementById('mBenefMoneda'+i).value };
-        }).filter(Boolean),
+        beneficios: Array.from(document.querySelectorAll('.mBenefChk:checked')).map(chk=>{
+          const tipo = chk.dataset.benef;
+          const montoEl = document.querySelector(`.mBenefMonto[data-benef="${tipo}"]`);
+          const monedaEl = document.querySelector(`.mBenefMoneda[data-benef="${tipo}"]`);
+          const monto = parseFloat(montoEl ? montoEl.value : 0)||0;
+          return { tipo, monto, moneda: monedaEl ? monedaEl.value : 'PEN' };
+        }),
         quienPagoPrima: (tipoProductoSel==='soat' && document.getElementById('mQuienPagoPrima')) ? document.getElementById('mQuienPagoPrima').value : 'cliente',
+        vehMarca: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehMarca').value.trim() : '',
+        vehModelo: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehModelo').value.trim() : '',
+        vehAnio: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehAnio').value : '',
+        vehPlaca: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehPlaca').value.trim().toUpperCase() : '',
+        vehSerie: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehSerie').value.trim() : '',
+        vehColor: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehColor').value.trim() : '',
+        vehUso: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehUso').value : '',
+        vehAsientos: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehAsientos').value : '',
+        vehSumaAsegurada: esProdVehicular(tipoProductoSel) ? (parseFloat(document.getElementById('mVehSumaAsegurada').value)||0) : 0,
+        vehEndosado: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehEndosado').checked : false,
+        vehEntidadEndosataria: (esProdVehicular(tipoProductoSel) && document.getElementById('mVehEndosado').checked) ? document.getElementById('mVehEntidadEndosataria').value : '',
+        vehOtraEntidad: (esProdVehicular(tipoProductoSel) && document.getElementById('mVehEndosado').checked && document.getElementById('mVehEntidadEndosataria').value==='Otro banco / entidad') ? document.getElementById('mVehOtraEntidad').value.trim() : '',
+        vehGPS: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehGPS').checked : false,
         tieneSoat: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat')) ? document.getElementById('mTieneSoat').checked : false,
         soatVigenciaInicio: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat') && document.getElementById('mTieneSoat').checked) ? document.getElementById('mSoatInicio').value : '',
         soatVigenciaFin: (tipoProductoSel==='seguros_vehiculares' && document.getElementById('mTieneSoat') && document.getElementById('mTieneSoat').checked) ? document.getElementById('mSoatFin').value : '',
