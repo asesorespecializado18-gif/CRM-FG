@@ -2926,7 +2926,12 @@ function modalSiniestro(){
   const s = editing.id ? state.siniestros.find(x=>x.id===editing.id) : { clienteId:'', ventaId:'', aseguradora:'', fechaEvento: todayISO(), estado:'reportado', documentosPendientes:'', notas:'' };
   return `<div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar siniestro':'Registrar siniestro'}</h2>
-    <div class="field"><label>Cliente</label><select id="mSinCliente" style="width:100%;"><option value="">Seleccionar…</option>${state.clientes.map(c=>`<option value="${c.id}" ${s.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
+    <div class="field" style="position:relative;">
+      <label>Cliente</label>
+      <input type="text" id="mSinClienteBuscar" style="width:100%;" placeholder="Escribe el nombre del cliente…" autocomplete="off" value="${s.clienteId ? (state.clientes.find(c=>c.id===s.clienteId)||{}).nombre||'' : ''}">
+      <input type="hidden" id="mSinCliente" value="${s.clienteId||''}">
+      <div id="mSinClienteResultados" style="display:none;position:absolute;z-index:20;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.12);"></div>
+    </div>
     <div class="field-row">
       <div class="field"><label>Aseguradora</label><select id="mSinAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
       <div class="field"><label>Fecha del evento</label><input type="date" id="mSinFecha" style="width:100%;" value="${s.fechaEvento||''}"></div>
@@ -3031,7 +3036,7 @@ function wireAsesores(){
 }
 
 // ================= CLIENTES =================
-let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos';
+let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos', filtroClienteBusqueda='';
 function valorHistoricoClientes(){
   const valorCliente = {};
   state.clientes.forEach(c=>{
@@ -3051,6 +3056,15 @@ function clientesFiltrados(){
   if(filtroClienteProducto!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===filtroClienteProducto));
   if(filtroClienteAsesor!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.asesorId===filtroClienteAsesor));
   if(filtroClienteValor==='alto') listado = listado.filter(c=> valorCliente[c.id]>0 && valorCliente[c.id]>=umbral);
+  if(filtroClienteBusqueda.trim().length>=2){
+    const texto = filtroClienteBusqueda.trim().toLowerCase();
+    listado = listado.filter(c=>
+      (c.nombre||'').toLowerCase().includes(texto) ||
+      (c.documento||'').toLowerCase().includes(texto) ||
+      (c.celular1||c.telefono||'').includes(texto) ||
+      (c.celular2||'').includes(texto)
+    );
+  }
   return listado;
 }
 let fichaClienteId = null;
@@ -3170,6 +3184,7 @@ function viewClientes(){
   return `
     <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
+    <div style="margin-bottom:14px;"><input type="text" id="fClienteBusqueda" style="width:100%;max-width:420px;" placeholder="🔎 Buscar por nombre, documento o celular…" value="${filtroClienteBusqueda}" autocomplete="off"></div>
     <div class="grid stat-row" style="margin-bottom:16px;">
       <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.8);">Cartera total</div>
@@ -3235,6 +3250,7 @@ function viewClientes(){
   `;
 }
 function wireClientes(){
+  const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; render(); };
   if(fichaClienteId){
     const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
     document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
@@ -3457,6 +3473,39 @@ function openModal(){
 }
 function wireModalSiniestro(){
   document.getElementById('mSinCancel').onclick = closeModal;
+  const sinClienteBuscarInput = document.getElementById('mSinClienteBuscar');
+  const sinClienteHidden = document.getElementById('mSinCliente');
+  const sinClienteResultados = document.getElementById('mSinClienteResultados');
+  if(sinClienteBuscarInput && sinClienteHidden && sinClienteResultados){
+    const clientesOrdenados = state.clientes.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre,'es',{sensitivity:'base'}));
+    const normalizarTxt = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const mostrarResultados = (lista) => {
+      if(lista.length===0){ sinClienteResultados.innerHTML = `<div style="padding:10px 12px;font-size:13px;color:var(--ink-faint);">Sin coincidencias.</div>`; }
+      else{
+        sinClienteResultados.innerHTML = lista.slice(0,30).map(c=>`<div class="mSinClienteOpcion" data-id="${c.id}" style="padding:8px 12px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--border);">${c.nombre}${c.documento?` <span style="color:var(--ink-faint);font-size:12px;">— ${c.documento}</span>`:''}</div>`).join('');
+        if(lista.length>30) sinClienteResultados.innerHTML += `<div style="padding:6px 12px;font-size:11.5px;color:var(--ink-faint);">Y ${lista.length-30} más — sigue escribiendo para acotar.</div>`;
+      }
+      sinClienteResultados.style.display = '';
+      sinClienteResultados.querySelectorAll('.mSinClienteOpcion').forEach(el=> el.onclick = () => {
+        const c = state.clientes.find(x=>x.id===el.dataset.id);
+        if(!c) return;
+        sinClienteHidden.value = c.id;
+        sinClienteBuscarInput.value = c.nombre;
+        sinClienteResultados.style.display = 'none';
+      });
+    };
+    sinClienteBuscarInput.oninput = () => {
+      sinClienteHidden.value = '';
+      const texto = normalizarTxt(sinClienteBuscarInput.value.trim());
+      if(texto.length<1){ sinClienteResultados.style.display = 'none'; return; }
+      const filtrados = clientesOrdenados.filter(c=> normalizarTxt(c.nombre).includes(texto) || (c.documento && c.documento.includes(texto)));
+      mostrarResultados(filtrados);
+    };
+    sinClienteBuscarInput.onfocus = () => { if(sinClienteBuscarInput.value.trim().length>=1 && !sinClienteHidden.value) sinClienteBuscarInput.oninput(); };
+    document.addEventListener('click', (e) => {
+      if(!sinClienteResultados.contains(e.target) && e.target!==sinClienteBuscarInput) sinClienteResultados.style.display = 'none';
+    });
+  }
   const del = document.getElementById('mSinDelete'); if(del) del.onclick = () => {
     if(!confirm('¿Eliminar este siniestro? Esta acción no se puede deshacer.')) return;
     state.siniestros = state.siniestros.filter(x=>x.id!==editing.id);
@@ -3505,10 +3554,15 @@ function modalVenta(){
 
     <div class="mtab-panel" data-mtab-panel="personales">
     <div class="panel-title" style="margin-top:0;">1. Datos del cliente</div>
-    <div class="field"><label>Cliente *</label><select id="mCliente" style="width:100%;"><option value="">Seleccionar…</option>${state.clientes.map(c=>`<option value="${c.id}" ${v.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
+    <div class="field" style="position:relative;">
+      <label>Cliente *</label>
+      <input type="text" id="mClienteBuscar" style="width:100%;" placeholder="Escribe el nombre del cliente…" autocomplete="off" value="${v.clienteId ? (state.clientes.find(c=>c.id===v.clienteId)||{}).nombre||'' : ''}">
+      <input type="hidden" id="mCliente" value="${v.clienteId||''}">
+      <div id="mClienteResultados" style="display:none;position:absolute;z-index:20;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.12);"></div>
+    </div>
     <div class="hint">El RUC/DNI, dirección y contacto del cliente se administran desde su ficha en Clientes.</div>
     <div class="field-row" style="align-items:flex-end;">
-      <div class="field" style="flex:1;"><label>Asesor asignado (vacío = venta directa)</label><select id="mAsesor" style="width:100%;" ${esAsesorSesion()?'disabled':''}><option value="">Venta directa</option>${state.asesores.map(a=>`<option value="${a.id}" ${(esAsesorSesion()?sesionUsuario.asesorId:v.asesorId)===a.id ? 'selected' : ''}>${a.nombre}</option>`).join('')}</select></div>
+      <div class="field" style="flex:1;"><label>Asesor asignado (vacío = venta directa)</label><select id="mAsesor" style="width:100%;" ${esAsesorSesion()?'disabled':''}><option value="">Venta directa</option>${state.asesores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre,'es',{sensitivity:'base'})).map(a=>`<option value="${a.id}" ${(esAsesorSesion()?sesionUsuario.asesorId:v.asesorId)===a.id ? 'selected' : ''}>${a.nombre}</option>`).join('')}</select></div>
       <div class="field" style="flex:0;">${esAsesorSesion() ? '' : `<button type="button" class="btn btn-ghost btn-sm" id="mNuevoAsesor" style="white-space:nowrap;">+ Nuevo asesor</button>`}</div>
     </div>
     <div class="field"><label>Canal de venta</label><select id="mCanal" style="width:100%;">
@@ -3520,7 +3574,7 @@ function modalVenta(){
     <div class="mtab-panel hidden" data-mtab-panel="poliza">
     <div class="panel-title" style="margin-top:0;">2. ${bitDeModal==='asesorias' ? 'Empresa' : 'Aseguradora'}</div>
     <div class="field-row" style="align-items:flex-end;">
-      <div class="field" style="flex:1;"><label>${bitDeModal==='asesorias' ? 'Empresa' : 'Compañía de seguros'}</label><select id="mAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${v.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
+      <div class="field" style="flex:1;"><label>${bitDeModal==='asesorias' ? 'Empresa' : 'Compañía de seguros'}</label><select id="mAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).slice().sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})).map(a=>`<option value="${a}" ${v.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaAseguradora" style="white-space:nowrap;">${bitDeModal==='asesorias' ? '+ Nueva empresa' : '+ Nueva compañía'}</button></div>
     </div>
     <div class="field"><label>${bitDeModal==='asesorias' ? 'N° RUC' : 'N° de póliza'}</label><input type="text" id="mNumeroPoliza" style="width:100%;" value="${v.numeroPoliza||''}" placeholder="${bitDeModal==='asesorias' ? 'Ej. 20481234567' : 'Ej. RG-00123'}"></div>
@@ -3575,7 +3629,7 @@ function modalVenta(){
     <div id="mBloqueVehiculoCompleto" style="${esProdVehicular(v.tipoProducto)?'':'display:none;'}">
     <div class="panel-title">Datos del vehículo</div>
     <div class="field-row" style="align-items:flex-end;">
-      <div class="field"><label>Marca</label><select id="mVehMarca" style="width:100%;"><option value="">Seleccionar…</option>${state.marcasVehiculo.map(m=>`<option value="${m}" ${v.vehMarca===m?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="field"><label>Marca</label><select id="mVehMarca" style="width:100%;"><option value="">Seleccionar…</option>${state.marcasVehiculo.slice().sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})).map(m=>`<option value="${m}" ${v.vehMarca===m?'selected':''}>${m}</option>`).join('')}</select></div>
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevaMarcaVeh" style="white-space:nowrap;">+ Agregar marca</button></div>
       <div class="field"><label>Modelo / Versión</label><select id="mVehModelo" style="width:100%;"><option value="">${v.vehMarca ? 'Seleccionar…' : 'Elige la marca primero'}</option>${(state.modelosPorMarca[v.vehMarca]||[]).slice().sort((a,b)=>a.localeCompare(b)).map(m=>`<option value="${m}" ${v.vehModelo===m?'selected':''}>${m}</option>`).join('')}</select></div>
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevoModeloVeh" style="white-space:nowrap;" ${v.vehMarca?'':'disabled'}>+ Agregar modelo</button></div>
@@ -4000,6 +4054,40 @@ function wireModal(){
     const bloqueSoatCompleto = document.getElementById('mBloqueSoatCompleto');
     const dividerSoat = document.getElementById('mDividerSoat');
     const filaQuienPago = document.getElementById('mFilaQuienPago');
+    const clienteBuscarInput = document.getElementById('mClienteBuscar');
+    const clienteHidden = document.getElementById('mCliente');
+    const clienteResultados = document.getElementById('mClienteResultados');
+    if(clienteBuscarInput && clienteHidden && clienteResultados){
+      const clientesOrdenados = state.clientes.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre,'es',{sensitivity:'base'}));
+      const normalizarTxt = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+      const mostrarResultados = (lista) => {
+        if(lista.length===0){ clienteResultados.innerHTML = `<div style="padding:10px 12px;font-size:13px;color:var(--ink-faint);">Sin coincidencias.</div>`; }
+        else{
+          clienteResultados.innerHTML = lista.slice(0,30).map(c=>`<div class="mClienteOpcion" data-id="${c.id}" style="padding:8px 12px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--border);">${c.nombre}${c.documento?` <span style="color:var(--ink-faint);font-size:12px;">— ${c.documento}</span>`:''}</div>`).join('');
+          if(lista.length>30) clienteResultados.innerHTML += `<div style="padding:6px 12px;font-size:11.5px;color:var(--ink-faint);">Y ${lista.length-30} más — sigue escribiendo para acotar.</div>`;
+        }
+        clienteResultados.style.display = '';
+        clienteResultados.querySelectorAll('.mClienteOpcion').forEach(el=> el.onclick = () => {
+          const c = state.clientes.find(x=>x.id===el.dataset.id);
+          if(!c) return;
+          clienteHidden.value = c.id;
+          clienteBuscarInput.value = c.nombre;
+          clienteBuscarInput.style.borderColor = '';
+          clienteResultados.style.display = 'none';
+        });
+      };
+      clienteBuscarInput.oninput = () => {
+        clienteHidden.value = '';
+        const texto = normalizarTxt(clienteBuscarInput.value.trim());
+        if(texto.length<1){ clienteResultados.style.display = 'none'; return; }
+        const filtrados = clientesOrdenados.filter(c=> normalizarTxt(c.nombre).includes(texto) || (c.documento && c.documento.includes(texto)));
+        mostrarResultados(filtrados);
+      };
+      clienteBuscarInput.onfocus = () => { if(clienteBuscarInput.value.trim().length>=1 && !clienteHidden.value) clienteBuscarInput.oninput(); };
+      document.addEventListener('click', (e) => {
+        if(!clienteResultados.contains(e.target) && e.target!==clienteBuscarInput) clienteResultados.style.display = 'none';
+      });
+    }
     const bloqueVehiculoCompleto = document.getElementById('mBloqueVehiculoCompleto');
     const dividerVehiculo = document.getElementById('mDividerVehiculo');
     if(prodSel && bloqueSoatCompleto){
@@ -4281,7 +4369,7 @@ function wireModal(){
           saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
         }
       }
-      if(!data.clienteId){ irAPestanaModal('personales'); document.getElementById('mCliente').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
+      if(!data.clienteId){ irAPestanaModal('personales'); const elBuscar=document.getElementById('mClienteBuscar'); if(elBuscar) elBuscar.style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
       if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
       if(esSeguro(tipoProductoSel) && modoComisionAseguradora!=='fijo' && !data.primaBruta){ irAPestanaModal('comisiones'); const el=document.getElementById('mPrimaBruta'); if(el) el.style.borderColor='var(--danger)'; mostrarErrorModal('Falta ingresar la Prima bruta (pestaña "Comisiones").'); return; }
       if(!data.comisionTotal || data.comisionTotal<=0){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
