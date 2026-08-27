@@ -2228,7 +2228,8 @@ function setEstadoComision(id, estado){
 }
 
 // ================= RENOVACIONES Y COBRANZA =================
-let filtroPolEstado='todas', filtroPolTexto='';
+let filtroPolEstado='todas', filtroPolTexto='', filtroPolMesAnio='';
+let calendarioRenovAnio = String(new Date().getFullYear());
 function viewPolizas(){
   let rows = misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto) && v.numeroPoliza)
     .sort((a,b)=> (b.fechaVenta||'').localeCompare(a.fechaVenta||'') || b.folio-a.folio);
@@ -2247,6 +2248,16 @@ function viewPolizas(){
       return cli && cli.nombre && cli.nombre.toLowerCase().includes(texto);
     });
   }
+  if(filtroPolMesAnio) rows = rows.filter(v=> ventaActiva(v) && (v.vigenciaFin||'').slice(0,7)===filtroPolMesAnio);
+
+  // ---- Calendario de renovaciones por mes (para el año elegido) ----
+  const conteoPorMes = Array(12).fill(0);
+  misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.vigenciaFin && v.vigenciaFin.slice(0,4)===calendarioRenovAnio).forEach(v=>{
+    const mes = parseInt(v.vigenciaFin.slice(5,7),10) - 1;
+    if(mes>=0 && mes<12) conteoPorMes[mes]++;
+  });
+  const maxMes = Math.max(1, ...conteoPorMes);
+  const añosDisponiblesCalendario = Array.from(new Set([String(new Date().getFullYear()), ...misVentas(state.ventas).map(v=>(v.vigenciaFin||'').slice(0,4)).filter(Boolean)])).sort();
 
   const todasActivas = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v));
   const totalPorVencer = todasActivas.filter(v=>v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=30).length;
@@ -2272,6 +2283,28 @@ function viewPolizas(){
         <div class="value num" style="color:#fff;">${totalPorVencer15}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">urgentes, contactar ya</div>
       </div>
+    </div>
+    <div class="card" style="margin-bottom:16px;padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+        <div class="panel-title" style="margin:0;">📅 Calendario de renovaciones — ${calendarioRenovAnio}</div>
+        <select id="fCalendarioAnio">${añosDisponiblesCalendario.map(a=>`<option value="${a}" ${calendarioRenovAnio===a?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Haz clic en un mes para ver exactamente qué pólizas vencen ahí.</div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;">
+        ${MESES.map((nombreMes,i)=>{
+          const cantidad = conteoPorMes[i];
+          const alturaBarra = Math.round((cantidad/maxMes)*60) + 4;
+          const esMesActivo = filtroPolMesAnio === `${calendarioRenovAnio}-${String(i+1).padStart(2,'0')}`;
+          return `<div data-mes-calendario="${calendarioRenovAnio}-${String(i+1).padStart(2,'0')}" style="cursor:pointer;text-align:center;padding:8px 4px;border-radius:8px;${esMesActivo?'background:var(--primary-soft);border:2px solid var(--primary);':'border:2px solid transparent;'}">
+            <div style="height:64px;display:flex;align-items:flex-end;justify-content:center;">
+              <div style="width:60%;height:${alturaBarra}px;background:${cantidad>0?'var(--primary)':'var(--border)'};border-radius:4px 4px 0 0;"></div>
+            </div>
+            <div style="font-size:11px;margin-top:4px;color:var(--ink-soft);">${nombreMes.slice(0,3)}</div>
+            <div class="num" style="font-size:14px;font-weight:700;">${cantidad}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${filtroPolMesAnio ? `<div style="margin-top:10px;"><button class="btn btn-ghost btn-sm" id="btnQuitarFiltroMesCalendario">Quitar filtro de mes</button></div>` : ''}
     </div>
     <div class="toolbar">
       <select id="fPolEstado">
@@ -2326,6 +2359,13 @@ function wirePolizas(){
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; render(); };
   const btnQuitarTexto = document.getElementById('btnQuitarFiltroPolTexto'); if(btnQuitarTexto) btnQuitarTexto.onclick = () => { filtroPolTexto=''; render(); };
+  const fCalAnio = document.getElementById('fCalendarioAnio'); if(fCalAnio) fCalAnio.onchange = e=>{ calendarioRenovAnio=e.target.value; filtroPolMesAnio=''; render(); };
+  document.querySelectorAll('[data-mes-calendario]').forEach(el=> el.onclick = () => {
+    const valor = el.dataset.mesCalendario;
+    filtroPolMesAnio = filtroPolMesAnio===valor ? '' : valor;
+    render();
+  });
+  const btnQuitarMes = document.getElementById('btnQuitarFiltroMesCalendario'); if(btnQuitarMes) btnQuitarMes.onclick = () => { filtroPolMesAnio=''; render(); };
   const btnPlantillaTPA = document.getElementById('btnPlantillaComisionesTPA'); if(btnPlantillaTPA) btnPlantillaTPA.onclick = () => {
     const headers = ['Aseguradora','C_Nombre o Razón Social','Ramo','Asesor','N° de póliza','Estado','TPA S/','TPA $'];
     const ejemplo = ['Rimac','CHIRINOS ALARCON ROCIO VIOLETA','Vehicular','Eduardo Flores','1637661','Vigente','','84.83'];
@@ -3036,7 +3076,7 @@ function wireAsesores(){
 }
 
 // ================= CLIENTES =================
-let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos', filtroClienteBusqueda='';
+let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos', filtroClienteBusqueda='', filtroClienteActividad='todos';
 function valorHistoricoClientes(){
   const valorCliente = {};
   state.clientes.forEach(c=>{
@@ -3056,6 +3096,8 @@ function clientesFiltrados(){
   if(filtroClienteProducto!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===filtroClienteProducto));
   if(filtroClienteAsesor!=='todos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.asesorId===filtroClienteAsesor));
   if(filtroClienteValor==='alto') listado = listado.filter(c=> valorCliente[c.id]>0 && valorCliente[c.id]>=umbral);
+  if(filtroClienteActividad==='activos') listado = listado.filter(c=> state.ventas.some(v=>v.clienteId===c.id && ventaActiva(v)));
+  else if(filtroClienteActividad==='inactivos') listado = listado.filter(c=> !state.ventas.some(v=>v.clienteId===c.id && ventaActiva(v)));
   if(filtroClienteBusqueda.trim().length>=2){
     const texto = filtroClienteBusqueda.trim().toLowerCase();
     listado = listado.filter(c=>
@@ -3068,6 +3110,34 @@ function clientesFiltrados(){
   return listado;
 }
 let fichaClienteId = null;
+let modoCalidadDatos = false;
+function bucketNombre(nombre){
+  const n = String(nombre||'').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return n.slice(0,3);
+}
+function reporteCalidadDatos(){
+  const sinCelular = state.clientes.filter(c=> !(c.celular1||c.telefono));
+  const sinDocumento = state.clientes.filter(c=> !c.documento);
+  const sinCiudad = state.clientes.filter(c=> !c.ciudad);
+  // ---- Posibles duplicados: solo compara dentro del mismo "cubo" (primeras 3 letras normalizadas) para no trabar el navegador ----
+  const buckets = {};
+  state.clientes.forEach(c=>{
+    const b = bucketNombre(c.nombre);
+    if(!buckets[b]) buckets[b] = [];
+    buckets[b].push(c);
+  });
+  const pares = [];
+  Object.values(buckets).forEach(grupo=>{
+    if(grupo.length<2 || grupo.length>60) return; // grupos gigantes (ej. mismo prefijo muy común) se omiten para no trabar
+    for(let i=0;i<grupo.length;i++){
+      for(let j=i+1;j<grupo.length;j++){
+        const sim = similitudNombres(grupo[i].nombre, grupo[j].nombre);
+        if(sim>=0.87) pares.push([grupo[i], grupo[j], sim]);
+      }
+    }
+  });
+  return { sinCelular, sinDocumento, sinCiudad, pares };
+}
 function viewFichaCliente(id){
   const c = state.clientes.find(x=>x.id===id);
   if(!c) { fichaClienteId=null; return viewClientes(); }
@@ -3167,7 +3237,69 @@ function fmtMonedaANumeroPEN(monto, moneda){
   const n = parseFloat(monto)||0;
   return moneda==='USD' ? n*(Number(state.tipoCambio)||3.75) : n;
 }
+function viewCalidadDatos(){
+  const { sinCelular, sinDocumento, sinCiudad, pares } = reporteCalidadDatos();
+  return `
+    <div class="page-head"><div><a href="#" id="btnVolverCalidadDatos" style="font-size:13px;color:var(--ink-faint);">← Volver a la lista</a><h1 style="margin-top:6px;">Calidad de datos de tu cartera</h1><p>Revisión de datos incompletos y posibles duplicados, para mantener tus ${state.clientes.length} clientes limpios y utilizables.</p></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Sin celular</div>
+        <div class="value num" style="color:#fff;">${sinCelular.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Sin documento (DNI/RUC)</div>
+        <div class="value num" style="color:#fff;">${sinDocumento.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Sin ciudad</div>
+        <div class="value num" style="color:#fff;">${sinCiudad.length}</div>
+      </div>
+      <div class="card stat-card" style="background:#B8483A;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Posibles duplicados</div>
+        <div class="value num" style="color:#fff;">${pares.length}</div>
+      </div>
+    </div>
+    <div class="panel-title">Posibles duplicados (nombres muy parecidos)</div>
+    <div class="hint" style="margin-bottom:8px;">Revisa cada par y decide si son la misma persona (fusiona editando uno y eliminando el otro) o son distintos.</div>
+    <div class="card" style="padding:0;margin-bottom:20px;">
+      <table>
+        <thead><tr><th>Cliente 1</th><th>Cliente 2</th><th>Similitud</th><th></th></tr></thead>
+        <tbody>
+          ${pares.length===0 ? `<tr class="empty-row"><td colspan="4">No se encontraron duplicados evidentes.</td></tr>` : pares.slice(0,200).map(([c1,c2,sim])=>`
+            <tr>
+              <td>${c1.nombre} <span class="hint">(${c1.documento||'sin doc.'})</span></td>
+              <td>${c2.nombre} <span class="hint">(${c2.documento||'sin doc.'})</span></td>
+              <td>${Math.round(sim*100)}%</td>
+              <td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c1.id}">Editar 1</button> <button class="btn btn-ghost btn-sm" data-edit-cliente="${c2.id}">Editar 2</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      ${pares.length>200 ? `<div class="hint" style="padding:10px;">Mostrando los primeros 200 de ${pares.length} pares encontrados.</div>` : ''}
+    </div>
+    <div class="panel-title">Clientes sin celular (${sinCelular.length})</div>
+    <div class="card" style="padding:0;margin-bottom:20px;max-height:300px;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Nombre</th><th>Documento</th><th></th></tr></thead>
+        <tbody>
+          ${sinCelular.length===0 ? `<tr class="empty-row"><td colspan="3">Todos tus clientes tienen celular registrado.</td></tr>` : sinCelular.slice(0,300).map(c=>`<tr><td>${c.nombre}</td><td>${c.documento||'—'}</td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`).join('')}
+        </tbody>
+      </table>
+      ${sinCelular.length>300 ? `<div class="hint" style="padding:10px;">Mostrando los primeros 300 de ${sinCelular.length}.</div>` : ''}
+    </div>
+    <div class="panel-title">Clientes sin documento (${sinDocumento.length})</div>
+    <div class="card" style="padding:0;margin-bottom:20px;max-height:300px;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Nombre</th><th>Celular</th><th></th></tr></thead>
+        <tbody>
+          ${sinDocumento.length===0 ? `<tr class="empty-row"><td colspan="3">Todos tus clientes tienen documento registrado.</td></tr>` : sinDocumento.slice(0,300).map(c=>`<tr><td>${c.nombre}</td><td>${c.celular1||c.telefono||'—'}</td><td><button class="btn btn-ghost btn-sm" data-edit-cliente="${c.id}">Editar</button></td></tr>`).join('')}
+        </tbody>
+      </table>
+      ${sinDocumento.length>300 ? `<div class="hint" style="padding:10px;">Mostrando los primeros 300 de ${sinDocumento.length}.</div>` : ''}
+    </div>
+  `;
+}
 function viewClientes(){
+  if(modoCalidadDatos) return viewCalidadDatos();
   const activos = state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && ventaActiva(v))).length;
   const sinVentas = state.clientes.length - activos;
   const clientesConProducto = (prodId) => state.clientes.filter(c=> state.ventas.some(v=>v.clienteId===c.id && v.tipoProducto===prodId)).length;
@@ -3180,26 +3312,26 @@ function viewClientes(){
   let listado = clientesFiltrados();
   const estadoInfo = id => ESTADOS_CONTACTO.find(e=>e.id===id) || ESTADOS_CONTACTO[0];
   const productosSeguro = todosLosProductos().filter(r=>r.categoria==='seguro');
-  const hayFiltroActivo = filtroClienteContacto!=='todos' || filtroClienteEtiqueta!=='todas' || filtroClienteTipo!=='todos' || filtroClienteProducto!=='todos' || filtroClienteAsesor!=='todos' || filtroClienteValor!=='todos';
+  const hayFiltroActivo = filtroClienteContacto!=='todos' || filtroClienteEtiqueta!=='todas' || filtroClienteTipo!=='todos' || filtroClienteProducto!=='todos' || filtroClienteAsesor!=='todos' || filtroClienteValor!=='todos' || filtroClienteActividad!=='todos';
   return `
-    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
+    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${state.clientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" id="btnCalidadDatos">🩺 Calidad de datos</button><button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button><button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button><button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button><button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button><button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
     <div style="margin-bottom:14px;"><input type="text" id="fClienteBusqueda" style="width:100%;max-width:420px;" placeholder="🔎 Buscar por nombre, documento o celular…" value="${filtroClienteBusqueda}" autocomplete="off"></div>
     <div class="grid stat-row" style="margin-bottom:16px;">
-      <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;">
+      <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;cursor:pointer;${filtroClienteActividad==='todos'?'outline:2px solid #fff;':''}" data-filtro-actividad="todos">
         <div class="label" style="color:rgba(255,255,255,0.8);">Cartera total</div>
         <div class="value num" style="color:#fff;">${state.clientes.length}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">clientes registrados</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">clic para ver todos</div>
       </div>
-      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
+      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;cursor:pointer;${filtroClienteActividad==='activos'?'outline:2px solid #fff;':''}" data-filtro-actividad="activos">
         <div class="label" style="color:rgba(255,255,255,0.85);">Clientes activos</div>
         <div class="value num" style="color:#fff;">${activos}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">con al menos 1 venta vigente</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">clic para ver solo activos</div>
       </div>
-      <div class="card stat-card" style="background:#8A6D3B;color:#fff;padding:16px;">
+      <div class="card stat-card" style="background:#8A6D3B;color:#fff;padding:16px;cursor:pointer;${filtroClienteActividad==='inactivos'?'outline:2px solid #fff;':''}" data-filtro-actividad="inactivos">
         <div class="label" style="color:rgba(255,255,255,0.85);">Sin ventas registradas</div>
         <div class="value num" style="color:#fff;">${sinVentas}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">oportunidades para retomar contacto</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">clic para ver solo inactivos</div>
       </div>
       <div class="card stat-card" style="background:#5A6B65;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Empresas (RUC) / Personas</div>
@@ -3250,6 +3382,13 @@ function viewClientes(){
   `;
 }
 function wireClientes(){
+  if(modoCalidadDatos){
+    const back = document.getElementById('btnVolverCalidadDatos'); if(back) back.onclick = (e)=>{ e.preventDefault(); modoCalidadDatos=false; render(); };
+    document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
+    return;
+  }
+  const btnCalidad = document.getElementById('btnCalidadDatos'); if(btnCalidad) btnCalidad.onclick = () => { modoCalidadDatos=true; render(); };
+  document.querySelectorAll('[data-filtro-actividad]').forEach(el=> el.onclick = () => { filtroClienteActividad=el.dataset.filtroActividad; render(); });
   const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; render(); };
   if(fichaClienteId){
     const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
