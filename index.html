@@ -172,6 +172,7 @@
     <div class="nav-group-label">Comisiones</div>
     <button class="nav-btn" data-tab="cobro_comisiones"><span class="nav-icon">④</span>Cobro de comisiones</button>
     <button class="nav-btn" data-tab="pago_comisiones"><span class="nav-icon">⑤</span>Pago de comisiones</button>
+    <button class="nav-btn" data-tab="facturacion"><span class="nav-icon">🧾</span>Facturación (IGV)</button>
     <div class="nav-group-label">Seguimiento</div>
     <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
     <button class="nav-btn" data-tab="cobranzas"><span class="nav-icon">💰</span>Cobranzas</button>
@@ -820,7 +821,7 @@ function checkAuthAndRender(){
     renderLogin();
   } else {
     if(sidebar) sidebar.style.display = '';
-    if(esAsesorSesion() && (tab==='dashboard' || tab==='asesores' || tab==='cobro_comisiones' || tab==='pago_comisiones')) tab = 'ventas_seguros';
+    if(esAsesorSesion() && (tab==='dashboard' || tab==='asesores' || tab==='cobro_comisiones' || tab==='pago_comisiones' || tab==='facturacion')) tab = 'ventas_seguros';
     aplicarVisibilidadNav();
     render();
     if(!esAsesorSesion()) mostrarAvisoNavegador();
@@ -828,7 +829,7 @@ function checkAuthAndRender(){
 }
 
 function aplicarVisibilidadNav(){
-  const soloAdmin = document.querySelectorAll('#crm-app .nav-btn[data-tab="dashboard"], #crm-app .nav-btn[data-tab="asesores"], #crm-app .nav-btn[data-tab="cobro_comisiones"], #crm-app .nav-btn[data-tab="pago_comisiones"]');
+  const soloAdmin = document.querySelectorAll('#crm-app .nav-btn[data-tab="dashboard"], #crm-app .nav-btn[data-tab="asesores"], #crm-app .nav-btn[data-tab="cobro_comisiones"], #crm-app .nav-btn[data-tab="pago_comisiones"], #crm-app .nav-btn[data-tab="facturacion"]');
   soloAdmin.forEach(b=> b.style.display = esAsesorSesion() ? 'none' : '');
   const labelSesion = document.getElementById('labelSesion');
   if(labelSesion) labelSesion.textContent = sesionUsuario ? (esAsesorSesion() ? `Asesor: ${sesionUsuario.nombre}` : 'Sesión: Administrador') : '';
@@ -917,6 +918,7 @@ function render(){
   else if(tab==='ventas_seguros' || tab==='ventas_oncologicos' || tab==='ventas_asesorias') el.innerHTML = viewVentas();
   else if(tab==='cobro_comisiones') el.innerHTML = viewCobroComisiones();
   else if(tab==='pago_comisiones') el.innerHTML = viewPagoComisiones();
+  else if(tab==='facturacion') el.innerHTML = viewFacturacion();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
   else if(tab==='cobranzas') el.innerHTML = viewCobranzas();
   else if(tab==='soat') el.innerHTML = viewSoat();
@@ -2423,6 +2425,153 @@ function setEstadoComision(id, estado){
   if(v){ v.estadoComision = estado; v.fechaPagoComision = estado==='pagada' ? todayISO() : ''; save(); render(); }
 }
 
+// ================= FACTURACIÓN (IGV) =================
+const IGV_TASA = 0.18;
+let filtroFacturacionVista = 'anual', filtroFacturacionAnio = String(new Date().getFullYear());
+function facturacionPorAnio(){
+  const out = {};
+  state.ventas.filter(v=>ventaSeguroActiva(v)).forEach(v=>{
+    const anio = (v.fechaVenta||'').slice(0,4);
+    if(!anio) return;
+    if(!out[anio]) out[anio] = { basePEN:0, baseUSD:0 };
+    const monto = comisionFG(v);
+    if(v.moneda==='USD') out[anio].baseUSD += monto; else out[anio].basePEN += monto;
+  });
+  return out;
+}
+function facturacionPorMes(anio){
+  const out = {};
+  for(let m=1;m<=12;m++) out[String(m).padStart(2,'0')] = { basePEN:0, baseUSD:0 };
+  state.ventas.filter(v=>ventaSeguroActiva(v) && (v.fechaVenta||'').slice(0,4)===anio).forEach(v=>{
+    const mes = (v.fechaVenta||'').slice(5,7);
+    if(!mes || !out[mes]) return;
+    const monto = comisionFG(v);
+    if(v.moneda==='USD') out[mes].baseUSD += monto; else out[mes].basePEN += monto;
+  });
+  return out;
+}
+function viewFacturacion(){
+  const porAnio = facturacionPorAnio();
+  const anios = Object.keys(porAnio).sort((a,b)=>b.localeCompare(a));
+  const añoActual = String(new Date().getFullYear());
+  const actual = porAnio[añoActual] || { basePEN:0, baseUSD:0 };
+  const totalHistorico = anios.reduce((acc,a)=>({ basePEN: acc.basePEN+porAnio[a].basePEN, baseUSD: acc.baseUSD+porAnio[a].baseUSD }), { basePEN:0, baseUSD:0 });
+  const añosParaSelector = Array.from(new Set([añoActual, ...anios])).sort((a,b)=>b.localeCompare(a));
+  const porMes = facturacionPorMes(filtroFacturacionAnio);
+  const mesesConDatos = Object.keys(porMes);
+  const totalAnioMensual = mesesConDatos.reduce((acc,m)=>({ basePEN: acc.basePEN+porMes[m].basePEN, baseUSD: acc.baseUSD+porMes[m].baseUSD }), { basePEN:0, baseUSD:0 });
+  const ventasDetalle = filtroFacturacionVista==='detalle' ? state.ventas.filter(v=>ventaSeguroActiva(v) && (v.fechaVenta||'').slice(0,4)===filtroFacturacionAnio).sort((a,b)=>(b.fechaVenta||'').localeCompare(a.fechaVenta||'')) : [];
+  return `
+    <div class="page-head"><div><h1>Facturación (IGV)</h1><p>Todas las ventas registradas de la empresa (seguros, oncológicos y asesorías) — con y sin IGV (18%), unificado.</p></div><button class="btn" id="btnFacturacionPDF">Descargar PDF</button></div>
+    <div class="hint" style="margin-bottom:12px;">Se calcula sobre la comisión que le corresponde a Flores & Gonzales Asociados (antes de pagar a asesores), asumiendo que ese monto registrado es la base sin IGV. Incluye todo lo registrado en el sistema, sin importar la bitácora (Venta de Seguros, Oncosalud o Asesoría). Verifica este criterio con tu contador antes de usarlo para SUNAT.</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div class="card">
+        <div class="panel-title" style="margin-top:0;">Año ${añoActual} — Soles</div>
+        <table style="font-size:12.5px;">
+          <tr><td>Base sin IGV</td><td class="num" style="text-align:right;">${fmtMoney(actual.basePEN)}</td></tr>
+          <tr><td>IGV (18%)</td><td class="num" style="text-align:right;">${fmtMoney(actual.basePEN*IGV_TASA)}</td></tr>
+          <tr style="border-top:1px solid var(--border);font-weight:700;"><td>Total facturado (con IGV)</td><td class="num" style="text-align:right;">${fmtMoney(actual.basePEN*(1+IGV_TASA))}</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <div class="panel-title" style="margin-top:0;">Año ${añoActual} — Dólares</div>
+        <table style="font-size:12.5px;">
+          <tr><td>Base sin IGV</td><td class="num" style="text-align:right;">${fmtUSD(actual.baseUSD)}</td></tr>
+          <tr><td>IGV (18%)</td><td class="num" style="text-align:right;">${fmtUSD(actual.baseUSD*IGV_TASA)}</td></tr>
+          <tr style="border-top:1px solid var(--border);font-weight:700;"><td>Total facturado (con IGV)</td><td class="num" style="text-align:right;">${fmtUSD(actual.baseUSD*(1+IGV_TASA))}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <button class="btn ${filtroFacturacionVista==='anual'?'btn-primary':'btn-ghost'} btn-sm" data-facturacion-vista="anual">Vista anual</button>
+      <button class="btn ${filtroFacturacionVista==='mensual'?'btn-primary':'btn-ghost'} btn-sm" data-facturacion-vista="mensual">Vista mensual</button>
+      <button class="btn ${filtroFacturacionVista==='detalle'?'btn-primary':'btn-ghost'} btn-sm" data-facturacion-vista="detalle">Detalle de ventas</button>
+      ${filtroFacturacionVista!=='anual' ? `<select id="fFacturacionAnio" style="margin-left:8px;">${añosParaSelector.map(a=>`<option value="${a}" ${filtroFacturacionAnio===a?'selected':''}>Año ${a}</option>`).join('')}</select>` : ''}
+    </div>
+    ${filtroFacturacionVista==='anual' ? `
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <table>
+        <thead><tr><th>Año</th><th>Base S/ (sin IGV)</th><th>IGV S/</th><th>Total S/ (con IGV)</th><th>Base US$ (sin IGV)</th><th>IGV US$</th><th>Total US$ (con IGV)</th></tr></thead>
+        <tbody>
+          ${anios.length===0 ? `<tr class="empty-row"><td colspan="7">Aún no hay ventas registradas.</td></tr>` : anios.map(a=>{
+            const d = porAnio[a];
+            return `<tr><td>${a}</td><td class="num">${fmtMoney(d.basePEN)}</td><td class="num">${fmtMoney(d.basePEN*IGV_TASA)}</td><td class="num">${fmtMoney(d.basePEN*(1+IGV_TASA))}</td><td class="num">${fmtUSD(d.baseUSD)}</td><td class="num">${fmtUSD(d.baseUSD*IGV_TASA)}</td><td class="num">${fmtUSD(d.baseUSD*(1+IGV_TASA))}</td></tr>`;
+          }).join('')}
+          ${anios.length>1 ? `<tr style="font-weight:700;border-top:2px solid var(--border);"><td>Acumulado histórico</td><td class="num">${fmtMoney(totalHistorico.basePEN)}</td><td class="num">${fmtMoney(totalHistorico.basePEN*IGV_TASA)}</td><td class="num">${fmtMoney(totalHistorico.basePEN*(1+IGV_TASA))}</td><td class="num">${fmtUSD(totalHistorico.baseUSD)}</td><td class="num">${fmtUSD(totalHistorico.baseUSD*IGV_TASA)}</td><td class="num">${fmtUSD(totalHistorico.baseUSD*(1+IGV_TASA))}</td></tr>` : ''}
+        </tbody>
+      </table>
+    </div>` : filtroFacturacionVista==='mensual' ? `
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <table>
+        <thead><tr><th>Mes — ${filtroFacturacionAnio}</th><th>Base S/ (sin IGV)</th><th>IGV S/</th><th>Total S/ (con IGV)</th><th>Base US$ (sin IGV)</th><th>IGV US$</th><th>Total US$ (con IGV)</th></tr></thead>
+        <tbody>
+          ${mesesConDatos.map(m=>{
+            const d = porMes[m];
+            return `<tr><td>${MESES[parseInt(m)-1]}</td><td class="num">${fmtMoney(d.basePEN)}</td><td class="num">${fmtMoney(d.basePEN*IGV_TASA)}</td><td class="num">${fmtMoney(d.basePEN*(1+IGV_TASA))}</td><td class="num">${fmtUSD(d.baseUSD)}</td><td class="num">${fmtUSD(d.baseUSD*IGV_TASA)}</td><td class="num">${fmtUSD(d.baseUSD*(1+IGV_TASA))}</td></tr>`;
+          }).join('')}
+          <tr style="font-weight:700;border-top:2px solid var(--border);"><td>Total del año</td><td class="num">${fmtMoney(totalAnioMensual.basePEN)}</td><td class="num">${fmtMoney(totalAnioMensual.basePEN*IGV_TASA)}</td><td class="num">${fmtMoney(totalAnioMensual.basePEN*(1+IGV_TASA))}</td><td class="num">${fmtUSD(totalAnioMensual.baseUSD)}</td><td class="num">${fmtUSD(totalAnioMensual.baseUSD*IGV_TASA)}</td><td class="num">${fmtUSD(totalAnioMensual.baseUSD*(1+IGV_TASA))}</td></tr>
+        </tbody>
+      </table>
+    </div>` : `
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <div class="hint" style="padding:10px 16px 0;">${ventasDetalle.length} venta(s) registrada(s) en ${filtroFacturacionAnio} — de todas las bitácoras (Venta de Seguros, Oncosalud, Asesoría).</div>
+      <table>
+        <thead><tr><th>Fecha</th><th>Folio</th><th>Cliente</th><th>Bitácora</th><th>Producto</th><th>Moneda</th><th>Base (sin IGV)</th><th>IGV</th><th>Total (con IGV)</th></tr></thead>
+        <tbody>
+          ${ventasDetalle.length===0 ? `<tr class="empty-row"><td colspan="9">Sin ventas registradas en ${filtroFacturacionAnio}.</td></tr>` : ventasDetalle.map(v=>{
+            const cli = state.clientes.find(c=>c.id===v.clienteId);
+            const base = comisionFG(v);
+            const bitLabel = esOncologico(v.tipoProducto) ? 'Oncosalud' : esAsesoria(v.tipoProducto) ? 'Asesoría' : 'Seguros';
+            const simbolo = v.moneda==='USD' ? 'US$' : 'S/';
+            return `<tr><td>${fmtDate(v.fechaVenta)}</td><td>${folioV(v.folio)}</td><td>${cli?cli.nombre:'—'}</td><td>${bitLabel}</td><td>${prodLabel(v.tipoProducto)}</td><td>${v.moneda==='USD'?'US$':'S/'}</td><td class="num">${simbolo} ${base.toFixed(2)}</td><td class="num">${simbolo} ${(base*IGV_TASA).toFixed(2)}</td><td class="num">${simbolo} ${(base*(1+IGV_TASA)).toFixed(2)}</td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`}
+  `;
+}
+function wireFacturacion(){
+  document.querySelectorAll('[data-facturacion-vista]').forEach(b=> b.onclick = () => { filtroFacturacionVista = b.dataset.facturacionVista; render(); });
+  const selAnio = document.getElementById('fFacturacionAnio'); if(selAnio) selAnio.onchange = e => { filtroFacturacionAnio = e.target.value; render(); };
+  const btn = document.getElementById('btnFacturacionPDF'); if(btn) btn.onclick = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text('Facturación — Flores & Gonzales Asociados', 14, 16);
+    if(filtroFacturacionVista==='mensual'){
+      const porMes = facturacionPorMes(filtroFacturacionAnio);
+      doc.setFontSize(9); doc.text(`Generado el ${fmtDate(todayISO())} — Desglose mensual del año ${filtroFacturacionAnio} — Comisión FG con IGV (18%) estimado`, 14, 22);
+      const body = Object.keys(porMes).map(m=>{
+        const d = porMes[m];
+        return [MESES[parseInt(m)-1], fmtMoney(d.basePEN), fmtMoney(d.basePEN*IGV_TASA), fmtMoney(d.basePEN*(1+IGV_TASA)), fmtUSD(d.baseUSD), fmtUSD(d.baseUSD*IGV_TASA), fmtUSD(d.baseUSD*(1+IGV_TASA))];
+      });
+      doc.autoTable({ startY: 28, head: [['Mes','Base S/','IGV S/','Total S/','Base US$','IGV US$','Total US$']], body, styles:{fontSize:8} });
+      doc.save(`facturacion-mensual-${filtroFacturacionAnio}.pdf`);
+    } else if(filtroFacturacionVista==='detalle'){
+      const ventasDetalle = state.ventas.filter(v=>ventaSeguroActiva(v) && (v.fechaVenta||'').slice(0,4)===filtroFacturacionAnio).sort((a,b)=>(b.fechaVenta||'').localeCompare(a.fechaVenta||''));
+      doc.setFontSize(9); doc.text(`Generado el ${fmtDate(todayISO())} — Detalle de ventas del año ${filtroFacturacionAnio} — ${ventasDetalle.length} venta(s)`, 14, 22);
+      const body = ventasDetalle.map(v=>{
+        const cli = state.clientes.find(c=>c.id===v.clienteId);
+        const base = comisionFG(v);
+        const bitLabel = esOncologico(v.tipoProducto) ? 'Oncosalud' : esAsesoria(v.tipoProducto) ? 'Asesoría' : 'Seguros';
+        return [fmtDate(v.fechaVenta), folioV(v.folio), cli?cli.nombre:'—', bitLabel, prodLabel(v.tipoProducto), v.moneda==='USD'?'US$':'S/', base.toFixed(2), (base*IGV_TASA).toFixed(2), (base*(1+IGV_TASA)).toFixed(2)];
+      });
+      doc.autoTable({ startY: 28, head: [['Fecha','Folio','Cliente','Bitácora','Producto','Moneda','Base','IGV','Total']], body, styles:{fontSize:7} });
+      doc.save(`facturacion-detalle-${filtroFacturacionAnio}.pdf`);
+    } else {
+      const porAnio = facturacionPorAnio();
+      const anios = Object.keys(porAnio).sort((a,b)=>b.localeCompare(a));
+      doc.setFontSize(9); doc.text(`Generado el ${fmtDate(todayISO())} — Comisión FG con IGV (18%) estimado`, 14, 22);
+      const body = anios.map(a=>{
+        const d = porAnio[a];
+        return [a, fmtMoney(d.basePEN), fmtMoney(d.basePEN*IGV_TASA), fmtMoney(d.basePEN*(1+IGV_TASA)), fmtUSD(d.baseUSD), fmtUSD(d.baseUSD*IGV_TASA), fmtUSD(d.baseUSD*(1+IGV_TASA))];
+      });
+      doc.autoTable({ startY: 28, head: [['Año','Base S/','IGV S/','Total S/','Base US$','IGV US$','Total US$']], body, styles:{fontSize:8} });
+      doc.save('facturacion-anual-fg.pdf');
+    }
+  };
+}
+
+
 // ================= RENOVACIONES Y COBRANZA =================
 let filtroPolEstado='todas', filtroPolTexto='', filtroPolMesAnio='';
 let calendarioRenovAnio = String(new Date().getFullYear());
@@ -3222,7 +3371,7 @@ function viewAsesores(){
               const totalPEN = props.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionAsesor(v),0);
               const totalUSD = props.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionAsesor(v),0);
               const acceso = a.usuario ? (a.accesoActivo===false ? `<span class="pill pill-gray">Suspendido</span>` : `<span class="pill pill-green">Con acceso</span>`) : `<span class="pill pill-gray">Sin acceso</span>`;
-              return `<tr><td>${a.nombre}</td><td>${a.telefono||'—'}</td><td>${a.email||'—'}</td><td>${acceso}</td><td class="num">${props.length}</td><td class="num">${fmtMoney(totalPEN)}</td><td class="num">${fmtUSD(totalUSD)}</td><td><button class="btn btn-ghost btn-sm" data-edit-asesor="${a.id}">Editar</button></td></tr>`;
+              return `<tr><td>${a.nombre}</td><td>${a.telefono||'—'}</td><td>${a.email||'—'}</td><td>${acceso}</td><td class="num">${props.length}</td><td class="num">${fmtMoney(totalPEN)}</td><td class="num">${fmtUSD(totalUSD)}</td><td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-reporte-asesor="${a.id}" title="Reporte detallado de su cartera">📄 Reporte</button> <button class="btn btn-ghost btn-sm" data-edit-asesor="${a.id}">Editar</button></td></tr>`;
             }).join('');
           })()}
         </tbody>
@@ -3269,6 +3418,40 @@ function wireAsesores(){
   };
   const btn = document.getElementById('btnNuevoAsesor'); if(btn) btn.onclick = ()=>{ editing={type:'asesor', id:null}; render(); };
   document.querySelectorAll('[data-edit-asesor]').forEach(b=> b.onclick = ()=>{ editing={type:'asesor', id:b.dataset.editAsesor}; render(); });
+  document.querySelectorAll('[data-reporte-asesor]').forEach(b=> b.onclick = () => {
+    const a = state.asesores.find(x=>x.id===b.dataset.reporteAsesor);
+    if(!a) return;
+    const props = misVentas(state.ventas).filter(v=>v.asesorId===a.id && ventaSeguroActiva(v) && enPeriodo(v)).sort((x,y)=>(x.fechaVenta||'').localeCompare(y.fechaVenta||''));
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const etiquetaPeriodo = filtroAsesorPeriodo==='historico' ? 'Histórico completo' : filtroAsesorPeriodo==='actual' ? `${MESES[new Date().getMonth()]} ${añoActual} (mes actual)` : `Año ${filtroAsesorPeriodo}`;
+    doc.setFontSize(14); doc.text(`Reporte de cartera — ${a.nombre}`, 14, 16);
+    doc.setFontSize(10); doc.text(`${etiquetaPeriodo} — ${props.length} venta(s)`, 14, 23);
+    const filaVenta = v => {
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      return [fmtDate(v.fechaVenta), folioV(v.folio), cli?cli.nombre:'', v.aseguradora||'', prodLabel(v.tipoProducto), v.numeroPoliza||'', Number(v.comisionTotal||0).toFixed(2), comisionAsesor(v).toFixed(2)];
+    };
+    const propsPEN = props.filter(v=>v.moneda!=='USD');
+    const propsUSD = props.filter(v=>v.moneda==='USD');
+    let y = 30;
+    if(propsPEN.length){
+      doc.setFontSize(11); doc.text('Ventas en Soles (S/)', 14, y); y += 4;
+      doc.autoTable({ startY: y, head: [['Fecha','Folio','Cliente','Aseguradora','Producto','N° Póliza','Comisión 100%','Su comisión']], body: propsPEN.map(filaVenta), styles:{fontSize:8} });
+      y = doc.lastAutoTable.finalY + 6;
+      const totPEN = propsPEN.reduce((s,v)=>s+comisionAsesor(v),0);
+      doc.setFontSize(10); doc.text(`Total en soles: S/ ${totPEN.toFixed(2)}`, 14, y); y += 10;
+    }
+    if(propsUSD.length){
+      if(y>250){ doc.addPage(); y = 20; }
+      doc.setFontSize(11); doc.text('Ventas en Dólares (US$)', 14, y); y += 4;
+      doc.autoTable({ startY: y, head: [['Fecha','Folio','Cliente','Aseguradora','Producto','N° Póliza','Comisión 100%','Su comisión']], body: propsUSD.map(filaVenta), styles:{fontSize:8} });
+      y = doc.lastAutoTable.finalY + 6;
+      const totUSD = propsUSD.reduce((s,v)=>s+comisionAsesor(v),0);
+      doc.setFontSize(10); doc.text(`Total en dólares: US$ ${totUSD.toFixed(2)}`, 14, y);
+    }
+    if(propsPEN.length===0 && propsUSD.length===0){ doc.setFontSize(10); doc.text('Sin ventas registradas en este periodo.', 14, y); }
+    doc.save(`cartera-${a.nombre.replace(/\s+/g,'-').toLowerCase()}.pdf`);
+  });
 }
 
 // ================= CLIENTES =================
@@ -3973,6 +4156,7 @@ function modalVenta(){
     <div class="field-row">
       <div class="field"><label>Placa</label><input type="text" id="mVehPlaca" style="width:100%;" value="${v.vehPlaca||''}"></div>
       <div class="field"><label>Serie</label><input type="text" id="mVehSerie" style="width:100%;" value="${v.vehSerie||''}"></div>
+      <div class="field"><label>Motor</label><input type="text" id="mVehMotor" style="width:100%;" value="${v.vehMotor||''}"></div>
       <div class="field"><label>Color</label><input type="text" id="mVehColor" style="width:100%;" value="${v.vehColor||''}"></div>
     </div>
     <div class="field-row">
@@ -4655,6 +4839,7 @@ function wireModal(){
         vehAnio: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehAnio').value : '',
         vehPlaca: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehPlaca').value.trim().toUpperCase() : '',
         vehSerie: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehSerie').value.trim() : '',
+        vehMotor: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehMotor').value.trim() : '',
         vehColor: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehColor').value.trim() : '',
         vehUso: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehUso').value : '',
         vehAsientos: esProdVehicular(tipoProductoSel) ? document.getElementById('mVehAsientos').value : '',
@@ -4784,6 +4969,7 @@ render = function(){
   if(tab==='ventas_seguros' || tab==='ventas_oncologicos' || tab==='ventas_asesorias') wireVentas();
   if(tab==='cobro_comisiones') wireCobroComisiones();
   if(tab==='pago_comisiones') wirePagoComisiones();
+  if(tab==='facturacion') wireFacturacion();
   if(tab==='polizas') wirePolizas();
   if(tab==='cobranzas') wireCobranzas();
   if(tab==='soat') wireSoat();
