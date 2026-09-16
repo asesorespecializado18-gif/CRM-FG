@@ -532,43 +532,69 @@ function pctVigente(tasaObj, fecha){
   if(!tasaObj) return null;
   if(!tasaObj.historial || !tasaObj.historial.length) return tasaObj.pct;
   const f = fecha || todayISO();
-  const ordenado = tasaObj.historial.slice().sort((a,b)=> a.desde.localeCompare(b.desde));
+  const ordenado = tasaObj.historial.filter(h=>h).slice().sort((a,b)=> String(a.desde||'').localeCompare(String(b.desde||'')));
+  if(!ordenado.length) return tasaObj.pct;
   let vigente = ordenado[0];
-  for(const h of ordenado){ if(h.desde <= f) vigente = h; else break; }
+  for(const h of ordenado){ if(String(h.desde||'') <= f) vigente = h; else break; }
   return vigente.pct;
 }
 function pctActual(tasaObj){
   if(!tasaObj) return null;
   if(!tasaObj.historial || !tasaObj.historial.length) return tasaObj.pct;
-  return tasaObj.historial.slice().sort((a,b)=> a.desde.localeCompare(b.desde)).slice(-1)[0].pct;
+  const ordenado = tasaObj.historial.filter(h=>h).slice().sort((a,b)=> String(a.desde||'').localeCompare(String(b.desde||'')));
+  return ordenado.length ? ordenado.slice(-1)[0].pct : tasaObj.pct;
+}
+function pctFGVigente(tasaObj, fecha){
+  if(!tasaObj) return null;
+  if(!tasaObj.historial || !tasaObj.historial.length) return tasaObj.pctFG || null;
+  const f = fecha || todayISO();
+  const ordenado = tasaObj.historial.filter(h=>h).slice().sort((a,b)=> String(a.desde||'').localeCompare(String(b.desde||'')));
+  if(!ordenado.length) return tasaObj.pctFG || null;
+  let vigente = ordenado[0];
+  for(const h of ordenado){ if(String(h.desde||'') <= f) vigente = h; else break; }
+  return vigente.pctFG || null;
+}
+function pctFGActual(tasaObj){
+  if(!tasaObj) return null;
+  if(!tasaObj.historial || !tasaObj.historial.length) return tasaObj.pctFG || null;
+  const ordenado = tasaObj.historial.filter(h=>h).slice().sort((a,b)=> String(a.desde||'').localeCompare(String(b.desde||'')));
+  return ordenado.length ? (ordenado.slice(-1)[0].pctFG || null) : (tasaObj.pctFG || null);
 }
 function generarTasasDesdeHistorial(){
   const grupos = {};
   state.ventas.filter(v=> esSeguro(v.tipoProducto) && v.modoComisionAseguradora!=='fijo' && (v.porcentajeComisionAseguradora||0)>0 && v.aseguradora).forEach(v=>{
     const clave = claveTasa(v.aseguradora, v.tipoProducto);
-    if(!grupos[clave]) grupos[clave] = {};
+    if(!grupos[clave]) grupos[clave] = { pcts:{}, pctsFG:{} };
     const pctRedondeado = Math.round(v.porcentajeComisionAseguradora*10)/10;
-    grupos[clave][pctRedondeado] = (grupos[clave][pctRedondeado]||0) + 1;
+    grupos[clave].pcts[pctRedondeado] = (grupos[clave].pcts[pctRedondeado]||0) + 1;
+    const pctFGRedondeado = Math.round((v.porcentajeFG||70)*10)/10;
+    grupos[clave].pctsFG[pctFGRedondeado] = (grupos[clave].pctsFG[pctFGRedondeado]||0) + 1;
   });
   if(!state.tasasComision) state.tasasComision = {};
   let generadas = 0;
-  Object.entries(grupos).forEach(([clave, conteos])=>{
+  Object.entries(grupos).forEach(([clave, datos])=>{
     if(state.tasasComision[clave]) return;
-    const pctMasFrecuente = Object.entries(conteos).sort((a,b)=>b[1]-a[1])[0][0];
-    state.tasasComision[clave] = { historial: [{ pct: parseFloat(pctMasFrecuente), desde: todayISO() }] };
+    const pctMasFrecuente = Object.entries(datos.pcts).sort((a,b)=>b[1]-a[1])[0][0];
+    const pctFGMasFrecuente = Object.entries(datos.pctsFG).sort((a,b)=>b[1]-a[1])[0][0];
+    state.tasasComision[clave] = { historial: [{ pct: parseFloat(pctMasFrecuente), pctFG: parseFloat(pctFGMasFrecuente), desde: todayISO() }] };
     generadas++;
   });
   return generadas;
 }
 function ventasPendientesDeTasa(){ return state.ventas.filter(v=> v.estadoTasa==='pendiente'); }
 function abrirTasasComision(){
+ try {
   if(!state.tasasComision) state.tasasComision = {};
   const tasas = state.tasasComision;
   const host = document.createElement('div'); host.id = 'tasasComisionHost';
-  const productos = todosLosProductos().filter(r=>r.categoria==='seguro');
+  let productos = [];
+  try { productos = todosLosProductos().filter(r=>r && r.categoria==='seguro'); } catch(e){ productos = []; }
   const pintar = () => {
-    const claves = Object.keys(tasas).sort();
-    const pendientes = ventasPendientesDeTasa();
+    try {
+    const claves = Object.keys(tasas).filter(k=>tasas[k]).sort();
+    let pendientes = [];
+    try { pendientes = ventasPendientesDeTasa(); } catch(e){ pendientes = []; }
+    const aseguradorasLista = (state.aseguradoras||[]).filter(a=>a && typeof a==='string').slice().sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
     host.innerHTML = `
       <div class="modal-backdrop"><div class="modal">
         <h2>⚙ Tasas de comisión por aseguradora y producto</h2>
@@ -576,59 +602,88 @@ function abrirTasasComision(){
         ${pendientes.length>0 ? `<div class="card" style="padding:10px 14px;margin-bottom:14px;border:1px solid var(--border);background:var(--danger-soft, #fdeeee);"><b>${pendientes.length}</b> venta(s) registrada(s) por tu ejecutiva están pendientes de tasa — edítalas para completar el % de comisión.</div>` : ''}
         <div style="margin-bottom:12px;"><button class="btn btn-sm" id="btnGenerarTasas">Generar tasas desde tu historial de ventas</button></div>
         <div class="card" style="padding:0;max-height:280px;overflow-y:auto;margin-bottom:16px;">
-          <table><thead><tr><th>Aseguradora</th><th>Producto</th><th>% Comisión (vigente)</th><th>Desde</th><th></th></tr></thead><tbody>
-            ${claves.length===0 ? `<tr class="empty-row"><td colspan="5">Aún no hay tasas configuradas.</td></tr>` : claves.map(clave=>{
-              const [aseg, prod] = clave.split('||');
-              const t = tasas[clave];
-              const hist = t.historial || [];
-              const ultima = hist.length ? hist.slice().sort((a,b)=>a.desde.localeCompare(b.desde)).slice(-1)[0] : null;
+          <table><thead><tr><th>Aseguradora</th><th>Producto</th><th>% Comisión (vigente)</th><th>% FG</th><th>Desde</th><th></th></tr></thead><tbody>
+            ${claves.length===0 ? `<tr class="empty-row"><td colspan="6">Aún no hay tasas configuradas.</td></tr>` : claves.map(clave=>{
+              const partes = clave.split('||');
+              const aseg = partes[0]||'—'; const prod = partes[1]||'';
+              const t = tasas[clave] || {};
+              const hist = (t.historial||[]).filter(h=>h && h.desde);
+              const ultima = hist.length ? hist.slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde))).slice(-1)[0] : null;
               const desde = ultima ? fmtDate(ultima.desde) : '—';
-              const historialPrevio = hist.length>1 ? `<div class="hint" style="margin-top:2px;">Antes: ${hist.slice().sort((a,b)=>a.desde.localeCompare(b.desde)).slice(0,-1).map(h=>`${h.pct}% (desde ${fmtDate(h.desde)})`).join(', ')}</div>` : '';
-              return `<tr><td>${aseg}</td><td>${prodInfo(prod).label}</td><td><input type="number" step="0.01" min="0.1" max="70" value="${pctActual(t)}" data-tasa-pct="${clave}" style="width:80px;">${historialPrevio}</td><td>${desde}</td><td><button class="btn btn-ghost btn-sm" data-tasa-borrar="${clave}">✕</button></td></tr>`;
+              const historialPrevio = hist.length>1 ? `<div class="hint" style="margin-top:2px;">Antes: ${hist.slice().sort((a,b)=>String(a.desde).localeCompare(String(b.desde))).slice(0,-1).map(h=>`${h.pct}% / FG ${h.pctFG||70}% (desde ${fmtDate(h.desde)})`).join(', ')}</div>` : '';
+              let etiquetaProd = prod;
+              try { etiquetaProd = prodInfo(prod).label; } catch(e){}
+              return `<tr><td>${aseg}</td><td>${etiquetaProd}</td><td><input type="number" step="0.01" min="0.1" max="70" value="${pctActual(t)||''}" data-tasa-pct="${clave}" style="width:80px;">${historialPrevio}</td><td><input type="number" step="1" min="1" max="100" value="${pctFGActual(t)||70}" data-tasa-pctfg="${clave}" style="width:70px;"></td><td>${desde}</td><td><button class="btn btn-ghost btn-sm" data-tasa-borrar="${clave}">✕</button></td></tr>`;
             }).join('')}
           </tbody></table>
         </div>
         <div class="panel-title" style="margin-top:0;">Agregar nueva tarifa</div>
         <div class="field-row">
-          <div class="field"><label>Aseguradora</label><select id="tasaNuevaAseguradora"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).slice().sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'})).map(a=>`<option value="${a}">${a}</option>`).join('')}</select></div>
-          <div class="field"><label>Producto</label><select id="tasaNuevoProducto">${productos.map(p=>`<option value="${p.id}">${p.label}</option>`).join('')}</select></div>
-          <div class="field" style="flex:0;"><label>%</label><input type="number" step="0.01" min="0.1" max="70" id="tasaNuevoPct" style="width:80px;" placeholder="Ej. 18"></div>
+          <div class="field"><label>Aseguradora</label><select id="tasaNuevaAseguradora"><option value="">Seleccionar…</option>${aseguradorasLista.map(a=>`<option value="${a}">${a}</option>`).join('')}</select></div>
+          <div class="field"><label>Producto</label><select id="tasaNuevoProducto">${productos.map(p=>`<option value="${p.id}" ${['sctr_pension','sctr_salud','vida_ley'].includes(p.id)?'data-laboral="1"':''}>${p.label}</option>`).join('')}</select></div>
+          <div class="field" style="flex:0;"><label>% Aseguradora</label><input type="number" step="0.01" min="0.1" max="70" id="tasaNuevoPct" style="width:80px;" placeholder="Ej. 18"></div>
+          <div class="field" style="flex:0;"><label>% FG</label><input type="number" step="1" min="1" max="100" id="tasaNuevoPctFG" style="width:70px;" value="70"></div>
           <div class="field" style="flex:0;"><button class="btn" id="btnAgregarTasa" style="white-space:nowrap;">+ Agregar</button></div>
         </div>
         <div class="modal-actions"><button class="btn btn-primary" id="tasasComisionGuardar">Guardar cambios</button><button class="btn" id="tasasComisionCerrar">Cerrar</button></div>
       </div></div>`;
     document.getElementById('tasasComisionCerrar').onclick = () => host.remove();
+    const selProductoNuevo = document.getElementById('tasaNuevoProducto');
+    if(selProductoNuevo) selProductoNuevo.onchange = () => {
+      const opt = selProductoNuevo.options[selProductoNuevo.selectedIndex];
+      document.getElementById('tasaNuevoPctFG').value = (opt && opt.dataset.laboral) ? 60 : 70;
+    };
     const btnGen = document.getElementById('btnGenerarTasas'); if(btnGen) btnGen.onclick = () => {
-      const n = generarTasasDesdeHistorial();
+      let n = 0;
+      try { n = generarTasasDesdeHistorial(); save(); } catch(e){ alert('No se pudo generar automáticamente: '+e.message); }
       alert(n>0 ? `Se generaron ${n} tarifa(s) nueva(s) a partir de tu historial de ventas.` : 'No se encontraron combinaciones nuevas en tu historial (o ya estaban todas configuradas).');
       pintar();
     };
-    host.querySelectorAll('[data-tasa-borrar]').forEach(b=> b.onclick = () => { delete tasas[b.dataset.tasaBorrar]; pintar(); });
+    host.querySelectorAll('[data-tasa-borrar]').forEach(b=> b.onclick = () => { delete tasas[b.dataset.tasaBorrar]; state.tasasComision = tasas; save(); pintar(); });
     const btnAdd = document.getElementById('btnAgregarTasa'); if(btnAdd) btnAdd.onclick = () => {
       const aseg = document.getElementById('tasaNuevaAseguradora').value;
       const prod = document.getElementById('tasaNuevoProducto').value;
       const pct = parseFloat(document.getElementById('tasaNuevoPct').value)||0;
+      const pctFG = parseFloat(document.getElementById('tasaNuevoPctFG').value)||70;
       if(!aseg || !pct){ alert('Selecciona la aseguradora e ingresa el % de comisión.'); return; }
-      tasas[claveTasa(aseg, prod)] = { historial: [{ pct, desde: todayISO() }] };
+      tasas[claveTasa(aseg, prod)] = { historial: [{ pct, pctFG, desde: todayISO() }] };
+      state.tasasComision = tasas;
+      save();
       pintar();
     };
     document.getElementById('tasasComisionGuardar').onclick = () => {
-      host.querySelectorAll('[data-tasa-pct]').forEach(inp=>{
-        const v = parseFloat(inp.value)||0;
+      const pctPorClave = {}; const pctFGPorClave = {};
+      host.querySelectorAll('[data-tasa-pct]').forEach(inp=> pctPorClave[inp.dataset.tasaPct] = parseFloat(inp.value)||0);
+      host.querySelectorAll('[data-tasa-pctfg]').forEach(inp=> pctFGPorClave[inp.dataset.tasaPctfg] = parseFloat(inp.value)||70);
+      Object.keys(pctPorClave).forEach(clave=>{
+        const v = pctPorClave[clave];
+        const vFG = pctFGPorClave[clave] || 70;
         if(v<=0) return;
-        const clave = inp.dataset.tasaPct;
         const actual = pctActual(tasas[clave]);
-        if(v===actual) return;
-        if(!tasas[clave].historial) tasas[clave] = { historial: [{ pct: tasas[clave].pct, desde: '2000-01-01' }] };
-        tasas[clave].historial.push({ pct: v, desde: todayISO() });
+        const actualFG = pctFGActual(tasas[clave]) || 70;
+        if(v===actual && vFG===actualFG) return;
+        if(!tasas[clave] || !tasas[clave].historial) tasas[clave] = { historial: (tasas[clave]&&tasas[clave].pct) ? [{ pct: tasas[clave].pct, pctFG: tasas[clave].pctFG||70, desde: '2000-01-01' }] : [] };
+        tasas[clave].historial.push({ pct: v, pctFG: vFG, desde: todayISO() });
       });
       state.tasasComision = tasas;
       save();
       host.remove();
     };
+    } catch(e) {
+      host.innerHTML = `<div class="modal-backdrop"><div class="modal">
+        <h2>⚙ Tasas de comisión</h2>
+        <p class="modal-hint">Ocurrió un error inesperado al abrir esta pantalla. Manda esta descripción a soporte:</p>
+        <div class="card" style="padding:12px;background:var(--danger-soft, #fdeeee);font-family:monospace;font-size:12px;">${(e && e.message) || 'Error desconocido'}</div>
+        <div class="modal-actions"><button class="btn" id="tasasComisionCerrarError">Cerrar</button></div>
+      </div></div>`;
+      document.getElementById('tasasComisionCerrarError').onclick = () => host.remove();
+    }
   };
-  pintar();
   document.getElementById('crm-app').appendChild(host);
+  pintar();
+ } catch(e) {
+   alert('❌ ERROR REAL en Tasas de Comisión:\n\n' + (e && e.message) + '\n\n' + (e && e.stack ? e.stack.split('\n').slice(0,4).join('\n') : ''));
+ }
 }
 function clientePerteneceAAsesor(c){
   if(!esAsesorSesion()) return true;
@@ -1530,8 +1585,8 @@ function abrirHistorialAuditoria(){
     document.getElementById('fAudAutor').onchange = pintar;
     document.getElementById('fAudAccion').onchange = pintar;
   };
-  pintar();
   document.getElementById('crm-app').appendChild(host);
+  pintar();
 }
 function abrirPapelera(){
   const items = (state.papelera||[]).slice().sort((a,b)=> b.eliminadoFecha.localeCompare(a.eliminadoFecha));
@@ -2300,8 +2355,8 @@ function abrirEnvioMasivoCobranza(lista){
       enviados++; idx++; pintar();
     };
   };
-  pintar();
   document.getElementById('crm-app').appendChild(host);
+  pintar();
 }
 function abrirVerComo(){
   const host = document.createElement('div'); host.id = 'verComoHost';
@@ -5189,6 +5244,7 @@ function modalVenta(){
   const esOncosaludModal = bitDeModal==='oncologicos';
   const tasaSugerida = (state.tasasComision||{})[claveTasa(v.aseguradora, v.tipoProducto)];
   const pctAseguradoraMostrar = v.porcentajeComisionAseguradora || (tasaSugerida ? pctVigente(tasaSugerida, v.fechaVenta||todayISO()) : '');
+  const pctFGMostrar = v.porcentajeFG || (tasaSugerida ? pctFGVigente(tasaSugerida, v.fechaVenta||todayISO()) : null) || 70;
   return `
   <div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar venta':ventaOrigen?'Duplicar venta (renovación)':'Registrar venta'}</h2>
@@ -5376,10 +5432,10 @@ function modalVenta(){
         ${[50,100,150,200,250,300,350,400].map(m=>`<option value="${m}" ${Number(v.comisionTotal)===m && v.modoComisionAseguradora==='fijo'?'selected':''}>S/ ${m}</option>`).join('')}
       </select>` : `<input type="number" step="0.01" min="0" id="mComisionAseguradoraFija" style="width:100%;" value="${v.comisionTotal && v.modoComisionAseguradora==='fijo' ? v.comisionTotal : ''}" placeholder="Monto" ${esAsesorSesion()?'disabled':''}>`}</div>
       <div class="field" style="${(esAsesoriaModal||esEjecutivaSesion())?'display:none;':''}"><label>% Comisión FG sobre el total — Alta Corredores cobra el 100%</label><select id="mPctFG" style="width:100%;" ${esAsesorSesion()?'disabled':''}>
-        <option value="50" ${Number(v.porcentajeFG)===50?'selected':''}>50%</option>
-        <option value="60" ${Number(v.porcentajeFG)===60?'selected':''}>60%</option>
-        <option value="70" ${!v.porcentajeFG || Number(v.porcentajeFG)===70?'selected':''}>70%</option>
-        <option value="100" ${Number(v.porcentajeFG)===100?'selected':''}>100%</option>
+        <option value="50" ${pctFGMostrar===50?'selected':''}>50%</option>
+        <option value="60" ${pctFGMostrar===60?'selected':''}>60%</option>
+        <option value="70" ${pctFGMostrar===70?'selected':''}>70%</option>
+        <option value="100" ${pctFGMostrar===100?'selected':''}>100%</option>
       </select></div>
       <div id="mPrimaNetaBox" style="background:var(--primary-soft);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:8px;">
         <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;" id="mPrimaNetaLabel">Prima neta (Prima bruta ÷ ${FACTOR_PRIMA_NETA})</div>
