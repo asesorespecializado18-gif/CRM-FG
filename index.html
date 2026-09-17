@@ -192,6 +192,7 @@
       <button class="theme-toggle" id="btnSalirVistaComo" style="margin-bottom:6px;display:none;background:#B8823D;">◀ Volver a mi vista</button>
       <button class="theme-toggle" id="btnToggleTema"><span id="temaIcono">☾</span><span id="temaTexto">Modo noche</span></button>
       <button class="theme-toggle" id="btnActivarAvisos" style="margin-top:6px;">🔔 Activar avisos</button>
+      <button class="theme-toggle" id="btnInstalarApp" style="margin-top:6px;display:none;">📲 Instalar como app</button>
       <button class="theme-toggle" id="btnDescargarRespaldo" style="margin-top:6px;">⬇ Guardar respaldo</button>
       <button class="theme-toggle" id="btnVerRespaldosAuto" style="margin-top:6px;">☁ Respaldos automáticos</button>
       <button class="theme-toggle" id="btnVerPapelera" style="margin-top:6px;">🗑 Papelera</button>
@@ -6251,7 +6252,8 @@ function wireModal(){
       if(!data.clienteId){ irAPestanaModal('personales'); const elBuscar=document.getElementById('mClienteBuscar'); if(elBuscar) elBuscar.style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
       if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
       if(esSeguro(tipoProductoSel) && !data.primaBruta){ irAPestanaModal('pago'); const el=document.getElementById('mPrimaTotalPago'); if(el) el.style.borderColor='var(--danger)'; mostrarErrorModal('Falta ingresar la Prima Total (pestaña "Primas y Forma de Pago").'); return; }
-      if(!data.comisionTotal || data.comisionTotal<=0){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
+      const requiereComisionAhora = modoComisionAseguradora==='fijo' || editing.calculoComision;
+      if(requiereComisionAhora && (!data.comisionTotal || data.comisionTotal<=0)){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
       if(data.numeroPoliza){
         const polizaDuplicada = state.ventas.find(v=> v.id!==editing.id && v.numeroPoliza && String(v.numeroPoliza).trim().toLowerCase()===String(data.numeroPoliza).trim().toLowerCase());
         if(polizaDuplicada){
@@ -6376,9 +6378,12 @@ render = function(){
 function configurarPWA(){
   try{
     const manifest = {
-      name: 'FG Seguros',
+      id: '/CRM-FG/',
+      name: 'FG Seguros — CRM',
       short_name: 'FG Seguros',
+      description: 'Sistema de gestión de clientes, ventas y comisiones de FG Seguros.',
       start_url: '.',
+      scope: '.',
       display: 'standalone',
       background_color: '#EEF1EF',
       theme_color: '#1F4B41',
@@ -6408,6 +6413,29 @@ function configurarPWA(){
     const metaAppleTitle = document.createElement('meta');
     metaAppleTitle.name = 'apple-mobile-web-app-title'; metaAppleTitle.content = 'FG Seguros';
     document.head.appendChild(metaAppleTitle);
+
+    // ---- Botón "Instalar app" (Chrome/Edge/Android) ----
+    let promptInstalacionDiferido = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      promptInstalacionDiferido = e;
+      const btn = document.getElementById('btnInstalarApp');
+      if(btn) btn.style.display = '';
+    });
+    window.addEventListener('appinstalled', () => {
+      const btn = document.getElementById('btnInstalarApp');
+      if(btn) btn.style.display = 'none';
+      promptInstalacionDiferido = null;
+    });
+    document.addEventListener('click', async (e) => {
+      if(e.target && e.target.id === 'btnInstalarApp' && promptInstalacionDiferido){
+        promptInstalacionDiferido.prompt();
+        await promptInstalacionDiferido.userChoice;
+        promptInstalacionDiferido = null;
+        const btn = document.getElementById('btnInstalarApp');
+        if(btn) btn.style.display = 'none';
+      }
+    });
   }catch(e){ console.error('No se pudo preparar el modo app', e); }
 }
 configurarPWA();
