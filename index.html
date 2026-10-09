@@ -882,6 +882,7 @@ function metaAsesor(id){ return Number((state.metas.porAsesor||{})[id])||0; }
 function pct(a,b){ return b<=0 ? (a>0?100:0) : Math.min(100, Math.round(a/b*100)); }
 
 // ---------------- persistencia ----------------
+let nubeSinPermiso = false; // true si la nube rechazó la lectura por no haber iniciado sesión
 let usandoNube = false;
 function actualizarIndicadorNube(estado){
   usandoNube = estado==='ok';
@@ -907,6 +908,7 @@ function coreState(){
 async function load(opts){
   try{
     let cargadoDeNube = false;
+    nubeSinPermiso = false;
     if(fbDb){
       try{
         const coreSnap = await FB_DOC_REF().get();
@@ -936,7 +938,10 @@ async function load(opts){
           await save(true);
           actualizarIndicadorNube('ok');
         }
-      }catch(e){ console.error('No se pudo leer de Firebase, se usará el respaldo local', e); }
+      }catch(e){
+        if(e && e.code==='permission-denied') nubeSinPermiso = true; // aún no inició sesión: la base de datos está protegida
+        console.error('No se pudo leer de Firebase, se usará el respaldo local', e);
+      }
     }
     if(!cargadoDeNube){
       let raw = null;
@@ -956,7 +961,7 @@ async function load(opts){
     }
   }catch(e){ console.error('No se pudo cargar', e); }
   if(opts && opts.sinRender) return;
-  seedIfEmpty();
+  if(!nubeSinPermiso && !fbAuth) seedIfEmpty(); // con inicio de sesión de Firebase nunca se crean datos de ejemplo
   checkAuthAndRender();
 }
 document.addEventListener('keydown', (e) => {
@@ -1170,7 +1175,8 @@ function aplicarVisibilidadNav(){
 
 function renderLogin(){
   const el = document.getElementById('main-view');
-  const esPrimeraVez = !state.auth.passwordHash;
+  // Con Firebase Authentication activo ya no existe la "primera vez": todos ingresan con su correo
+  const esPrimeraVez = !fbAuth && !(state.auth && state.auth.passwordHash);
   el.innerHTML = esPrimeraVez ? `
     <div class="login-wrap">
       <div class="login-card">
