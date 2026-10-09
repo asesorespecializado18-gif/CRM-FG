@@ -1705,28 +1705,64 @@ function restaurarRespaldo(e){
   e.target.value = '';
 }
 let respaldoAutoIntentado = false;
-async function verificarRespaldoAutomatico(){
+// Respaldos automáticos por partes: Firestore admite como máximo 1 MB por documento, así que el respaldo
+// se divide en piezas (subcolección "partes") y el documento principal solo guarda el índice.
+// El documento principal se escribe AL FINAL: si existe, el respaldo está completo.
+const RESPALDO_TAM_PARTE = 300000; // caracteres por parte (holgado aun con tildes/emojis)
+async function guardarRespaldoEnNube(fecha){
+  const payload = JSON.stringify(state);
+  const ref = FB_RESPALDOS_COL().doc(fecha);
+  const total = Math.ceil(payload.length / RESPALDO_TAM_PARTE) || 1;
+  for(let i=0; i<total; i++){
+    await ref.collection('partes').doc(String(i).padStart(3,'0')).set({ i, datos: payload.slice(i*RESPALDO_TAM_PARTE, (i+1)*RESPALDO_TAM_PARTE) });
+  }
+  await ref.set({ fecha, creado: new Date().toISOString(), partes: total, tamano: payload.length, ventas: state.ventas.length, clientes: state.clientes.length, version: 2 });
+  return { partes: total, tamano: payload.length };
+}
+async function leerRespaldoDeNube(item){
+  if(!item.partes) return item.contenido; // respaldos antiguos de un solo documento
+  const snap = await FB_RESPALDOS_COL().doc(item.fecha).collection('partes').get();
+  const piezas = snap.docs.map(d=>d.data()).sort((a,b)=>a.i-b.i);
+  if(piezas.length !== item.partes) throw new Error(`el respaldo está incompleto (${piezas.length} de ${item.partes} partes)`);
+  return piezas.map(p=>p.datos).join('');
+}
+async function borrarRespaldoDeNube(docRef){
+  const partes = await docRef.collection('partes').get();
+  for(const d of partes.docs) await d.ref.delete();
+  await docRef.delete();
+}
+function avisoRespaldoFallido(err){
+  try{ localStorage.setItem('crm-fg-respaldo-auto-error', JSON.stringify({ fecha: new Date().toISOString(), msg: String(err && (err.code||err.message) || err) })); }catch(e){}
+  const indicador = document.getElementById('indicadorNube');
+  if(indicador){
+    indicador.textContent = '⚠️ No se pudo guardar el respaldo semanal — toca para reintentar';
+    indicador.style.color = '#A8483A'; indicador.style.cursor = 'pointer';
+    indicador.onclick = () => { indicador.onclick = null; indicador.style.cursor = ''; respaldoAutoIntentado = false; verificarRespaldoAutomatico(true); };
+  }
+}
+async function verificarRespaldoAutomatico(forzar){
   if(respaldoAutoIntentado) return;
   if(!sesionUsuario || sesionUsuario.rol!=='admin' || vistaComo) return;
   if(!fbDb) return;
   const ultimo = localStorage.getItem('crm-fg-ultimo-respaldo-auto');
   const dias = ultimo ? Math.floor((new Date(todayISO()) - new Date(ultimo)) / 86400000) : 999;
-  if(dias < 7) return;
+  if(dias < 7 && !forzar) return;
   respaldoAutoIntentado = true;
   try{
     const fecha = todayISO();
-    const payload = JSON.stringify(state);
-    await FB_RESPALDOS_COL().doc(fecha).set({ contenido: payload, fecha, creado: new Date().toISOString() });
+    await guardarRespaldoEnNube(fecha);
     localStorage.setItem('crm-fg-ultimo-respaldo-auto', fecha);
+    localStorage.removeItem('crm-fg-respaldo-auto-error');
     const indicador = document.getElementById('indicadorNube');
-    if(indicador){ const original = indicador.textContent; indicador.textContent = '☁️ Respaldo semanal automático guardado'; setTimeout(()=>{ if(indicador) indicador.textContent = original; }, 5000); }
-    // Limpieza: conservar solo los últimos 8 respaldos automáticos (~2 meses) para no acumular espacio de más
+    if(indicador){ indicador.textContent = '☁️ Respaldo semanal automático guardado'; indicador.style.color = 'var(--primary,#1F4B41)'; setTimeout(()=>{ actualizarIndicadorNube(usandoNube?'ok':'local'); }, 5000); }
+    // Limpieza: conservar solo los respaldos de los últimos ~2 meses
     const limite = new Date(); limite.setDate(limite.getDate()-56);
     const snap = await FB_RESPALDOS_COL().get();
-    snap.forEach(doc=>{ if(new Date(doc.id) < limite) doc.ref.delete().catch(()=>{}); });
+    for(const doc of snap.docs){ if(new Date(doc.id) < limite) await borrarRespaldoDeNube(doc.ref).catch(()=>{}); }
   }catch(err){
     respaldoAutoIntentado = false;
     console.error('No se pudo generar el respaldo automático semanal', err);
+    avisoRespaldoFallido(err);
   }
 }
 function verificarResumenSemanalAutomatico(){
@@ -1831,22 +1867,37 @@ function abrirRespaldosAutomaticos(){
           <table>
             <thead><tr><th>Fecha</th><th></th></tr></thead>
             <tbody>
-              ${items.map(it=>`<tr><td>${fmtDate(it.fecha)}</td><td><button class="btn btn-sm" data-restaurar-auto="${it.fecha}">Restaurar</button></td></tr>`).join('')}
+              ${items.map(it=>`<tr><td>${fmtDate(it.fecha)}${it.ventas!=null?`<div style="font-size:11.5px;color:var(--ink-faint);">${it.ventas} ventas · ${it.clientes} clientes</div>`:''}</td><td><button class="btn btn-sm" data-restaurar-auto="${it.fecha}">Restaurar</button></td></tr>`).join('')}
             </tbody>
           </table>
         </div>`}
-        <div class="modal-actions"><button class="btn" id="respaldosAutoCerrar">Cerrar</button></div>
+        ${(()=>{ try{ const e = JSON.parse(localStorage.getItem('crm-fg-respaldo-auto-error')||'null'); return e ? `<div class="hint" style="color:#A8483A;margin-top:8px;">⚠️ El último intento automático falló (${fmtDate(e.fecha.slice(0,10))}): ${e.msg}</div>` : ''; }catch(x){ return ''; } })()}
+        <div class="modal-actions">${sesionUsuario && sesionUsuario.rol==='admin' && !vistaComo ? `<button class="btn btn-primary" id="respaldoAutoAhora">☁ Respaldar ahora</button>` : ''}<button class="btn" id="respaldosAutoCerrar">Cerrar</button></div>
       </div></div>`;
     document.getElementById('respaldosAutoCerrar').onclick = () => host.remove();
     host.querySelectorAll('[data-restaurar-auto]').forEach(b=> b.onclick = () => {
       const item = items.find(x=>x.fecha===b.dataset.restaurarAuto);
       if(!item) return;
       if(!confirm(`Esto reemplazará TODOS los datos actuales del CRM con el respaldo automático del ${fmtDate(item.fecha)}. ¿Continuar?`)) return;
-      let data;
-      try{ data = JSON.parse(item.contenido); }
-      catch(err){ alert('El respaldo guardado está dañado.'); return; }
-      if(aplicarRespaldoDesdeDatos(data)){ host.remove(); alert('Respaldo restaurado correctamente.'); }
+      b.disabled = true; b.textContent = 'Cargando…';
+      leerRespaldoDeNube(item).then(texto=>{
+        let data;
+        try{ data = JSON.parse(texto); }
+        catch(err){ alert('El respaldo guardado está dañado.'); b.disabled = false; b.textContent = 'Restaurar'; return; }
+        if(aplicarRespaldoDesdeDatos(data)){ host.remove(); alert('Respaldo restaurado correctamente.'); }
+      }).catch(err=>{ alert('No se pudo leer el respaldo: ' + err.message); b.disabled = false; b.textContent = 'Restaurar'; });
     });
+    const btnAhora = document.getElementById('respaldoAutoAhora');
+    if(btnAhora) btnAhora.onclick = async () => {
+      btnAhora.disabled = true; btnAhora.textContent = 'Guardando respaldo…';
+      try{
+        const r = await guardarRespaldoEnNube(todayISO());
+        localStorage.setItem('crm-fg-ultimo-respaldo-auto', todayISO());
+        localStorage.removeItem('crm-fg-respaldo-auto-error');
+        host.remove(); abrirRespaldosAutomaticos();
+        console.log('Respaldo guardado', r);
+      }catch(err){ avisoRespaldoFallido(err); alert('No se pudo guardar el respaldo: ' + (err.code||err.message)); btnAhora.disabled = false; btnAhora.textContent = '☁ Respaldar ahora'; }
+    };
   }).catch(err=>{
     host.querySelector('.modal-hint').textContent = 'No se pudieron cargar los respaldos: ' + err.message;
   });
