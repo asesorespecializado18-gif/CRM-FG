@@ -3211,7 +3211,8 @@ function abrirConciliacionAlta(){
       const cli = state.clientes.find(c=>c.id===v.clienteId);
       const yaCobrado = v.estadoCobroFG==='cobrado';
       const marcar = !yaCobrado && !info.extorno;
-      const nota = yaCobrado ? `<span class="pill pill-green">Ya cobrado ${fmtDate(v.fechaCobroFG)}</span>` : info.extorno ? '<span class="pill pill-red" title="En el reporte aparece con monto negativo">Posible extorno</span>' : '<span class="pill pill-gold">Pendiente</span>';
+      const pillExtorno = info.extorno ? ' <span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>' : '';
+      const nota = (yaCobrado ? `<span class="pill pill-green">Ya cobrado ${fmtDate(v.fechaCobroFG)}</span>` : '<span class="pill pill-gold">Pendiente</span>') + pillExtorno;
       return `<tr><td><input type="checkbox" data-conc-idx="${i}" ${marcar?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num">${fmtMonedaVal(comisionFG(v), v.moneda)}</td><td>${nota}</td></tr>`;
     };
     const res = ov.querySelector('#concResultado');
