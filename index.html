@@ -520,13 +520,27 @@ function registrarAuditoria(accion, entidad, entidadId, descripcion){
   state.auditoria.unshift({ fecha: new Date().toISOString(), autor, rol, accion, entidad, entidadId, descripcion });
   if(state.auditoria.length>500) state.auditoria.length = 500;
 }
+// La papelera vive dentro del documento principal de la nube (máx. 1 MB), así que nunca debe guardar
+// archivos incrustados: el campo antiguo "polizaPDFData" (PDF en base64) se quita al enviar a la papelera.
+function limpiarDatosPapelera(datos){
+  if(!datos || typeof datos!=='object') return datos;
+  const copia = Object.assign({}, datos);
+  if(copia.polizaPDFData){ delete copia.polizaPDFData; copia.polizaPDFQuitadoDePapelera = true; }
+  return copia;
+}
+function depurarPapelera(){
+  if(!Array.isArray(state.papelera)) { state.papelera = []; return; }
+  const limite = Date.now() - 30*86400000;
+  state.papelera = state.papelera
+    .filter(p=> new Date(p.eliminadoFecha).getTime() >= limite)
+    .map(p=> (p.datos && p.datos.polizaPDFData) ? Object.assign({}, p, { datos: limpiarDatosPapelera(p.datos) }) : p);
+}
 function moverAPapelera(entidad, id, datos){
   if(!state.papelera) state.papelera = [];
   const sesion = sesionEfectiva();
   const autor = sesion ? (sesion.nombre || (sesion.rol==='admin'?'Administrador':sesion.rol)) : 'Administrador';
-  state.papelera.unshift({ id: uid(), entidad, entidadId: id, datos, eliminadoPor: autor, eliminadoFecha: new Date().toISOString() });
-  const limite = Date.now() - 30*86400000;
-  state.papelera = state.papelera.filter(p=> new Date(p.eliminadoFecha).getTime() >= limite);
+  state.papelera.unshift({ id: uid(), entidad, entidadId: id, datos: limpiarDatosPapelera(datos), eliminadoPor: autor, eliminadoFecha: new Date().toISOString() });
+  depurarPapelera();
 }
 function claveTasa(aseguradora, tipoProducto){ return (aseguradora||'') + '||' + (tipoProducto||''); }
 function pctVigente(tasaObj, fecha){
@@ -980,6 +994,7 @@ function aplicarMigracionesState(){
     state.comisionesAprobacionMigrada = true;
   }
   if(!state.siniestros) state.siniestros = [];
+  depurarPapelera(); // quita lo vencido (+30 días) y los PDF incrustados para no superar el límite de la nube
   if(!state.folioSiniestro) state.folioSiniestro = 0;
   if(!state.tema) state.tema = 'claro';
   if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', dni:'46806411', passwordHash:null };
