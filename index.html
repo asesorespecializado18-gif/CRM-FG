@@ -715,10 +715,20 @@ function similitudNombres(a, b){
   const dist = dp[len1][len2];
   return 1 - dist / Math.max(len1, len2);
 }
+// Documento de identidad: se guarda sin espacios ni guiones, en mayúsculas.
+function normDocumento(doc){ return String(doc||'').replace(/[\s.\-]/g,'').toUpperCase(); }
+// Devuelve un mensaje de error si el documento no es válido para su tipo, o '' si está bien.
+function validarDocumento(tipo, doc){
+  if(!doc) return 'El N° de documento es obligatorio (DNI, RUC o Carné de Extranjería). Así se evita registrar al mismo cliente dos veces.';
+  if(tipo==='DNI' && !/^\d{8}$/.test(doc)) return `El DNI debe tener 8 dígitos (escribiste ${doc.length}).`;
+  if(tipo==='RUC' && !/^(10|15|16|17|20)\d{9}$/.test(doc)) return 'El RUC debe tener 11 dígitos y empezar con 10, 15, 16, 17 o 20.';
+  if(tipo==='CE' && !/^[A-Z0-9]{8,12}$/.test(doc)) return 'El Carné de Extranjería debe tener entre 8 y 12 caracteres (letras o números).';
+  return '';
+}
 function buscarClientesDuplicados(nombre, documento, excluirId){
   return state.clientes.filter(c=>{
     if(c.id===excluirId) return false;
-    const mismoDoc = documento && c.documento && String(c.documento).trim()===String(documento).trim();
+    const mismoDoc = documento && c.documento && normDocumento(c.documento)===normDocumento(documento);
     const nombreSimilar = similitudNombres(c.nombre, nombre) >= 0.87;
     return mismoDoc || nombreSimilar;
   });
@@ -735,7 +745,8 @@ function fmtDual(v){
 const fmtDate = d => { if(!d) return '—'; const [y,m,day]=d.split('-'); return `${day}/${m}/${y}`; };
 const monthKey = d => d ? d.slice(0,7) : '';
 const monthLabel = (key) => { const [y,m]=key.split('-'); const names=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']; return names[parseInt(m,10)-1]+' '+y.slice(2); };
-const todayISO = () => new Date().toISOString().slice(0,10);
+// Fecha de hoy en la hora local (antes usaba la hora UTC: después de las 7 p. m. en Lima marcaba el día siguiente)
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 const addYears = (d,n) => { const dt = new Date(d); dt.setFullYear(dt.getFullYear()+n); return dt.toISOString().slice(0,10); };
 const addDaysISO = (d,n) => { const dt = new Date(d); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
 const daysUntil = (d) => Math.ceil((new Date(d) - new Date(todayISO())) / 86400000);
@@ -2786,9 +2797,10 @@ function wireVentas(){
             const fecha = buscar(fila, 'fecha de venta', 'fecha venta', 'fecha solicitud', 'inicio vigencia', 'inicio de vigencia', 'fecha');
             if(!nombreCliente || !fecha){ omitidas++; return; }
             const documentoCliente = buscar(fila, 'dni/ruc', 'dni o ruc', 'ruc/dni', 'dni cliente', 'documento', 'ruc', 'dni');
-            let cli = state.clientes.find(c=> norm(c.nombre)===norm(nombreCliente));
+            const docImport = normDocumento(documentoCliente);
+            let cli = (docImport && state.clientes.find(c=> normDocumento(c.documento)===docImport)) || state.clientes.find(c=> norm(c.nombre)===norm(nombreCliente));
             if(!cli){
-              cli = { id: uid(), nombre: nombreCliente, documento: documentoCliente, tipoDocumento: documentoCliente.replace(/\D/g,'').length===11?'RUC':'DNI',
+              cli = { id: uid(), nombre: nombreCliente, documento: docImport, tipoDocumento: documentoCliente.replace(/\D/g,'').length===11?'RUC':'DNI',
                 direccion: buscar(fila,'domicilio','dirección','direccion'),
                 celular1: buscar(fila,'celular 1','celular1','teléfonos','telefonos','celular','contacto'),
                 celular2: buscar(fila,'celular 2','celular2'),
@@ -2961,7 +2973,7 @@ function viewCobroComisiones(){
   return `
     <div class="page-head">
       <div><h1>Comisiones</h1><p>Calcula la comisión de cada venta, revisa qué te falta cobrar de las aseguradoras, y su margen para FG.</p></div>
-      <div style="display:flex;gap:8px;">${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
+      <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
     </div>
     ${pendientesCalculo.length>0 ? `
     <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;border:1px solid var(--border);">
@@ -3041,7 +3053,7 @@ function viewCobroComisiones(){
               <td class="num" style="font-weight:600;">${fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda)} (${v.porcentajeFG||70}%)</td>
               <td>${diasPill}</td>
               <td><span class="pill ${cobrado?'pill-green':'pill-red'}">${cobrado?'Cobrado':'Pendiente'}</span></td>
-              <td>${cobrado ? fmtDate(v.fechaCobroFG) : '—'}</td>
+              <td>${cobrado ? (esAsesorSesion() ? fmtDate(v.fechaCobroFG) : `<input type="date" data-fecha-cobro="${v.id}" value="${v.fechaCobroFG||''}" title="Cambiar la fecha en que te pagaron esta comisión" style="padding:3px 4px;font-size:12px;">`) : '—'}</td>
               <td>${cobrado ? `<button class="btn btn-ghost btn-sm" data-mark-cobro-pendiente="${v.id}">Marcar pendiente</button>` : `<button class="btn btn-sm" data-mark-cobrado="${v.id}">Marcar cobrado</button>`} <button class="btn btn-ghost btn-sm" data-calcular-comision="${v.id}" title="Corregir prima o % de comisión">✎ Editar cálculo</button></td>
             </tr>`;
           }).join('')}
@@ -3115,6 +3127,118 @@ function wireCobroComisiones(){
   });
   document.querySelectorAll('[data-mark-cobrado]').forEach(b=> b.onclick = ()=>{ setEstadoCobro(b.dataset.markCobrado,'cobrado'); });
   document.querySelectorAll('[data-mark-cobro-pendiente]').forEach(b=> b.onclick = ()=>{ setEstadoCobro(b.dataset.markCobroPendiente,'pendiente'); });
+  document.querySelectorAll('[data-fecha-cobro]').forEach(inp=> inp.onchange = ()=>{
+    const v = state.ventas.find(x=>x.id===inp.dataset.fechaCobro);
+    if(!v || !inp.value) return;
+    v.fechaCobroFG = inp.value;
+    registrarAuditoria('editar', 'venta', v.id, `Fecha de cobro ${folioV(v.folio)} → ${fmtDate(inp.value)}`);
+    save(); render();
+  });
+  const btnConc = document.getElementById('btnConciliarAlta'); if(btnConc) btnConc.onclick = abrirConciliacionAlta;
+}
+
+// ---------------- Conciliar reporte de comisiones de Alta ----------------
+// Normaliza un N° de póliza para poder compararlo: quita el prefijo de ramo de Rímac ("2101 - "),
+// todo lo que no sea dígito y los ceros a la izquierda.
+function normPoliza(p){
+  let s = String(p||'').trim();
+  if(/^\d{4}\s*-\s*\d{5,}$/.test(s)) s = s.replace(/^\d{4}\s*-\s*/, '');
+  return s.replace(/\D/g,'').replace(/^0+/,'');
+}
+// Busca en el texto pegado los números que pueden ser pólizas (4+ dígitos que no sean montos)
+// y devuelve, por cada uno, el texto que lo rodea (para detectar extornos con monto negativo).
+function extraerPolizasDeTexto(texto){
+  const encontrados = new Map();
+  const re = /(?<![\d.,\/])(\d{4,}(?:-\d{2,})?)(?![\d]|[.,]\d)/g;
+  const coincidencias = Array.from(texto.matchAll(re));
+  for(let i=0; i<coincidencias.length; i++){
+    const m = coincidencias[i];
+    const n = normPoliza(m[1]);
+    if(n.length<4) continue;
+    // el monto de esta fila está entre este número y el siguiente número de póliza/factura
+    const fin = m.index + m[0].length;
+    const sig = coincidencias[i+1] ? coincidencias[i+1].index : texto.length;
+    const despues = texto.slice(fin, Math.min(sig, fin + 60));
+    // En el reporte de Alta un monto negativo se ve como "$ -10.35" o "-S/ 13.35" ("S/ - $ 83.76" es positivo: S/ vacío)
+    const esExtorno = /(\$|S\/)\s*-\s*\d|(^|\s)-S\/\s*\d/.test(despues);
+    const prev = encontrados.get(n);
+    encontrados.set(n, { veces: (prev?prev.veces:0)+1, extorno: (prev?prev.extorno:false) || esExtorno, contexto: prev?prev.contexto:texto.slice(Math.max(0,m.index-50), m.index+m[0].length+40).replace(/\s+/g,' ') });
+  }
+  return encontrados;
+}
+function abrirConciliacionAlta(){
+  const fechaDefecto = todayISO();
+  const ov = document.createElement('div');
+  ov.id = 'conciliacionOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;';
+  ov.innerHTML = `
+    <div class="card" style="max-width:860px;width:100%;padding:20px;background:var(--bg,#fff);">
+      <h2 style="margin:0 0 4px;">📥 Conciliar reporte de comisiones de Alta</h2>
+      <p class="hint" style="margin:0 0 14px;">Copia del correo <b>"Detalle de comisiones"</b> la parte de <b>Modulares</b> (o todo el correo) y pégala aquí. El CRM busca cada N° de póliza y te muestra cuáles marcará como cobradas con la fecha del reporte. Nada se guarda hasta que confirmes.</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
+        <div class="field"><label>Fecha de pago del reporte</label><input type="date" id="concFecha" value="${fechaDefecto}"></div>
+        <button class="btn" id="concAnalizar">Buscar pólizas</button>
+      </div>
+      <textarea id="concTexto" rows="9" style="width:100%;font-family:monospace;font-size:12px;" placeholder="Pega aquí el detalle de comisiones…"></textarea>
+      <div id="concResultado" style="margin-top:14px;"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+        <button class="btn btn-ghost" id="concCancelar">Cerrar</button>
+        <button class="btn btn-primary" id="concAplicar" disabled>Marcar seleccionadas como cobradas</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const cerrar = ()=> ov.remove();
+  ov.querySelector('#concCancelar').onclick = cerrar;
+  ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
+  let candidatos = [];
+  ov.querySelector('#concAnalizar').onclick = ()=>{
+    const texto = ov.querySelector('#concTexto').value;
+    const encontrados = extraerPolizasDeTexto(texto);
+    const ventas = misVentas(state.ventas).filter(v=> ventaActiva(v) && normPoliza(v.numeroPoliza).length>=4);
+    const usados = new Set();
+    candidatos = [];
+    ventas.forEach(v=>{
+      const n = normPoliza(v.numeroPoliza);
+      const info = encontrados.get(n);
+      if(!info) return;
+      usados.add(n);
+      candidatos.push({ v, info });
+    });
+    candidatos.sort((a,b)=> a.v.folio-b.v.folio);
+    // números largos del reporte (6+ dígitos) que no están en el CRM: posibles pólizas sin registrar
+    const sinRegistrar = Array.from(encontrados.entries()).filter(([n])=> !usados.has(n) && n.length>=6);
+    const fila = ({v, info}, i)=>{
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      const yaCobrado = v.estadoCobroFG==='cobrado';
+      const marcar = !yaCobrado && !info.extorno;
+      const nota = yaCobrado ? `<span class="pill pill-green">Ya cobrado ${fmtDate(v.fechaCobroFG)}</span>` : info.extorno ? '<span class="pill pill-red" title="En el reporte aparece con monto negativo">Posible extorno</span>' : '<span class="pill pill-gold">Pendiente</span>';
+      return `<tr><td><input type="checkbox" data-conc-idx="${i}" ${marcar?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num">${fmtMonedaVal(comisionFG(v), v.moneda)}</td><td>${nota}</td></tr>`;
+    };
+    const res = ov.querySelector('#concResultado');
+    if(!encontrados.size){ res.innerHTML = '<div class="hint">No se encontró ningún N° de póliza en el texto pegado.</div>'; ov.querySelector('#concAplicar').disabled = true; return; }
+    res.innerHTML = `
+      <div class="panel-title">Pólizas del reporte encontradas en el CRM (${candidatos.length})</div>
+      ${candidatos.length ? `<div style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
+        <thead><tr><th></th><th>Folio</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Comisión FG (CRM)</th><th>Estado</th></tr></thead>
+        <tbody>${candidatos.map(fila).join('')}</tbody></table></div>
+        <div class="hint" style="margin-top:6px;">Revisa que la comisión del CRM coincida con la del reporte. Las que aparecen con monto negativo (extornos) no se marcan por defecto.</div>` : '<div class="hint">Ninguna póliza del reporte coincide con ventas del CRM.</div>'}
+      ${sinRegistrar.length ? `<div class="panel-title" style="margin-top:14px;">Números del reporte que no están en el CRM (${sinRegistrar.length})</div>
+        <div class="hint">Pueden ser pólizas que aún no registraste como venta. Regístralas y vuelve a conciliar.</div>
+        <ul style="margin:6px 0 0;padding-left:18px;font-size:12.5px;">${sinRegistrar.map(([n,info])=>`<li><b>${n}</b>${info.extorno?' <span class="pill pill-red">extorno</span>':''} — <span class="hint" style="display:inline;">…${info.contexto.replace(/</g,'&lt;')}…</span></li>`).join('')}</ul>` : ''}
+      <div class="hint" style="margin-top:10px;">Nota: las líneas de <b>Corporativo</b> (SCTR, Vida Ley, SOAT) no traen N° de póliza; esas se siguen marcando a mano con "Marcar cobrado" y la fecha.</div>`;
+    ov.querySelector('#concAplicar').disabled = !candidatos.length;
+  };
+  ov.querySelector('#concAplicar').onclick = ()=>{
+    const fecha = ov.querySelector('#concFecha').value;
+    if(!fecha){ alert('Indica la fecha de pago del reporte.'); return; }
+    const elegidos = Array.from(ov.querySelectorAll('[data-conc-idx]:checked')).map(chk=> candidatos[Number(chk.dataset.concIdx)]).filter(Boolean);
+    if(!elegidos.length){ alert('No marcaste ninguna póliza.'); return; }
+    if(!confirm(`Se marcarán ${elegidos.length} comisión(es) como cobradas con fecha ${fmtDate(fecha)}. ¿Continuar?`)) return;
+    elegidos.forEach(({v})=>{ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = fecha; });
+    registrarAuditoria('editar', 'venta', elegidos[0].v.id, `Conciliación reporte Alta ${fmtDate(fecha)}: ${elegidos.length} comisión(es) marcadas como cobradas (${elegidos.map(e=>folioV(e.v.folio)).join(', ')})`);
+    save(); cerrar(); render();
+    alert(`Listo: ${elegidos.length} comisión(es) marcadas como cobradas con fecha ${fmtDate(fecha)}.`);
+  };
 }
 
 function viewPagoComisiones(){
@@ -5609,7 +5733,7 @@ function modalCliente(){
         <option value="RUC" ${c.tipoDocumento==='RUC'?'selected':''}>RUC</option>
         <option value="CE" ${c.tipoDocumento==='CE'?'selected':''}>Carnet de Extranjería</option>
       </select></div>
-      <div class="field" style="flex:1;"><label>N° de documento</label><input type="text" id="mDocumento" style="width:100%;" value="${c.documento||''}"></div>
+      <div class="field" style="flex:1;"><label>N° de documento *</label><input type="text" id="mDocumento" style="width:100%;" value="${c.documento||''}" placeholder="Obligatorio"></div>
     </div>
     <div class="field-row">
       <div class="field"><label>Celular 1</label><input type="text" id="mCelular1" style="width:100%;" value="${c.celular1||c.telefono||''}"></div>
@@ -5667,6 +5791,13 @@ function irAPestanaModal(nombre){
 function wireModal(){
   let cronogramaActual = [];
   const cancel = document.getElementById('mCancel'); if(cancel) cancel.onclick = closeModal;
+  // Ficha de cliente: elegir DNI o RUC automáticamente según la cantidad de dígitos
+  const inpDoc = document.getElementById('mDocumento'), selTipoDoc = document.getElementById('mTipoDocumento');
+  if(inpDoc && selTipoDoc) inpDoc.addEventListener('input', ()=>{
+    const d = normDocumento(inpDoc.value);
+    if(/^\d{11}$/.test(d)) selTipoDoc.value = 'RUC';
+    else if(/^\d{8}$/.test(d)) selTipoDoc.value = 'DNI';
+  });
   const del = document.getElementById('mDelete'); if(del) del.onclick = () => {
     const etiquetas = { venta:'esta venta', asesor:'este asesor', ejecutiva:'el acceso de esta ejecutiva', cliente:'este cliente (y perderás su historial de contacto)' };
     if(!confirm(`¿Seguro que quieres eliminar ${etiquetas[editing.type]||'este registro'}? Podrás restaurarlo desde la Papelera durante 30 días (los archivos adjuntos, si tiene, se borran de inmediato y no se pueden recuperar).`)) return;
@@ -6353,6 +6484,12 @@ function wireModal(){
         datosAdicionales: document.getElementById('mDatosAdicionales').value.trim(),
       };
       if(!data.nombre){ alert('Escribe el nombre del cliente.'); return; }
+      // ---- Documento obligatorio, con formato válido y único ----
+      data.documento = normDocumento(data.documento);
+      const errDoc = validarDocumento(data.tipoDocumento, data.documento);
+      if(errDoc){ alert(errDoc); return; }
+      const mismoDoc = state.clientes.find(c=> c.id!==editing.id && normDocumento(c.documento)===data.documento);
+      if(mismoDoc){ alert(`Ya existe un cliente con el ${data.tipoDocumento} ${data.documento}:\n\n• ${mismoDoc.nombre}\n\nNo se puede registrar dos veces el mismo documento. Busca a ese cliente en "Gestión de Clientes" y usa su ficha.`); return; }
       const duplicados = buscarClientesDuplicados(data.nombre, data.documento, editing.id);
       if(duplicados.length && !editing.duplicadoConfirmado){
         const lista = duplicados.slice(0,5).map(c=>`• ${c.nombre}${c.documento?' — '+c.documento:''}`).join('\n');
