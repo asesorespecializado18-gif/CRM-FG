@@ -959,48 +959,70 @@ function aplicarMigracionesState(){
   state.siniestros.forEach(s=>{ if(!s.id) s.id = uid(); });
 }
 let saveTimer=null;
+// Control de concurrencia del guardado en la nube:
+// - Solo un guardado a la vez. Si llega otro cambio mientras se sube, se vuelve a guardar al terminar.
+// - "ultimoGuardado" solo se actualiza con lo que REALMENTE se envió (antes se tomaba una foto del estado
+//   completo al terminar, y los cambios hechos durante la subida quedaban marcados como guardados sin
+//   haberse enviado: al recargar la página se perdían).
+let guardadoEnCurso = false;
+let guardadoPendiente = false;
 function save(inmediato){
   clearTimeout(saveTimer);
   actualizarIndicadorNube('guardando');
   const ejecutar = async () => {
-    const payload = JSON.stringify(state);
-    // siempre guarda una copia local completa, por si se pierde la conexión
+    if(guardadoEnCurso){ guardadoPendiente = true; return; }
+    guardadoEnCurso = true;
+    guardadoPendiente = false;
     try{
-      if(window.storage && typeof window.storage.set==='function'){
-        await window.storage.set('crm-data', payload, false);
-      } else {
-        localStorage.setItem('crm-data', payload);
-      }
-    }catch(e){ console.error('No se pudo guardar localmente', e); }
-    if(!fbDb) return;
-    try{
-      const colecciones = [
-        { col: FB_CLIENTES_COL(), items: state.clientes, prev: ultimoGuardado.clientes },
-        { col: FB_VENTAS_COL(), items: state.ventas, prev: ultimoGuardado.ventas },
-        { col: FB_ASESORES_COL(), items: state.asesores, prev: ultimoGuardado.asesores },
-        { col: FB_SINIESTROS_COL(), items: state.siniestros, prev: ultimoGuardado.siniestros },
-      ];
-      const operaciones = [];
-      colecciones.forEach(({col, items, prev})=>{
-        const idsActuales = new Set();
-        items.forEach(item=>{
-          idsActuales.add(item.id);
-          const json = JSON.stringify(item);
-          if(prev[item.id]!==json) operaciones.push({ tipo:'set', ref: col.doc(item.id), data: item });
+      const payload = JSON.stringify(state);
+      // siempre guarda una copia local completa, por si se pierde la conexión
+      try{
+        if(window.storage && typeof window.storage.set==='function'){
+          await window.storage.set('crm-data', payload, false);
+        } else {
+          localStorage.setItem('crm-data', payload);
+        }
+      }catch(e){ console.error('No se pudo guardar localmente', e); }
+      if(!fbDb) return;
+      try{
+        const colecciones = [
+          { clave:'clientes', col: FB_CLIENTES_COL(), items: state.clientes },
+          { clave:'ventas', col: FB_VENTAS_COL(), items: state.ventas },
+          { clave:'asesores', col: FB_ASESORES_COL(), items: state.asesores },
+          { clave:'siniestros', col: FB_SINIESTROS_COL(), items: state.siniestros },
+        ];
+        const operaciones = [];
+        colecciones.forEach(({clave, col, items})=>{
+          const prev = ultimoGuardado[clave] || (ultimoGuardado[clave] = {});
+          const idsActuales = new Set();
+          items.forEach(item=>{
+            idsActuales.add(item.id);
+            const json = JSON.stringify(item);
+            // se envía una copia congelada del registro, para que lo enviado coincida con lo registrado como guardado
+            if(prev[item.id]!==json) operaciones.push({ tipo:'set', ref: col.doc(item.id), data: JSON.parse(json), clave, id: item.id, json });
+          });
+          Object.keys(prev).forEach(id=>{ if(!idsActuales.has(id)) operaciones.push({ tipo:'delete', ref: col.doc(id), clave, id }); });
         });
-        Object.keys(prev).forEach(id=>{ if(!idsActuales.has(id)) operaciones.push({ tipo:'delete', ref: col.doc(id) }); });
-      });
-      operaciones.push({ tipo:'set', ref: FB_DOC_REF(), data: { core: coreState(), migradoARegistros: true, actualizado: new Date().toISOString() } });
-      for(const grupo of chunkArray(operaciones, 400)){
-        const batch = fbDb.batch();
-        grupo.forEach(op=>{ if(op.tipo==='set') batch.set(op.ref, op.data); else batch.delete(op.ref); });
-        await batch.commit();
+        operaciones.push({ tipo:'set', ref: FB_DOC_REF(), data: { core: coreState(), migradoARegistros: true, actualizado: new Date().toISOString() } });
+        for(const grupo of chunkArray(operaciones, 400)){
+          const batch = fbDb.batch();
+          grupo.forEach(op=>{ if(op.tipo==='set') batch.set(op.ref, op.data); else batch.delete(op.ref); });
+          await batch.commit();
+          // registrar como guardado solo lo que este lote envió
+          grupo.forEach(op=>{
+            if(!op.clave) return;
+            if(op.tipo==='set') ultimoGuardado[op.clave][op.id] = op.json;
+            else delete ultimoGuardado[op.clave][op.id];
+          });
+        }
+        actualizarIndicadorNube(guardadoPendiente ? 'guardando' : 'ok');
+      }catch(e){
+        console.error('No se pudo guardar en la nube', e);
+        actualizarIndicadorNube('local');
       }
-      snapshotGuardado();
-      actualizarIndicadorNube('ok');
-    }catch(e){
-      console.error('No se pudo guardar en la nube', e);
-      actualizarIndicadorNube('local');
+    } finally {
+      guardadoEnCurso = false;
+      if(guardadoPendiente){ guardadoPendiente = false; ejecutar(); }
     }
   };
   if(inmediato) return ejecutar();
