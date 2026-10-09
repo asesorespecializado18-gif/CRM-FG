@@ -789,6 +789,35 @@ function comisionAsesor(v){
   return 0;
 }
 function comisionFG(v){ return (Number(v.comisionTotal)||0) * ((Number(v.porcentajeFG)||70)/100); }
+// ---- Pagos de comisión recibidos (cada línea de un reporte de Alta, cuotas, extornos) ----
+function pagosDe(v){ return Array.isArray(v.pagosComision) ? v.pagosComision : []; }
+function totalPagado(v){ return pagosDe(v).reduce((s,p)=> s + (Number(p.monto)||0), 0); }
+// Comisión FG cobrada en un mes (YYYY-MM), separada por moneda. Si la venta tiene pagos registrados se
+// suman sus pagos de ese mes; si no, se usa la comisión completa en la fecha de cobro (como antes).
+function cobradoEnMes(ventas, ym){
+  const r = { PEN:0, USD:0, ventas:[] };
+  ventas.forEach(v=>{
+    const pagos = pagosDe(v);
+    if(pagos.length){
+      let hay = false;
+      pagos.forEach(p=>{ if((p.fecha||'').slice(0,7)===ym){ r[(p.moneda||v.moneda)==='USD'?'USD':'PEN'] += Number(p.monto)||0; hay = true; } });
+      if(hay) r.ventas.push(v);
+    } else if(v.estadoCobroFG==='cobrado' && (v.fechaCobroFG||'').slice(0,7)===ym){
+      r[v.moneda==='USD'?'USD':'PEN'] += comisionFG(v); r.ventas.push(v);
+    }
+  });
+  return r;
+}
+// Registra un pago evitando duplicados (misma fecha y mismo monto). Devuelve true si lo agregó.
+function registrarPagoComision(v, pago){
+  if(!Array.isArray(v.pagosComision)) v.pagosComision = [];
+  const monto = Math.round((Number(pago.monto)||0)*100)/100;
+  if(v.pagosComision.some(p=> p.fecha===pago.fecha && Math.abs((Number(p.monto)||0)-monto)<0.005)) return false;
+  v.pagosComision.push({ id: uid(), fecha: pago.fecha, monto, moneda: pago.moneda || v.moneda || 'PEN', reporte: pago.reporte || '', nota: pago.nota || '' });
+  v.pagosComision.sort((a,b)=> (a.fecha||'').localeCompare(b.fecha||''));
+  if(monto>0 && v.estadoCobroFG!=='cobrado'){ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = pago.fecha; }
+  return true;
+}
 function comisionEmpresa(v){ return comisionFG(v) - comisionAsesor(v); }
 function comisionTotalSoles(v){ return v.moneda==='USD' ? (Number(v.comisionTotal)||0)*(Number(state.tipoCambio)||1) : (Number(v.comisionTotal)||0); }
 function comisionAsesorSoles(v){ return v.moneda==='USD' ? comisionAsesor(v)*(Number(state.tipoCambio)||1) : comisionAsesor(v); }
@@ -2319,9 +2348,10 @@ function generarResumenTextoNetpolizas(){
   const hoy = new Date();
   const curKey = todayISO().slice(0,7);
   const prod = produccionMes(curKey);
-  const cobradoEsteMes = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.estadoCobroFG==='cobrado' && (v.fechaCobroFG||'').slice(0,7)===curKey);
-  const comisionCobradaPEN = cobradoEsteMes.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
-  const comisionCobradaUSD = cobradoEsteMes.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const cobradoMesInicio = cobradoEnMes(misVentas(state.ventas).filter(ventaSeguroActiva), curKey);
+  const cobradoEsteMes = cobradoMesInicio.ventas;
+  const comisionCobradaPEN = cobradoMesInicio.PEN;
+  const comisionCobradaUSD = cobradoMesInicio.USD;
 
   const pendientesRenovar = misVentas(state.ventas).filter(v=>ventaSeguroActiva(v) && v.vigenciaFin && v.vigenciaFin < todayISO());
 
@@ -2953,9 +2983,10 @@ function viewCobroComisiones(){
   const pendientesTodas = todasSeguro.filter(v=>(v.estadoCobroFG||'pendiente')==='pendiente');
   const totalPendientePEN = pendientesTodas.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
   const totalPendienteUSD = pendientesTodas.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
-  const cobradoEsteMes = todasSeguro.filter(v=>v.estadoCobroFG==='cobrado' && (v.fechaCobroFG||'').slice(0,7)===todayISO().slice(0,7));
-  const cobradoMesPEN = cobradoEsteMes.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0);
-  const cobradoMesUSD = cobradoEsteMes.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0);
+  const cobradoMesCom = cobradoEnMes(todasSeguro, todayISO().slice(0,7));
+  const cobradoEsteMes = cobradoMesCom.ventas;
+  const cobradoMesPEN = cobradoMesCom.PEN;
+  const cobradoMesUSD = cobradoMesCom.USD;
   const atrasados60 = pendientesTodas.filter(v=>diasPendiente(v)>=60).length;
 
   // ---- Resumen por aseguradora ----
@@ -3036,9 +3067,9 @@ function viewCobroComisiones(){
     </div>
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Folio venta</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Antigüedad</th><th>Estado de cobro</th><th>Fecha de cobro</th><th></th></tr></thead>
+        <thead><tr><th>Folio venta</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Producto</th><th>Comisión 100%</th><th>Comisión FG</th><th>Pagado (reportes)</th><th>Antigüedad</th><th>Estado de cobro</th><th>Fecha de cobro</th><th></th></tr></thead>
         <tbody>
-          ${rowsCobro.length===0 ? `<tr class="empty-row"><td colspan="11">No hay ventas que coincidan con el filtro.</td></tr>` : rowsCobro.map(v=>{
+          ${rowsCobro.length===0 ? `<tr class="empty-row"><td colspan="12">No hay ventas que coincidan con el filtro.</td></tr>` : rowsCobro.map(v=>{
             const cli = state.clientes.find(c=>c.id===v.clienteId);
             const cobrado = v.estadoCobroFG==='cobrado';
             const dias = diasPendiente(v);
@@ -3051,10 +3082,11 @@ function viewCobroComisiones(){
               <td>${prodLabel(v.tipoProducto)}</td>
               <td class="num">${fmtDual(v)}</td>
               <td class="num" style="font-weight:600;">${fmtMonedaVal((Number(v.comisionTotal)||0)*((v.porcentajeFG||70)/100), v.moneda)} (${v.porcentajeFG||70}%)</td>
+              <td class="num">${pagosDe(v).length ? `${fmtMonedaVal(totalPagado(v), v.moneda)} <span class="hint" style="display:inline;">(${pagosDe(v).length} pago${pagosDe(v).length>1?'s':''})</span>` : '<span class="hint" style="display:inline;">—</span>'}</td>
               <td>${diasPill}</td>
               <td><span class="pill ${cobrado?'pill-green':'pill-red'}">${cobrado?'Cobrado':'Pendiente'}</span></td>
               <td>${cobrado ? (esAsesorSesion() ? fmtDate(v.fechaCobroFG) : `<input type="date" data-fecha-cobro="${v.id}" value="${v.fechaCobroFG||''}" title="Cambiar la fecha en que te pagaron esta comisión" style="padding:3px 4px;font-size:12px;">`) : '—'}</td>
-              <td>${cobrado ? `<button class="btn btn-ghost btn-sm" data-mark-cobro-pendiente="${v.id}">Marcar pendiente</button>` : `<button class="btn btn-sm" data-mark-cobrado="${v.id}">Marcar cobrado</button>`} <button class="btn btn-ghost btn-sm" data-calcular-comision="${v.id}" title="Corregir prima o % de comisión">✎ Editar cálculo</button></td>
+              <td>${cobrado ? `<button class="btn btn-ghost btn-sm" data-mark-cobro-pendiente="${v.id}">Marcar pendiente</button>` : `<button class="btn btn-sm" data-mark-cobrado="${v.id}">Marcar cobrado</button>`} <button class="btn btn-ghost btn-sm" data-calcular-comision="${v.id}" title="Corregir prima o % de comisión">✎ Editar cálculo</button> <button class="btn btn-ghost btn-sm" data-pagos-venta="${v.id}" title="Ver o registrar los pagos de comisión recibidos (cuotas, reportes de Alta, extornos)">💵 Pagos${pagosDe(v).length?` (${pagosDe(v).length})`:''}</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -3071,10 +3103,10 @@ function wireCobroComisiones(){
   document.querySelectorAll('[data-calcular-comision]').forEach(b=> b.onclick = () => { editing = {type:'venta', id: b.dataset.calcularComision, calculoComision:true}; render(); });
   const lnkPagoAsesores = document.getElementById('lnkVerPagoAsesores'); if(lnkPagoAsesores) lnkPagoAsesores.onclick = (e) => { e.preventDefault(); tab = 'pago_comisiones'; render(); };
   const btnEx = document.getElementById('btnExportCobro'); if(btnEx) btnEx.onclick = () => {
-    const headers = ['Folio venta','N° póliza','Cliente','Aseguradora','Producto','Moneda','Comisión 100%','% FG','Comisión FG','Estado de cobro','Fecha de cobro'];
+    const headers = ['Folio venta','N° póliza','Cliente','Aseguradora','Producto','Moneda','Comisión 100%','% FG','Comisión FG','Pagado (reportes)','N° pagos','Estado de cobro','Fecha de cobro'];
     const rows = filteredCobro().map(v=>{
       const cli = state.clientes.find(c=>c.id===v.clienteId);
-      return [folioV(v.folio), v.numeroPoliza||'', cli?cli.nombre:'', v.aseguradora||'', prodLabel(v.tipoProducto), v.moneda==='USD'?'USD':'PEN', Number(v.comisionTotal)||0, v.porcentajeFG||70, comisionFG(v), v.estadoCobroFG==='cobrado'?'Cobrado':'Pendiente', v.estadoCobroFG==='cobrado'?v.fechaCobroFG:''];
+      return [folioV(v.folio), v.numeroPoliza||'', cli?cli.nombre:'', v.aseguradora||'', prodLabel(v.tipoProducto), v.moneda==='USD'?'USD':'PEN', Number(v.comisionTotal)||0, v.porcentajeFG||70, comisionFG(v), Math.round(totalPagado(v)*100)/100, pagosDe(v).length, v.estadoCobroFG==='cobrado'?'Cobrado':'Pendiente', v.estadoCobroFG==='cobrado'?v.fechaCobroFG:''];
     });
     exportExcel('cobro-comisiones.xlsx', headers, rows);
   };
@@ -3135,6 +3167,7 @@ function wireCobroComisiones(){
     save(); render();
   });
   const btnConc = document.getElementById('btnConciliarAlta'); if(btnConc) btnConc.onclick = abrirConciliacionAlta;
+  document.querySelectorAll('[data-pagos-venta]').forEach(b=> b.onclick = ()=> abrirPagosVenta(b.dataset.pagosVenta));
 }
 
 // ---------------- Conciliar reporte de comisiones de Alta ----------------
@@ -3161,8 +3194,12 @@ function extraerPolizasDeTexto(texto){
     const despues = texto.slice(fin, Math.min(sig, fin + 60));
     // En el reporte de Alta un monto negativo se ve como "$ -10.35" o "-S/ 13.35" ("S/ - $ 83.76" es positivo: S/ vacío)
     const esExtorno = /(\$|S\/)\s*-\s*\d|(^|\s)-S\/\s*\d/.test(despues);
+    // monto de la fila: el primer importe después del N° ("$ 83.76", "$\n-195.00", "-S/ 13.35"; en "S/ - $ 83.76" el S/ está vacío)
+    let linea = null;
+    const a = despues.match(/(-?)(\$|S\/)\s*(-?)\s*(\d[\d,]*\.\d{2})/);
+    if(a) linea = { monto: parseFloat(a[4].replace(/,/g,'')) * ((a[1]||a[3]) ? -1 : 1), moneda: a[2]==='$' ? 'USD' : 'PEN' };
     const prev = encontrados.get(n);
-    encontrados.set(n, { veces: (prev?prev.veces:0)+1, extorno: (prev?prev.extorno:false) || esExtorno, contexto: prev?prev.contexto:texto.slice(Math.max(0,m.index-50), m.index+m[0].length+40).replace(/\s+/g,' ') });
+    encontrados.set(n, { veces: (prev?prev.veces:0)+1, extorno: (prev?prev.extorno:false) || esExtorno, lineas: (prev?prev.lineas:[]).concat(linea?[linea]:[]), contexto: prev?prev.contexto:texto.slice(Math.max(0,m.index-50), m.index+m[0].length+40).replace(/\s+/g,' ') });
   }
   return encontrados;
 }
@@ -3174,7 +3211,7 @@ function abrirConciliacionAlta(){
   ov.innerHTML = `
     <div class="card" style="max-width:860px;width:100%;padding:20px;background:var(--bg,#fff);">
       <h2 style="margin:0 0 4px;">📥 Conciliar reporte de comisiones de Alta</h2>
-      <p class="hint" style="margin:0 0 14px;">Copia del correo <b>"Detalle de comisiones"</b> la parte de <b>Modulares</b> (o todo el correo) y pégala aquí. El CRM busca cada N° de póliza y te muestra cuáles marcará como cobradas con la fecha del reporte. Nada se guarda hasta que confirmes.</p>
+      <p class="hint" style="margin:0 0 14px;">Copia del correo <b>"Detalle de comisiones"</b> la parte de <b>Modulares</b> (o todo el correo) y pégala aquí. El CRM busca cada N° de póliza con su monto y te muestra los pagos que registrará con la fecha del reporte. Nada se guarda hasta que confirmes.</p>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
         <div class="field"><label>Fecha de pago del reporte</label><input type="date" id="concFecha" value="${fechaDefecto}"></div>
         <button class="btn" id="concAnalizar">Buscar pólizas</button>
@@ -3183,7 +3220,7 @@ function abrirConciliacionAlta(){
       <div id="concResultado" style="margin-top:14px;"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
         <button class="btn btn-ghost" id="concCancelar">Cerrar</button>
-        <button class="btn btn-primary" id="concAplicar" disabled>Marcar seleccionadas como cobradas</button>
+        <button class="btn btn-primary" id="concAplicar" disabled>Registrar pagos seleccionados</button>
       </div>
     </div>`;
   document.body.appendChild(ov);
@@ -3191,8 +3228,9 @@ function abrirConciliacionAlta(){
   ov.querySelector('#concCancelar').onclick = cerrar;
   ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
   let candidatos = [];
-  ov.querySelector('#concAnalizar').onclick = ()=>{
+  const analizar = ()=>{
     const texto = ov.querySelector('#concTexto').value;
+    const fecha = ov.querySelector('#concFecha').value;
     const encontrados = extraerPolizasDeTexto(texto);
     const ventas = misVentas(state.ventas).filter(v=> ventaActiva(v) && normPoliza(v.numeroPoliza).length>=4);
     const usados = new Set();
@@ -3202,44 +3240,119 @@ function abrirConciliacionAlta(){
       const info = encontrados.get(n);
       if(!info) return;
       usados.add(n);
-      candidatos.push({ v, info });
+      // una fila por cada línea del reporte (una póliza puede venir con un pago y su extorno)
+      const lineas = info.lineas.length ? info.lineas : [{ monto:null, moneda:v.moneda }];
+      lineas.forEach(l=> candidatos.push({ v, info, linea: l }));
     });
     candidatos.sort((a,b)=> a.v.folio-b.v.folio);
     // números largos del reporte (6+ dígitos) que no están en el CRM: posibles pólizas sin registrar
     const sinRegistrar = Array.from(encontrados.entries()).filter(([n])=> !usados.has(n) && n.length>=6);
-    const fila = ({v, info}, i)=>{
+    const fila = ({v, info, linea}, i)=>{
       const cli = state.clientes.find(c=>c.id===v.clienteId);
       const yaCobrado = v.estadoCobroFG==='cobrado';
-      const marcar = !yaCobrado && !info.extorno;
-      const pillExtorno = info.extorno ? ' <span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>' : '';
-      const nota = (yaCobrado ? `<span class="pill pill-green">Ya cobrado ${fmtDate(v.fechaCobroFG)}</span>` : '<span class="pill pill-gold">Pendiente</span>') + pillExtorno;
-      return `<tr><td><input type="checkbox" data-conc-idx="${i}" ${marcar?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num">${fmtMonedaVal(comisionFG(v), v.moneda)}</td><td>${nota}</td></tr>`;
+      const monto = linea.monto;
+      const yaRegistrado = monto!=null && pagosDe(v).some(p=> p.fecha===fecha && Math.abs((Number(p.monto)||0)-monto)<0.005);
+      const esNegativo = monto!=null ? monto<0 : info.extorno;
+      const marcar = !yaRegistrado && !esNegativo && !(monto==null && yaCobrado);
+      const pills = [];
+      if(yaRegistrado) pills.push('<span class="pill pill-gray">Pago ya registrado</span>');
+      else if(yaCobrado) pills.push(`<span class="pill pill-green">Cobrado ${fmtDate(v.fechaCobroFG)}</span>`);
+      else pills.push('<span class="pill pill-gold">Pendiente</span>');
+      if(esNegativo) pills.push('<span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>');
+      const difiere = monto!=null && monto>0 && info.lineas.length===1 && Math.abs(monto-comisionFG(v))>1;
+      return `<tr><td><input type="checkbox" data-conc-idx="${i}" ${marcar?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num" style="font-weight:600;${esNegativo?'color:#B8483A;':''}">${monto!=null?fmtMonedaVal(monto, linea.moneda):'—'}</td><td class="num" ${difiere?'style="color:#B8483A;" title="La comisión calculada en el CRM no coincide con lo que pagó Alta"':''}>${fmtMonedaVal(comisionFG(v), v.moneda)}${difiere?' ⚠':''}</td><td>${pills.join(' ')}</td></tr>`;
     };
     const res = ov.querySelector('#concResultado');
     if(!encontrados.size){ res.innerHTML = '<div class="hint">No se encontró ningún N° de póliza en el texto pegado.</div>'; ov.querySelector('#concAplicar').disabled = true; return; }
     res.innerHTML = `
       <div class="panel-title">Pólizas del reporte encontradas en el CRM (${candidatos.length})</div>
-      ${candidatos.length ? `<div style="max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
-        <thead><tr><th></th><th>Folio</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Comisión FG (CRM)</th><th>Estado</th></tr></thead>
+      ${candidatos.length ? `<div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
+        <thead><tr><th></th><th>Folio</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Pagó Alta</th><th>Comisión FG (CRM)</th><th>Estado</th></tr></thead>
         <tbody>${candidatos.map(fila).join('')}</tbody></table></div>
-        <div class="hint" style="margin-top:6px;">Revisa que la comisión del CRM coincida con la del reporte. Las que aparecen con monto negativo (extornos) no se marcan por defecto.</div>` : '<div class="hint">Ninguna póliza del reporte coincide con ventas del CRM.</div>'}
+        <div class="hint" style="margin-top:6px;">Cada línea marcada se guarda como un <b>pago de comisión</b> de la venta con la fecha del reporte (si la venta estaba pendiente, queda cobrada). Los extornos no se marcan por defecto; si los marcas se registran como pago negativo. Los pagos que ya están registrados con esa fecha no se duplican. ⚠ = la comisión del CRM no coincide con lo que pagó Alta.</div>` : '<div class="hint">Ninguna póliza del reporte coincide con ventas del CRM.</div>'}
       ${sinRegistrar.length ? `<div class="panel-title" style="margin-top:14px;">Números del reporte que no están en el CRM (${sinRegistrar.length})</div>
         <div class="hint">Pueden ser pólizas que aún no registraste como venta. Regístralas y vuelve a conciliar.</div>
-        <ul style="margin:6px 0 0;padding-left:18px;font-size:12.5px;">${sinRegistrar.map(([n,info])=>`<li><b>${n}</b>${info.extorno?' <span class="pill pill-red">extorno</span>':''} — <span class="hint" style="display:inline;">…${info.contexto.replace(/</g,'&lt;')}…</span></li>`).join('')}</ul>` : ''}
-      <div class="hint" style="margin-top:10px;">Nota: las líneas de <b>Corporativo</b> (SCTR, Vida Ley, SOAT) no traen N° de póliza; esas se siguen marcando a mano con "Marcar cobrado" y la fecha.</div>`;
+        <ul style="margin:6px 0 0;padding-left:18px;font-size:12.5px;">${sinRegistrar.map(([n,info])=>`<li><b>${n}</b>${info.lineas.length?' — '+info.lineas.map(l=>fmtMonedaVal(l.monto,l.moneda)).join(', '):''}${info.extorno?' <span class="pill pill-red">extorno</span>':''} <span class="hint" style="display:inline;">…${info.contexto.replace(/</g,'&lt;')}…</span></li>`).join('')}</ul>` : ''}
+      <div class="hint" style="margin-top:10px;">Nota: las líneas de <b>Corporativo</b> (SCTR, Vida Ley, SOAT) no traen N° de póliza; esas se registran a mano con el botón "💵 Pagos" de cada venta.</div>`;
     ov.querySelector('#concAplicar').disabled = !candidatos.length;
   };
+  ov.querySelector('#concAnalizar').onclick = analizar;
+  ov.querySelector('#concFecha').onchange = ()=>{ if(ov.querySelector('#concTexto').value.trim()) analizar(); };
   ov.querySelector('#concAplicar').onclick = ()=>{
     const fecha = ov.querySelector('#concFecha').value;
     if(!fecha){ alert('Indica la fecha de pago del reporte.'); return; }
     const elegidos = Array.from(ov.querySelectorAll('[data-conc-idx]:checked')).map(chk=> candidatos[Number(chk.dataset.concIdx)]).filter(Boolean);
-    if(!elegidos.length){ alert('No marcaste ninguna póliza.'); return; }
-    if(!confirm(`Se marcarán ${elegidos.length} comisión(es) como cobradas con fecha ${fmtDate(fecha)}. ¿Continuar?`)) return;
-    elegidos.forEach(({v})=>{ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = fecha; });
-    registrarAuditoria('editar', 'venta', elegidos[0].v.id, `Conciliación reporte Alta ${fmtDate(fecha)}: ${elegidos.length} comisión(es) marcadas como cobradas (${elegidos.map(e=>folioV(e.v.folio)).join(', ')})`);
+    if(!elegidos.length){ alert('No marcaste ninguna línea.'); return; }
+    if(!confirm(`Se registrarán ${elegidos.length} pago(s) de comisión con fecha ${fmtDate(fecha)}. ¿Continuar?`)) return;
+    let pagos = 0, cobradas = 0;
+    elegidos.forEach(({v, linea})=>{
+      const estaba = v.estadoCobroFG==='cobrado';
+      if(linea.monto!=null){ if(registrarPagoComision(v, { fecha, monto: linea.monto, moneda: linea.moneda, reporte: `Reporte Alta ${fmtDate(fecha)}` })) pagos++; }
+      else if(!estaba){ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = fecha; }
+      if(!estaba && v.estadoCobroFG==='cobrado') cobradas++;
+    });
+    registrarAuditoria('editar', 'venta', elegidos[0].v.id, `Conciliación reporte Alta ${fmtDate(fecha)}: ${pagos} pago(s) registrados, ${cobradas} venta(s) pasaron a cobradas (${Array.from(new Set(elegidos.map(e=>folioV(e.v.folio)))).join(', ')})`);
     save(); cerrar(); render();
-    alert(`Listo: ${elegidos.length} comisión(es) marcadas como cobradas con fecha ${fmtDate(fecha)}.`);
+    alert(`Listo: ${pagos} pago(s) registrados y ${cobradas} venta(s) marcadas como cobradas (fecha ${fmtDate(fecha)}).`);
   };
+}
+
+// ---------------- Pagos de comisión de una venta ----------------
+function abrirPagosVenta(ventaId){
+  const v = state.ventas.find(x=>x.id===ventaId);
+  if(!v) return;
+  const cli = state.clientes.find(c=>c.id===v.clienteId);
+  const editable = !esAsesorSesion();
+  const ov = document.createElement('div');
+  ov.id = 'pagosVentaOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;';
+  const pintar = ()=>{
+    const pagos = pagosDe(v);
+    const esperado = comisionFG(v), pagado = totalPagado(v);
+    ov.innerHTML = `
+      <div class="card" style="max-width:720px;width:100%;padding:20px;background:var(--bg,#fff);">
+        <h2 style="margin:0 0 4px;">💵 Pagos de comisión — ${folioV(v.folio)}</h2>
+        <p class="hint" style="margin:0 0 12px;">${cli?cli.nombre:''} · ${v.aseguradora||''} · Póliza ${v.numeroPoliza||'—'} · ${prodLabel(v.tipoProducto)}</p>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px;">
+          <div><div class="hint">Comisión FG esperada (CRM)</div><div class="num" style="font-weight:700;">${fmtMonedaVal(esperado, v.moneda)}</div></div>
+          <div><div class="hint">Total pagado</div><div class="num" style="font-weight:700;">${fmtMonedaVal(pagado, v.moneda)}</div></div>
+          <div><div class="hint">Estado de cobro</div><div><span class="pill ${v.estadoCobroFG==='cobrado'?'pill-green':'pill-red'}">${v.estadoCobroFG==='cobrado'?'Cobrado '+fmtDate(v.fechaCobroFG):'Pendiente'}</span></div></div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:300px;"><table>
+          <thead><tr><th>Fecha</th><th>Monto</th><th>Reporte / detalle</th><th></th></tr></thead>
+          <tbody>${pagos.length ? pagos.map(p=>`<tr><td>${fmtDate(p.fecha)}</td><td class="num" style="${(Number(p.monto)||0)<0?'color:#B8483A;':''}">${fmtMonedaVal(p.monto, p.moneda||v.moneda)}</td><td>${(p.reporte||'')}${p.nota?' — '+p.nota:''}</td><td>${editable?`<button class="btn btn-ghost btn-sm" data-borrar-pago="${p.id}" title="Eliminar este pago">✕</button>`:''}</td></tr>`).join('') : '<tr class="empty-row"><td colspan="4">Todavía no hay pagos registrados para esta venta.</td></tr>'}</tbody>
+        </table></div>
+        ${editable ? `<div class="panel-title" style="margin-top:14px;">Registrar un pago</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+          <div class="field"><label>Fecha</label><input type="date" id="pgFecha" value="${todayISO()}"></div>
+          <div class="field"><label>Monto (negativo si es extorno)</label><input type="number" step="0.01" id="pgMonto" style="width:130px;"></div>
+          <div class="field"><label>Moneda</label><select id="pgMoneda"><option value="PEN" ${v.moneda!=='USD'?'selected':''}>S/</option><option value="USD" ${v.moneda==='USD'?'selected':''}>US$</option></select></div>
+          <div class="field" style="flex:1;min-width:160px;"><label>Reporte / detalle</label><input type="text" id="pgReporte" placeholder="Ej.: Reporte Alta 30/09/2026, cuota 3"></div>
+          <button class="btn btn-primary" id="pgAgregar">Agregar pago</button>
+        </div>` : ''}
+        <div style="display:flex;justify-content:flex-end;margin-top:14px;"><button class="btn btn-ghost" id="pgCerrar">Cerrar</button></div>
+      </div>`;
+    ov.querySelector('#pgCerrar').onclick = cerrar;
+    ov.querySelectorAll('[data-borrar-pago]').forEach(b=> b.onclick = ()=>{
+      const p = pagosDe(v).find(x=>x.id===b.dataset.borrarPago);
+      if(!p || !confirm(`¿Eliminar el pago de ${fmtMonedaVal(p.monto, p.moneda||v.moneda)} del ${fmtDate(p.fecha)}?`)) return;
+      v.pagosComision = pagosDe(v).filter(x=>x.id!==p.id);
+      registrarAuditoria('editar', 'venta', v.id, `Pago de comisión eliminado ${folioV(v.folio)}: ${fmtMonedaVal(p.monto, p.moneda||v.moneda)} del ${fmtDate(p.fecha)}`);
+      save(); pintar();
+    });
+    const btnAdd = ov.querySelector('#pgAgregar'); if(btnAdd) btnAdd.onclick = ()=>{
+      const fecha = ov.querySelector('#pgFecha').value, monto = parseFloat(ov.querySelector('#pgMonto').value);
+      if(!fecha || !isFinite(monto) || monto===0){ alert('Indica la fecha y un monto distinto de cero.'); return; }
+      const ok = registrarPagoComision(v, { fecha, monto, moneda: ov.querySelector('#pgMoneda').value, reporte: ov.querySelector('#pgReporte').value.trim() });
+      if(!ok){ alert('Ya existe un pago con esa fecha y ese monto en esta venta.'); return; }
+      registrarAuditoria('editar', 'venta', v.id, `Pago de comisión ${folioV(v.folio)}: ${fmtMonedaVal(monto, ov.querySelector('#pgMoneda').value)} del ${fmtDate(fecha)}`);
+      save(); pintar();
+    };
+  };
+  const cerrar = ()=>{ ov.remove(); render(); };
+  ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
+  document.body.appendChild(ov);
+  pintar();
 }
 
 function viewPagoComisiones(){
