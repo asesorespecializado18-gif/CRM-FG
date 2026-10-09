@@ -222,6 +222,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-storage-compat.js"></script>
 <script>
 // ---------------- Firebase (guardado automático en la nube) ----------------
@@ -235,9 +236,11 @@ const firebaseConfig = {
 };
 let fbDb = null;
 let fbStorage = null;
+let fbAuth = null; // inicio de sesión de Firebase: protege la base de datos (las reglas exigen usuario autenticado)
 try{
   firebase.initializeApp(firebaseConfig);
   fbDb = firebase.firestore();
+  try{ fbAuth = firebase.auth(); fbAuth.languageCode = 'es'; }catch(e){ console.error('Firebase Auth no disponible', e); }
   fbDb.enablePersistence({ synchronizeTabs:true }).catch(()=>{});
   fbStorage = firebase.storage();
 }catch(e){ console.error('No se pudo inicializar Firebase', e); }
@@ -901,7 +904,7 @@ function coreState(){
   const { clientes, ventas, asesores, siniestros, ...resto } = state;
   return resto;
 }
-async function load(){
+async function load(opts){
   try{
     let cargadoDeNube = false;
     if(fbDb){
@@ -952,6 +955,7 @@ async function load(){
       }
     }
   }catch(e){ console.error('No se pudo cargar', e); }
+  if(opts && opts.sinRender) return;
   seedIfEmpty();
   checkAuthAndRender();
 }
@@ -1187,6 +1191,7 @@ function renderLogin(){
         <div class="field"><label>Correo electrónico o DNI</label><input type="text" id="lEmail" style="width:100%;" placeholder="correo@ejemplo.com o tu DNI"></div>
         <div class="field"><label>Contraseña</label><input type="password" id="lPass" style="width:100%;" placeholder="••••••••"></div>
         <button class="btn btn-primary" id="btnLogin" style="width:100%;margin-top:6px;">Ingresar</button>
+        <div style="text-align:center;margin-top:10px;font-size:12px;"><a href="#" id="lnkOlvideClave" class="link-inline">¿Olvidaste tu contraseña?</a></div>
         <div style="text-align:center;margin-top:14px;font-size:12px;color:var(--ink-faint);">¿Es tu primera vez en este dispositivo?<br><a href="#" id="lnkRestaurarLogin" class="link-inline">Restaurar datos desde un respaldo</a></div>
         <input type="file" id="inputRestaurarLogin" accept="application/json" style="display:none;">
       </div>
@@ -1207,7 +1212,7 @@ function renderLogin(){
       const correoAdmin = document.getElementById('lEmail').value.trim();
       const pass2 = document.getElementById('lPass2').value;
       if(!correoAdmin || !correoAdmin.includes('@')){ errEl.innerHTML = `<div class="login-error">Escribe un correo electrónico válido.</div>`; return; }
-      if(!pass || pass.length<4){ errEl.innerHTML = `<div class="login-error">La contraseña debe tener al menos 4 caracteres.</div>`; return; }
+      if(!pass || pass.length<6){ errEl.innerHTML = `<div class="login-error">La contraseña debe tener al menos 6 caracteres.</div>`; return; }
       if(pass!==pass2){ errEl.innerHTML = `<div class="login-error">Las contraseñas no coinciden.</div>`; return; }
       state.auth.email = correoAdmin;
       state.auth.passwordHash = hashSimple(pass);
@@ -1216,35 +1221,151 @@ function renderLogin(){
       sesionIniciada = true;
       checkAuthAndRender();
     } else {
-      const correo = document.getElementById('lEmail').value.trim().toLowerCase();
-      if(!correo){ errEl.innerHTML = `<div class="login-error">Escribe tu correo o DNI.</div>`; return; }
-      const esAdminPorCorreo = correo===state.auth.email.toLowerCase();
-      const esAdminPorDni = state.auth.dni && correo===state.auth.dni.toLowerCase();
-      if(esAdminPorCorreo || esAdminPorDni){
-        if(hashSimple(pass)!==state.auth.passwordHash){ errEl.innerHTML = `<div class="login-error">Correo/DNI o contraseña incorrectos.</div>`; return; }
-        sesionUsuario = { rol:'admin' };
-        sesionIniciada = true;
-        checkAuthAndRender();
-        return;
-      }
-      const asesor = state.asesores.find(a=> a.usuario && a.usuario.toLowerCase()===correo);
-      if(asesor){
-        if(asesor.accesoActivo===false || hashSimple(pass)!==asesor.passwordHash){ errEl.innerHTML = `<div class="login-error">Correo o contraseña incorrectos.</div>`; return; }
-        sesionUsuario = { rol:'asesor', asesorId: asesor.id, nombre: asesor.nombre };
-        sesionIniciada = true;
-        checkAuthAndRender();
-        return;
-      }
-      const ejecutiva = state.ejecutivas.find(e=> e.usuario && e.usuario.toLowerCase()===correo);
-      if(!ejecutiva || ejecutiva.activo===false || hashSimple(pass)!==ejecutiva.passwordHash){ errEl.innerHTML = `<div class="login-error">Correo o contraseña incorrectos.</div>`; return; }
-      sesionUsuario = { rol:'ejecutiva', ejecutivaId: ejecutiva.id, nombre: ejecutiva.nombre };
-      sesionIniciada = true;
-      checkAuthAndRender();
+      ingresarConFirebase(document.getElementById('lEmail').value, pass, errEl, btn);
+    }
+  };
+  const lnkOlvide = document.getElementById('lnkOlvideClave');
+  if(lnkOlvide) lnkOlvide.onclick = async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById('loginError');
+    const id = document.getElementById('lEmail').value.trim().toLowerCase();
+    const cuenta = id ? buscarCuentaLegacy(id) : null;
+    const email = id.includes('@') ? id : ((cuenta && cuenta.email) || leerMapaDni()[id] || '');
+    if(!email){ errEl.innerHTML = `<div class="login-error">Escribe primero tu correo electrónico y vuelve a pulsar "¿Olvidaste tu contraseña?".</div>`; return; }
+    if(!fbAuth){ errEl.innerHTML = `<div class="login-error">No hay conexión con el servicio de acceso.</div>`; return; }
+    try{
+      await fbAuth.sendPasswordResetEmail(email);
+      errEl.innerHTML = `<div class="login-error" style="background:#E8F3EC;color:#1F4B41;border-color:#BFD9C8;">Si ${email} tiene acceso, te enviamos un correo con un enlace para crear una nueva contraseña. Revisa también la carpeta de spam.</div>`;
+    }catch(err){
+      errEl.innerHTML = `<div class="login-error">No se pudo enviar el correo (${err.code||err.message}). Si es la primera vez que ingresas con el nuevo sistema, entra con tu contraseña de siempre.</div>`;
     }
   };
   btn.onclick = doSubmit;
   document.getElementById('lPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doSubmit(); });
   const p2 = document.getElementById('lPass2'); if(p2) p2.addEventListener('keydown', e=>{ if(e.key==='Enter') doSubmit(); });
+}
+
+// ================= Ingreso con Firebase Authentication =================
+// Cada usuario (administrador, asesor, ejecutiva) entra con su correo y contraseña de Firebase.
+// Migración automática: si aún no tiene cuenta en Firebase, se valida con la contraseña anterior del CRM
+// y se crea su cuenta de Firebase con esa misma contraseña (Firebase exige mínimo 6 caracteres).
+const MAPA_DNI_KEY = 'crm-fg-mapa-dni';
+function leerMapaDni(){ try{ return JSON.parse(localStorage.getItem(MAPA_DNI_KEY)||'{}') || {}; }catch(e){ return {}; } }
+function guardarMapaDni(){
+  try{
+    const m = leerMapaDni();
+    if(state.auth && state.auth.dni && state.auth.email) m[String(state.auth.dni).toLowerCase()] = String(state.auth.email).toLowerCase();
+    localStorage.setItem(MAPA_DNI_KEY, JSON.stringify(m));
+  }catch(e){}
+}
+// Busca la cuenta por correo o DNI en los datos del CRM (para la migración y para saber el correo de un DNI)
+function buscarCuentaLegacy(id){
+  id = String(id||'').trim().toLowerCase();
+  if(!id) return null;
+  const adminEmail = String((state.auth&&state.auth.email)||'').toLowerCase();
+  if(id===adminEmail || (state.auth && state.auth.dni && id===String(state.auth.dni).toLowerCase()))
+    return { rol:'admin', email: adminEmail, hash: state.auth.passwordHash, activo: true, set: h=>{ state.auth.passwordHash = h; } };
+  const a = (state.asesores||[]).find(x=>x.usuario && String(x.usuario).toLowerCase()===id);
+  if(a) return { rol:'asesor', email: String(a.usuario).includes('@') ? String(a.usuario).toLowerCase() : '', hash: a.passwordHash, activo: a.accesoActivo!==false, set: h=>{ a.passwordHash = h; } };
+  const e = (state.ejecutivas||[]).find(x=>x.usuario && String(x.usuario).toLowerCase()===id);
+  if(e) return { rol:'ejecutiva', email: String(e.usuario).includes('@') ? String(e.usuario).toLowerCase() : '', hash: e.passwordHash, activo: e.activo!==false, set: h=>{ e.passwordHash = h; } };
+  return null;
+}
+// Con los datos ya cargados de la nube, decide el rol del correo que inició sesión
+function sesionPorCorreo(email){
+  email = String(email||'').toLowerCase();
+  if(state.auth && email===String(state.auth.email||'').toLowerCase()) return { rol:'admin' };
+  const a = (state.asesores||[]).find(x=>x.usuario && String(x.usuario).toLowerCase()===email && x.accesoActivo!==false);
+  if(a) return { rol:'asesor', asesorId: a.id, nombre: a.nombre };
+  const e = (state.ejecutivas||[]).find(x=>x.usuario && String(x.usuario).toLowerCase()===email && x.activo!==false);
+  if(e) return { rol:'ejecutiva', ejecutivaId: e.id, nombre: e.nombre };
+  return null;
+}
+async function completarIngreso(email, errEl){
+  await load({ sinRender:true });  // datos frescos de la nube, ya con usuario autenticado
+  const s = sesionPorCorreo(email);
+  if(!s){
+    if(fbAuth) await fbAuth.signOut().catch(()=>{});
+    errEl.innerHTML = `<div class="login-error">Tu cuenta no tiene acceso a este CRM o está desactivada. Consulta con el administrador.</div>`;
+    return;
+  }
+  sesionUsuario = s;
+  sesionIniciada = true;
+  guardarMapaDni();
+  checkAuthAndRender();
+}
+function pedirNuevaClave(email, cuenta, errEl){
+  errEl.innerHTML = `<div class="login-error" style="background:#FFF8E5;color:#6B4E00;border-color:#EBD9A6;">
+      Por seguridad, tu contraseña debe tener <b>al menos 6 caracteres</b>. Crea una nueva:
+      <input type="password" id="lNueva1" placeholder="Nueva contraseña" style="width:100%;margin-top:8px;">
+      <input type="password" id="lNueva2" placeholder="Repite la nueva contraseña" style="width:100%;margin-top:6px;">
+      <button class="btn btn-primary" id="btnNuevaClave" style="width:100%;margin-top:8px;">Guardar e ingresar</button>
+      <div id="lNuevaErr" style="margin-top:6px;"></div>
+    </div>`;
+  document.getElementById('btnNuevaClave').onclick = async () => {
+    const n1 = document.getElementById('lNueva1').value, n2 = document.getElementById('lNueva2').value;
+    const err2 = document.getElementById('lNuevaErr');
+    if(n1.length<6){ err2.textContent = 'Debe tener al menos 6 caracteres.'; return; }
+    if(n1!==n2){ err2.textContent = 'Las contraseñas no coinciden.'; return; }
+    try{
+      await fbAuth.createUserWithEmailAndPassword(email, n1);
+      cuenta.set(hashSimple(n1));
+      await save(true);
+      await completarIngreso(email, errEl);
+    }catch(e){ err2.textContent = 'No se pudo crear el acceso: ' + (e.code||e.message); }
+  };
+}
+async function ingresarConFirebase(idTexto, pass, errEl, btn){
+  const id = String(idTexto||'').trim().toLowerCase();
+  if(!id){ errEl.innerHTML = `<div class="login-error">Escribe tu correo o DNI.</div>`; return; }
+  const cuenta = buscarCuentaLegacy(id);
+  const email = id.includes('@') ? id : ((cuenta && cuenta.email) || leerMapaDni()[id] || '');
+  if(!email){
+    errEl.innerHTML = `<div class="login-error">${cuenta ? 'Tu usuario todavía no tiene un correo de acceso. Pide al administrador que registre tu correo.' : 'Ingresa con tu correo electrónico (el DNI solo funciona en dispositivos donde ya ingresaste antes).'}</div>`;
+    return;
+  }
+  if(!fbAuth){ errEl.innerHTML = `<div class="login-error">No hay conexión con el servicio de acceso. Revisa tu internet y vuelve a intentar.</div>`; return; }
+  const textoBtn = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Ingresando…'; }
+  try{
+    await fbAuth.signInWithEmailAndPassword(email, pass);
+    await completarIngreso(email, errEl);
+  }catch(err){
+    const code = err && err.code || '';
+    if(['auth/user-not-found','auth/invalid-credential','auth/invalid-login-credentials','auth/wrong-password'].includes(code)){
+      // ¿Aún no migrado? Validar con la contraseña anterior del CRM
+      const c = cuenta || buscarCuentaLegacy(email);
+      if(c && c.activo && c.hash && hashSimple(pass)===c.hash){
+        if(pass.length<6){ pedirNuevaClave(email, c, errEl); }
+        else{
+          try{ await fbAuth.createUserWithEmailAndPassword(email, pass); await completarIngreso(email, errEl); }
+          catch(e2){
+            errEl.innerHTML = `<div class="login-error">${e2.code==='auth/email-already-in-use' ? 'Contraseña incorrecta. Si la cambiaste o no la recuerdas, usa "¿Olvidaste tu contraseña?".' : 'No se pudo crear tu acceso: ' + (e2.code||e2.message)}</div>`;
+          }
+        }
+      } else {
+        errEl.innerHTML = `<div class="login-error">Correo/DNI o contraseña incorrectos.</div>`;
+      }
+    } else if(['auth/operation-not-allowed','auth/configuration-not-found','auth/admin-restricted-operation'].includes(code)){
+      // El acceso con correo aún no está activado en Firebase: se permite el ingreso anterior para no bloquear a nadie
+      const c = cuenta || buscarCuentaLegacy(email);
+      if(c && c.activo && c.hash && hashSimple(pass)===c.hash){
+        const s = sesionPorCorreo(email);
+        if(s){ sesionUsuario = s; sesionIniciada = true; guardarMapaDni(); checkAuthAndRender(); }
+        else errEl.innerHTML = `<div class="login-error">Tu cuenta no tiene acceso a este CRM o está desactivada.</div>`;
+      } else {
+        errEl.innerHTML = `<div class="login-error">Correo/DNI o contraseña incorrectos.</div>`;
+      }
+    } else if(code==='auth/too-many-requests'){
+      errEl.innerHTML = `<div class="login-error">Demasiados intentos fallidos. Espera unos minutos o usa "¿Olvidaste tu contraseña?".</div>`;
+    } else if(code==='auth/network-request-failed'){
+      errEl.innerHTML = `<div class="login-error">Sin conexión a internet. Revisa tu conexión y vuelve a intentar.</div>`;
+    } else {
+      errEl.innerHTML = `<div class="login-error">No se pudo ingresar: ${code || (err && err.message) || 'error desconocido'}</div>`;
+    }
+  }finally{
+    if(btn && document.body.contains(btn)){ btn.disabled = false; btn.textContent = textoBtn; }
+  }
 }
 
 function render(){
@@ -1434,7 +1555,7 @@ function wireCommon(){
   const btnSalirVista = document.getElementById('btnSalirVistaComo'); if(btnSalirVista) btnSalirVista.onclick = () => { vistaComo = null; tab = 'dashboard'; render(); };
   const btnTema = document.getElementById('btnToggleTema'); if(btnTema) btnTema.onclick = toggleTema;
   const btnAvisos = document.getElementById('btnActivarAvisos'); if(btnAvisos) btnAvisos.onclick = activarAvisosNavegador;
-  const btnSalir = document.getElementById('btnCerrarSesion'); if(btnSalir) btnSalir.onclick = () => { sesionIniciada = false; sesionUsuario = null; vistaComo = null; checkAuthAndRender(); };
+  const btnSalir = document.getElementById('btnCerrarSesion'); if(btnSalir) btnSalir.onclick = () => { sesionIniciada = false; sesionUsuario = null; vistaComo = null; if(fbAuth) fbAuth.signOut().catch(()=>{}); checkAuthAndRender(); };
   const btnDescargar = document.getElementById('btnDescargarRespaldo'); if(btnDescargar) btnDescargar.onclick = descargarRespaldo;
   const btnVerAuto = document.getElementById('btnVerRespaldosAuto'); if(btnVerAuto) btnVerAuto.onclick = abrirRespaldosAutomaticos;
   const btnVerPapelera = document.getElementById('btnVerPapelera'); if(btnVerPapelera) btnVerPapelera.onclick = abrirPapelera;
@@ -6564,6 +6685,8 @@ function wireModal(){
       if(!data.nombre){ alert('Escribe el nombre del asesor.'); return; }
       const usuario = document.getElementById('mUsuario').value.trim();
       const clave = document.getElementById('mClaveAsesor').value;
+      if(usuario && !usuario.includes('@')){ alert('El acceso debe ser un correo electrónico (el CRM usa el inicio de sesión de Firebase).'); return; }
+      if(clave && clave.length<6){ alert('La contraseña debe tener al menos 6 caracteres.'); return; }
       if(usuario && !clave && !(editing.id && state.asesores.find(a=>a.id===editing.id)?.passwordHash)){ alert('Escribe una contraseña para crear el acceso.'); return; }
       if(usuario){
         const yaUsado = state.asesores.find(a=>a.usuario && a.usuario.toLowerCase()===usuario.toLowerCase() && a.id!==editing.id);
@@ -6584,7 +6707,9 @@ function wireModal(){
       if(!nombre){ alert('Escribe el nombre de la ejecutiva.'); return; }
       const usuario = document.getElementById('mUsuarioEjecutiva').value.trim();
       if(!usuario){ alert('Escribe el correo de acceso.'); return; }
+      if(!usuario.includes('@')){ alert('El acceso debe ser un correo electrónico (el CRM usa el inicio de sesión de Firebase).'); return; }
       const clave = document.getElementById('mClaveEjecutiva').value;
+      if(clave && clave.length<6){ alert('La contraseña debe tener al menos 6 caracteres.'); return; }
       const existente = editing.id ? state.ejecutivas.find(e=>e.id===editing.id) : null;
       if(!clave && !(existente && existente.passwordHash)){ alert('Escribe una contraseña para crear el acceso.'); return; }
       const yaUsado = state.asesores.find(a=>a.usuario && a.usuario.toLowerCase()===usuario.toLowerCase())
@@ -6727,6 +6852,12 @@ function configurarPWA(){
   }catch(e){ console.error('No se pudo preparar el modo app', e); }
 }
 configurarPWA();
-load();
+(function arrancar(){
+  if(!fbAuth){ load(); return; }
+  let arrancado = false;
+  const iniciar = () => { if(arrancado) return; arrancado = true; load(); };
+  fbAuth.onAuthStateChanged(iniciar);
+  setTimeout(iniciar, 5000);
+})();
 })();
 </script>
