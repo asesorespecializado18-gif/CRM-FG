@@ -252,6 +252,7 @@ const FB_SINIESTROS_COL = () => fbDb.collection('crm_siniestros');
 const FB_FILES_COL = () => fbDb.collection('crm_archivos');
 const FB_ARCHIVO_REF = () => fbDb.collection('crm_historico').doc('ventas_archivadas');
 const FB_RESPALDOS_COL = () => fbDb.collection('crm_respaldos_automaticos');
+const FB_CONTADORES_REF = () => fbDb.collection('crm').doc('contadores'); // folios: contador único compartido por todos los usuarios
 function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
 async function archivarVentasAntiguas(){
   const hace24Meses = new Date(); hace24Meses.setMonth(hace24Meses.getMonth()-24);
@@ -924,6 +925,16 @@ async function load(opts){
           state.asesores = asesoresSnap.docs.map(d=>d.data());
           state.siniestros = siniestrosSnap.docs.map(d=>d.data());
           aplicarMigracionesState();
+          try{
+            const cont = await FB_CONTADORES_REF().get();
+            if(cont.exists){
+              state.folioVenta = Math.max(Number(state.folioVenta)||0, Number(cont.data().venta)||0);
+              state.folioSiniestro = Math.max(Number(state.folioSiniestro)||0, Number(cont.data().siniestro)||0);
+            }
+          }catch(e){ console.warn('No se pudo leer el contador de folios', e); }
+          // nunca por debajo del folio más alto existente
+          state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
+          state.folioSiniestro = Math.max(Number(state.folioSiniestro)||0, ...state.siniestros.map(x=>Number(x.folio)||0));
           snapshotGuardado();
           cargadoDeNube = true;
           actualizarIndicadorNube('ok');
@@ -1028,6 +1039,57 @@ let saveTimer=null;
 // - "ultimoGuardado" solo se actualiza con lo que REALMENTE se envió (antes se tomaba una foto del estado
 //   completo al terminar, y los cambios hechos durante la subida quedaban marcados como guardados sin
 //   haberse enviado: al recargar la página se perdían).
+// ---- Folios seguros ----
+// Cada venta/siniestro nuevo reserva su número en un contador compartido (transacción de Firestore).
+// Si otro usuario ya usó ese número, se le asigna el siguiente libre. Así dos personas trabajando
+// a la vez nunca obtienen el mismo folio.
+async function reservarFoliosNuevos(){
+  const prevV = ultimoGuardado.ventas || {}, prevS = ultimoGuardado.siniestros || {};
+  const nuevasV = state.ventas.filter(v=>!prevV[v.id]).sort((a,b)=>(a.folio||0)-(b.folio||0));
+  const nuevosS = state.siniestros.filter(x=>!prevS[x.id]).sort((a,b)=>(a.folio||0)-(b.folio||0));
+  if(!nuevasV.length && !nuevosS.length) return [];
+  const maxDe = (lista, filtro) => lista.filter(filtro).reduce((m,x)=>Math.max(m, Number(x.folio)||0), 0);
+  const maxGuardadoV = maxDe(state.ventas, v=>prevV[v.id]);
+  const maxGuardadoS = maxDe(state.siniestros, x=>prevS[x.id]);
+  let asignaciones = [];
+  let finalV = 0, finalS = 0;
+  await fbDb.runTransaction(async tx => {
+    const snap = await tx.get(FB_CONTADORES_REF());
+    const d = snap.exists ? snap.data() : {};
+    let cV = Math.max(Number(d.venta)||0, snap.exists ? 0 : maxGuardadoV);
+    let cS = Math.max(Number(d.siniestro)||0, snap.exists ? 0 : maxGuardadoS);
+    asignaciones = [];
+    const asignar = (lista, todos, contador, tipo) => {
+      let c = contador;
+      lista.forEach(item=>{
+        const f = Number(item.folio)||0;
+        const repetido = todos.some(o=>o!==item && Number(o.folio)===f);
+        if(f > c && !repetido){ c = f; }
+        else { c = c + 1; asignaciones.push({ tipo, item, anterior: f, nuevo: c }); }
+      });
+      return c;
+    };
+    cV = asignar(nuevasV, state.ventas, cV, 'venta');
+    cS = asignar(nuevosS, state.siniestros, cS, 'siniestro');
+    finalV = cV; finalS = cS;
+    tx.set(FB_CONTADORES_REF(), { venta: cV, siniestro: cS, actualizado: new Date().toISOString() }, { merge: true });
+  });
+  asignaciones.forEach(a=>{ a.item.folio = a.nuevo; });
+  state.folioVenta = Math.max(Number(state.folioVenta)||0, finalV);
+  state.folioSiniestro = Math.max(Number(state.folioSiniestro)||0, finalS);
+  return asignaciones;
+}
+function avisarFoliosReasignados(asignaciones){
+  if(!asignaciones || !asignaciones.length) return;
+  const txt = asignaciones.map(a=> a.tipo==='venta' ? `${folioV(a.anterior)} → ${folioV(a.nuevo)}` : `Siniestro ${a.anterior} → ${a.nuevo}`).join(', ');
+  console.warn('Folios reasignados porque otro usuario ya los había usado:', txt);
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1F4B41;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;z-index:9999;max-width:90vw;box-shadow:0 4px 16px rgba(0,0,0,.2);';
+  host.textContent = `Otro usuario registró al mismo tiempo. Folio actualizado: ${txt}`;
+  document.body.appendChild(host);
+  setTimeout(()=>host.remove(), 8000);
+  if(!document.querySelector('.modal-backdrop')) render();
+}
 let guardadoEnCurso = false;
 let guardadoPendiente = false;
 function save(inmediato){
@@ -1049,6 +1111,13 @@ function save(inmediato){
       }catch(e){ console.error('No se pudo guardar localmente', e); }
       if(!fbDb) return;
       try{
+        let reasignados = [];
+        try{ reasignados = await reservarFoliosNuevos(); }
+        catch(e){ console.error('No se pudo reservar el folio en la nube; se usa el folio local', e); }
+        if(reasignados.length){
+          try{ localStorage.setItem('crm-data', JSON.stringify(state)); }catch(e){}
+          setTimeout(()=>avisarFoliosReasignados(reasignados), 0);
+        }
         const colecciones = [
           { clave:'clientes', col: FB_CLIENTES_COL(), items: state.clientes },
           { clave:'ventas', col: FB_VENTAS_COL(), items: state.ventas },
