@@ -252,6 +252,8 @@ const FB_SINIESTROS_COL = () => fbDb.collection('crm_siniestros');
 const FB_FILES_COL = () => fbDb.collection('crm_archivos');
 const FB_ARCHIVO_REF = () => fbDb.collection('crm_historico').doc('ventas_archivadas');
 const FB_RESPALDOS_COL = () => fbDb.collection('crm_respaldos_automaticos');
+const FB_AUDITORIA_COL = () => fbDb.collection('crm_auditoria'); // historial de cambios: un registro por acción
+const FB_PAPELERA_COL = () => fbDb.collection('crm_papelera');   // papelera: un registro por elemento eliminado
 const FB_CONTADORES_REF = () => fbDb.collection('crm').doc('contadores'); // folios: contador único compartido por todos los usuarios
 function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
 async function archivarVentasAntiguas(){
@@ -516,13 +518,26 @@ function esAsesorSesion(){ const s = sesionEfectiva(); return !!(s && s.rol==='a
 function esEjecutivaSesion(){ const s = sesionEfectiva(); return !!(s && s.rol==='ejecutiva'); }
 function puedeDescargar(){ return !esEjecutivaSesion(); }
 function puedeVerFinanzasFG(){ return !esAsesorSesion() && !esEjecutivaSesion(); }
+function asegurarIdsHistorial(){
+  if(!Array.isArray(state.auditoria)) state.auditoria = [];
+  if(!Array.isArray(state.papelera)) state.papelera = [];
+  // id determinístico para registros antiguos: si dos dispositivos migran a la vez, no se duplican
+  const idDe = o => { const t = JSON.stringify(o); let h = 5381; for(let i=0;i<t.length;i++){ h = ((h<<5)+h + t.charCodeAt(i))|0; } return 'h' + (h>>>0).toString(36); };
+  state.auditoria.forEach(a=>{ if(!a.id) a.id = idDe(a); });
+  state.papelera.forEach(p=>{ if(!p.id) p.id = idDe(p); });
+}
+function ordenarHistorial(){
+  state.auditoria.sort((a,b)=> String(b.fecha||'').localeCompare(String(a.fecha||'')));
+  state.papelera.sort((a,b)=> String(b.eliminadoFecha||'').localeCompare(String(a.eliminadoFecha||'')));
+}
 function registrarAuditoria(accion, entidad, entidadId, descripcion){
   if(!state.auditoria) state.auditoria = [];
   const sesion = sesionEfectiva();
   const autor = sesion ? (sesion.nombre || (sesion.rol==='admin'?'Administrador':sesion.rol)) : 'Administrador';
   const rol = sesion ? sesion.rol : 'admin';
-  state.auditoria.unshift({ fecha: new Date().toISOString(), autor, rol, accion, entidad, entidadId, descripcion });
-  if(state.auditoria.length>500) state.auditoria.length = 500;
+  state.auditoria.unshift({ id: uid(), fecha: new Date().toISOString(), autor, rol, accion, entidad, entidadId, descripcion });
+  // ahora el historial vive en su propia colección (ya no ocupa el documento principal): se conservan las últimas 3000 acciones
+  if(state.auditoria.length>3000) state.auditoria.length = 3000;
 }
 // La papelera vive dentro del documento principal de la nube (máx. 1 MB), así que nunca debe guardar
 // archivos incrustados: el campo antiguo "polizaPDFData" (PDF en base64) se quita al enviar a la papelera.
@@ -900,10 +915,12 @@ function snapshotGuardado(){
     ventas: Object.fromEntries(state.ventas.map(v=>[v.id, JSON.stringify(v)])),
     asesores: Object.fromEntries(state.asesores.map(a=>[a.id, JSON.stringify(a)])),
     siniestros: Object.fromEntries(state.siniestros.map(s=>[s.id, JSON.stringify(s)])),
+    auditoria: Object.fromEntries((state.auditoria||[]).map(a=>[a.id, JSON.stringify(a)])),
+    papelera: Object.fromEntries((state.papelera||[]).map(p=>[p.id, JSON.stringify(p)])),
   };
 }
 function coreState(){
-  const { clientes, ventas, asesores, siniestros, ...resto } = state;
+  const { clientes, ventas, asesores, siniestros, auditoria, papelera, ...resto } = state;
   return resto;
 }
 async function load(opts){
@@ -924,7 +941,20 @@ async function load(opts){
           state.ventas = ventasSnap.docs.map(d=>d.data());
           state.asesores = asesoresSnap.docs.map(d=>d.data());
           state.siniestros = siniestrosSnap.docs.map(d=>d.data());
+          // Historial y papelera: antes vivían dentro del documento principal; ahora tienen colección propia
+          let migrarHistorial = false;
+          try{
+            const [audSnap, papSnap] = await Promise.all([FB_AUDITORIA_COL().get(), FB_PAPELERA_COL().get()]);
+            if(audSnap.empty && papSnap.empty && ((core.auditoria||[]).length || (core.papelera||[]).length)){
+              migrarHistorial = true; // primera vez: se toman del documento principal y se suben a sus colecciones
+            } else {
+              state.auditoria = audSnap.docs.map(d=>d.data());
+              state.papelera = papSnap.docs.map(d=>d.data());
+            }
+          }catch(e){ console.warn('No se pudo leer historial/papelera', e); }
           aplicarMigracionesState();
+          asegurarIdsHistorial();
+          ordenarHistorial();
           try{
             const cont = await FB_CONTADORES_REF().get();
             if(cont.exists){
@@ -936,6 +966,7 @@ async function load(opts){
           state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
           state.folioSiniestro = Math.max(Number(state.folioSiniestro)||0, ...state.siniestros.map(x=>Number(x.folio)||0));
           snapshotGuardado();
+          if(migrarHistorial){ ultimoGuardado.auditoria = {}; ultimoGuardado.papelera = {}; setTimeout(()=>save(), 1500); }
           coreGuardado = JSON.stringify(coreState());
           cargadoDeNube = true;
           actualizarIndicadorNube('ok');
@@ -1033,6 +1064,7 @@ function aplicarMigracionesState(){
   state.ventas.forEach(v=>{ if(!v.id) v.id = uid(); });
   state.asesores.forEach(a=>{ if(!a.id) a.id = uid(); });
   state.siniestros.forEach(s=>{ if(!s.id) s.id = uid(); });
+  asegurarIdsHistorial();
 }
 let saveTimer=null;
 // Control de concurrencia del guardado en la nube:
@@ -1133,6 +1165,7 @@ function aplicarCambiosColeccion(clave, snap){
   let hubo = false;
   snap.docChanges().forEach(ch=>{
     const id = ch.doc.id;
+    if(!Array.isArray(state[clave])) state[clave] = [];
     const lista = state[clave];
     const idx = lista.findIndex(x=>x.id===id);
     const local = idx>=0 ? lista[idx] : null;
@@ -1150,7 +1183,10 @@ function aplicarCambiosColeccion(clave, snap){
     prev[id] = JSON.stringify(remoto);
     hubo = true;
   });
-  if(hubo){ cambiosRemotosContador++; pedirRenderRemoto(); }
+  if(hubo){
+    if(clave==='auditoria' || clave==='papelera') ordenarHistorial();
+    cambiosRemotosContador++; pedirRenderRemoto();
+  }
 }
 function aplicarCambioCore(snap){
   if(snap.metadata.hasPendingWrites || !snap.exists) return;
@@ -1158,9 +1194,10 @@ function aplicarCambioCore(snap){
   if(!remoto) return;
   const actual = JSON.stringify(coreState());
   if(coreGuardado!==null && actual!==coreGuardado) return; // hay cambios locales sin subir
-  if(jsonEstable(JSON.parse(actual))===jsonEstable(remoto)) return;
+  const { auditoria: _a, papelera: _p, ...remotoSinHistorial } = remoto;
+  if(jsonEstable(JSON.parse(actual))===jsonEstable(remotoSinHistorial)) return;
   const temaLocal = state.tema;
-  Object.keys(remoto).forEach(k=>{ state[k] = remoto[k]; });
+  Object.keys(remoto).forEach(k=>{ if(k!=='auditoria' && k!=='papelera') state[k] = remoto[k]; }); // esos dos tienen colección propia
   state.tema = temaLocal; // el tema claro/oscuro es preferencia de cada dispositivo
   aplicarMigracionesState();
   state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
@@ -1176,6 +1213,8 @@ function iniciarSincronizacion(){
     FB_VENTAS_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('ventas', s), err),
     FB_ASESORES_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('asesores', s), err),
     FB_SINIESTROS_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('siniestros', s), err),
+    FB_AUDITORIA_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('auditoria', s), err),
+    FB_PAPELERA_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('papelera', s), err),
     FB_DOC_REF().onSnapshot({ includeMetadataChanges:false }, aplicarCambioCore, err),
   ];
 }
@@ -1224,6 +1263,7 @@ function save(inmediato){
       }catch(e){ console.error('No se pudo guardar localmente', e); }
       if(!fbDb) return;
       try{
+        asegurarIdsHistorial();
         let reasignados = [];
         try{ reasignados = await reservarFoliosNuevos(); }
         catch(e){ console.error('No se pudo reservar el folio en la nube; se usa el folio local', e); }
@@ -1236,6 +1276,8 @@ function save(inmediato){
           { clave:'ventas', col: FB_VENTAS_COL(), items: state.ventas },
           { clave:'asesores', col: FB_ASESORES_COL(), items: state.asesores },
           { clave:'siniestros', col: FB_SINIESTROS_COL(), items: state.siniestros },
+          { clave:'auditoria', col: FB_AUDITORIA_COL(), items: state.auditoria||[] },
+          { clave:'papelera', col: FB_PAPELERA_COL(), items: state.papelera||[] },
         ];
         const operaciones = [];
         colecciones.forEach(({clave, col, items})=>{
@@ -1868,6 +1910,7 @@ function tamanoDatosInfo(){
 function aplicarRespaldoDesdeDatos(data){
   if(!data || !Array.isArray(data.ventas) || !Array.isArray(data.clientes)){ alert('El archivo no tiene el formato de un respaldo de este CRM.'); return false; }
   state = data;
+  asegurarIdsHistorial();
   if(!state.tema) state.tema = 'claro';
   if(!state.auth) state.auth = { email:'asesorespecializado18@gmail.com', passwordHash:null };
   save();
