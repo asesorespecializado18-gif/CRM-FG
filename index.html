@@ -182,6 +182,7 @@
     <button class="nav-btn" data-tab="soat"><span class="nav-icon">🚗</span>SOAT y Beneficios</button>
     <div class="nav-group-label">Comisiones</div>
     <button class="nav-btn" data-tab="cobro_comisiones"><span class="nav-icon">④</span>Comisiones</button>
+      <button class="nav-btn" data-tab="alto_valor"><span class="nav-icon">⭐</span>Clientes de alto valor</button>
     <button class="nav-btn" data-tab="pago_comisiones"><span class="nav-icon">⑤</span>Pago de comisiones</button>
     <button class="nav-btn" data-tab="facturacion"><span class="nav-icon">🧾</span>Facturación (IGV)</button>
     <div class="nav-group-label">Directorio</div>
@@ -1383,7 +1384,7 @@ function checkAuthAndRender(){
     renderLogin();
   } else {
     if(sidebar) sidebar.style.display = '';
-    if(esAsesorSesion() && (tab==='dashboard' || tab==='asesores' || tab==='cobro_comisiones' || tab==='pago_comisiones' || tab==='facturacion' || tab==='soat')) tab = 'ventas_seguros';
+    if(esAsesorSesion() && (tab==='dashboard' || tab==='asesores' || tab==='cobro_comisiones' || tab==='pago_comisiones' || tab==='facturacion' || tab==='alto_valor' || tab==='soat')) tab = 'ventas_seguros';
     aplicarVisibilidadNav();
     render();
     if(!esAsesorSesion()) mostrarAvisoNavegador();
@@ -1394,7 +1395,7 @@ function checkAuthAndRender(){
 }
 
 function aplicarVisibilidadNav(){
-  const soloAdmin = document.querySelectorAll('#crm-app .nav-btn[data-tab="dashboard"], #crm-app .nav-btn[data-tab="asesores"], #crm-app .nav-btn[data-tab="cobro_comisiones"], #crm-app .nav-btn[data-tab="pago_comisiones"], #crm-app .nav-btn[data-tab="facturacion"]');
+  const soloAdmin = document.querySelectorAll('#crm-app .nav-btn[data-tab="dashboard"], #crm-app .nav-btn[data-tab="asesores"], #crm-app .nav-btn[data-tab="cobro_comisiones"], #crm-app .nav-btn[data-tab="pago_comisiones"], #crm-app .nav-btn[data-tab="facturacion"], #crm-app .nav-btn[data-tab="alto_valor"]');
   soloAdmin.forEach(b=> b.style.display = (esAsesorSesion()||esEjecutivaSesion()) ? 'none' : '');
   const navSoat = document.querySelector('#crm-app .nav-btn[data-tab="soat"]'); if(navSoat) navSoat.style.display = esAsesorSesion() ? 'none' : '';
   const navInicio = document.getElementById('navInicioEjecutiva'); if(navInicio) navInicio.style.display = esEjecutivaSesion() ? '' : 'none';
@@ -1610,7 +1611,7 @@ async function ingresarConFirebase(idTexto, pass, errEl, btn){
 
 function render(){
   applyTheme();
-  const TABS_SOLO_ADMIN = ['dashboard','asesores','cobro_comisiones','pago_comisiones','facturacion'];
+  const TABS_SOLO_ADMIN = ['dashboard','asesores','cobro_comisiones','pago_comisiones','facturacion','alto_valor'];
   if(esEjecutivaSesion() && TABS_SOLO_ADMIN.includes(tab)) tab = 'inicio_ejecutiva';
   else if(esAsesorSesion() && (TABS_SOLO_ADMIN.includes(tab) || tab==='soat')) tab = 'clientes';
   document.querySelectorAll('#crm-app .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===tab || (b.dataset.tab==='ventas_seguros' && tab==='ventas_oncologicos')));
@@ -1621,6 +1622,7 @@ function render(){
   else if(tab==='cobro_comisiones') el.innerHTML = viewCobroComisiones();
   else if(tab==='pago_comisiones') el.innerHTML = viewPagoComisiones();
   else if(tab==='facturacion') el.innerHTML = viewFacturacion();
+  else if(tab==='alto_valor') el.innerHTML = viewAltoValor();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
   else if(tab==='cobranzas') el.innerHTML = viewCobranzas();
   else if(tab==='soat') el.innerHTML = viewSoat();
@@ -5555,6 +5557,152 @@ function wireAsesores(){
   });
 }
 
+// ================= CLIENTES DE ALTO VALOR =================
+// Ranking de clientes por la comisión FG que realmente cobraste (pagos de Alta / cobros registrados),
+// clasificados A / B / C con la regla 80/20: A = los que suman el primer 50% de tu comisión, B = hasta el 80%, C = el resto.
+let filtroAVPeriodo = '12m', filtroAVCategoria = 'todas', filtroAVBusqueda = '';
+const PERIODOS_AV = { '12m':'Últimos 12 meses', 'anio':'Este año', 'todo':'Todo el historial' };
+function rangoPeriodoAV(periodo){
+  const hoy = todayISO();
+  if(periodo==='anio') return { desde: hoy.slice(0,4)+'-01-01', hasta: hoy };
+  if(periodo==='todo') return { desde: '0000-01-01', hasta: '9999-12-31' };
+  const d = new Date(); d.setFullYear(d.getFullYear()-1);
+  return { desde: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`, hasta: hoy };
+}
+// Comisión FG cobrada por una venta dentro del periodo, en soles y en dólares
+function cobradoVentaEnPeriodo(v, desde, hasta){
+  const r = { PEN:0, USD:0, ultimo:'' };
+  const pagos = pagosDe(v);
+  if(pagos.length){
+    pagos.forEach(p=>{
+      const f = p.fecha||'';
+      if(f>=desde && f<=hasta){ r[(p.moneda||v.moneda)==='USD'?'USD':'PEN'] += Number(p.monto)||0; }
+      if((Number(p.monto)||0)>0 && f>r.ultimo) r.ultimo = f;
+    });
+  } else if(v.estadoCobroFG==='cobrado'){
+    const f = v.fechaCobroFG || v.fechaVenta || '';
+    if(f>=desde && f<=hasta) r[v.moneda==='USD'?'USD':'PEN'] += comisionFG(v);
+    r.ultimo = f;
+  }
+  return r;
+}
+function polizaVigente(v, hoy){
+  if(v.vigenciaFin) return v.vigenciaFin >= hoy;
+  if(!v.fechaVenta) return false;
+  return daysUntil(v.fechaVenta) > -365; // sin fin de vigencia: se asume anual
+}
+function rankingClientesValor(periodo){
+  const { desde, hasta } = rangoPeriodoAV(periodo);
+  const hoy = todayISO();
+  const tc = Number(state.tipoCambio)||3.75;
+  const porCliente = {};
+  misVentas(state.ventas).filter(v=> ventaActiva(v) && v.clienteId).forEach(v=>{
+    const a = porCliente[v.clienteId] = porCliente[v.clienteId] || { clienteId: v.clienteId, PEN:0, USD:0, ventas:[], ultimo:'' };
+    const c = cobradoVentaEnPeriodo(v, desde, hasta);
+    a.PEN += c.PEN; a.USD += c.USD; a.ventas.push(v);
+    if(c.ultimo > a.ultimo) a.ultimo = c.ultimo;
+  });
+  let filas = Object.values(porCliente).map(a=>{
+    const cli = state.clientes.find(c=>c.id===a.clienteId) || { nombre:'—' };
+    const activas = a.ventas.filter(v=> polizaVigente(v, hoy));
+    const productos = Array.from(new Set(activas.map(v=>v.tipoProducto)));
+    const todosProductos = new Set(a.ventas.map(v=>v.tipoProducto));
+    const aseguradoras = Array.from(new Set(activas.map(v=>(v.aseguradora||'').replace(/\s+(Seguros|Security|Perú|Peru)\b/gi,'').trim()).filter(Boolean)));
+    const proximos = activas.map(v=>v.vigenciaFin).filter(Boolean).sort();
+    const proximo = proximos[0] || '';
+    const alertas = [];
+    if(proximo){ const d = daysUntil(proximo); if(d<=60) alertas.push({ tipo:'gold', txt:`Renueva en ${d} día(s)`, tip:`Una póliza vence el ${fmtDate(proximo)}` }); }
+    // pólizas vencidas en los últimos 90 días sin otra vigente del mismo producto
+    const vencidas = a.ventas.filter(v=> v.vigenciaFin && v.vigenciaFin < hoy && daysUntil(v.vigenciaFin) >= -90 && !activas.some(x=>x.tipoProducto===v.tipoProducto));
+    if(vencidas.length) alertas.push({ tipo:'red', txt:'⚠ Póliza vencida', tip:`Vencida sin renovar: ${vencidas.map(v=>prodLabel(v.tipoProducto)+' '+fmtDate(v.vigenciaFin)).join(', ')}` });
+    // solo para pólizas que pagan comisión todos los meses (SCTR, Vida Ley, EPS, desgravamen…); el SOAT y el vehicular pagan una vez al año
+    const RECURRENTES = ['sctr_salud','sctr_pension','vida_ley','eps','salud','desgravamen'];
+    const ultimoRecurrente = a.ventas.filter(v=> RECURRENTES.includes(v.tipoProducto)).reduce((u,v)=>{ const c = cobradoVentaEnPeriodo(v,'0000-01-01','9999-12-31'); return c.ultimo>u ? c.ultimo : u; }, '');
+    if(ultimoRecurrente && daysUntil(ultimoRecurrente) < -120 && activas.some(v=> RECURRENTES.includes(v.tipoProducto))) alertas.push({ tipo:'red', txt:`Sin comisión hace ${-daysUntil(ultimoRecurrente)} días`, tip:'Tiene SCTR / Vida Ley u otra póliza mensual vigente pero no llega comisión: revisa con Alta' });
+    // oportunidades de venta cruzada
+    const oportunidades = [];
+    const tieneSCTR = todosProductos.has('sctr_salud') || todosProductos.has('sctr_pension');
+    if(tieneSCTR && !todosProductos.has('vida_ley')) oportunidades.push('Vida Ley');
+    if(todosProductos.has('vida_ley') && !tieneSCTR) oportunidades.push('SCTR');
+    if(todosProductos.has('seguros_vehiculares') && !todosProductos.has('soat')) oportunidades.push('SOAT');
+    if((cli.tipoDocumento==='RUC' || String(cli.documento||'').length===11) && todosProductos.has('seguros_vehiculares') && !tieneSCTR) oportunidades.push('SCTR');
+    return { cli, PEN: a.PEN, USD: a.USD, total: a.PEN + a.USD*tc, activas: activas.length, productos, aseguradoras, ultimo: a.ultimo, proximo, alertas, oportunidades: Array.from(new Set(oportunidades)) };
+  }).filter(f=> f.total > 0.005);
+  filas.sort((x,y)=> y.total - x.total);
+  const total = filas.reduce((s,f)=>s+f.total,0);
+  let acum = 0;
+  filas.forEach((f,i)=>{
+    const antes = acum;
+    acum += f.total;
+    f.rank = i+1; f.pct = total ? f.total/total : 0; f.pctAcum = total ? acum/total : 0;
+    f.cat = (antes/total) < 0.5 ? 'A' : (antes/total) < 0.8 ? 'B' : 'C';
+  });
+  return { filas, total, desde, hasta, tc };
+}
+function viewAltoValor(){
+  const { filas, total, tc } = rankingClientesValor(filtroAVPeriodo);
+  const resumenCat = cat=>{ const fs = filas.filter(f=>f.cat===cat); return { n: fs.length, total: fs.reduce((s,f)=>s+f.total,0) }; };
+  const A = resumenCat('A'), B = resumenCat('B'), C = resumenCat('C');
+  const conAlertas = filas.filter(f=> (f.cat==='A'||f.cat==='B') && f.alertas.length).length;
+  const q = filtroAVBusqueda.trim().toUpperCase();
+  const visibles = filas.filter(f=> (filtroAVCategoria==='todas' || f.cat===filtroAVCategoria || (filtroAVCategoria==='alertas' && (f.cat==='A'||f.cat==='B') && f.alertas.length)) && (!q || (f.cli.nombre||'').toUpperCase().includes(q)));
+  const pillCat = c=> c==='A' ? '<span class="pill pill-gold" title="Generan el primer 50% de tu comisión">A</span>' : c==='B' ? '<span class="pill pill-green" title="Junto con los A suman el 80% de tu comisión">B</span>' : '<span class="pill pill-gray">C</span>';
+  const pct = x=> (x*100).toFixed(1)+'%';
+  const tarjeta = (titulo, r, color, nota)=> `<div class="card" style="border-top:4px solid ${color};"><div class="hint" style="font-weight:600;">${titulo}</div><div style="font-size:24px;font-weight:700;margin:4px 0;">${r.n} <span style="font-size:13px;font-weight:500;">cliente(s)</span></div><div class="num">${fmtMoney(r.total)} · ${total?pct(r.total/total):'0%'} de tu comisión</div><div class="hint" style="margin-top:4px;">${nota}</div></div>`;
+  return `
+    <div class="page-head"><div><h1>⭐ Clientes de alto valor</h1><p>Tus clientes ordenados por la comisión FG que realmente cobraste (pagos de Alta y cobros registrados). Montos en dólares convertidos a soles a S/ ${tc}.</p></div>${puedeDescargar() ? '<button class="btn" id="btnExportAV">Exportar a Excel</button>' : ''}</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px;">
+      ${tarjeta('Categoría A — tus clientes clave', A, '#B8823D', 'Cuídalos: llamada o visita en cada renovación.')}
+      ${tarjeta('Categoría B — clientes importantes', B, '#2E7D5B', 'Con los A suman el 80% de tu comisión.')}
+      ${tarjeta('Categoría C — el resto', C, '#9AA5A0', 'Atiéndelos con mensajes y renovaciones automáticas.')}
+      <div class="card" style="border-top:4px solid #B8483A;"><div class="hint" style="font-weight:600;">Comisión cobrada · ${PERIODOS_AV[filtroAVPeriodo]}</div><div style="font-size:24px;font-weight:700;margin:4px 0;" class="num">${fmtMoney(total)}</div><div>${filas.length} cliente(s) con comisión</div><div class="hint" style="margin-top:4px;">${conAlertas ? `<a href="#" id="avVerAlertas" style="color:#B8483A;font-weight:600;">${conAlertas} cliente(s) A/B con alertas →</a>` : 'Sin alertas en tus clientes A y B.'}</div></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      ${Object.entries(PERIODOS_AV).map(([k,l])=>`<button class="btn ${filtroAVPeriodo===k?'btn-primary':'btn-ghost'} btn-sm" data-av-periodo="${k}">${l}</button>`).join('')}
+      <select id="avCategoria" style="margin-left:8px;">
+        <option value="todas" ${filtroAVCategoria==='todas'?'selected':''}>Todas las categorías</option>
+        <option value="A" ${filtroAVCategoria==='A'?'selected':''}>Solo A</option>
+        <option value="B" ${filtroAVCategoria==='B'?'selected':''}>Solo B</option>
+        <option value="C" ${filtroAVCategoria==='C'?'selected':''}>Solo C</option>
+        <option value="alertas" ${filtroAVCategoria==='alertas'?'selected':''}>A y B con alertas</option>
+      </select>
+      <input type="text" id="avBuscar" placeholder="Buscar cliente…" value="${filtroAVBusqueda.replace(/"/g,'&quot;')}" style="min-width:200px;">
+    </div>
+    <div class="card" style="padding:0;overflow:auto;">
+      <table>
+        <thead><tr><th>#</th><th>Cliente</th><th>Cat.</th><th style="text-align:right;">Comisión cobrada</th><th style="text-align:right;" title="Porcentaje de tu comisión total y, debajo, el acumulado">% del total</th><th title="Pólizas vigentes">Vigentes</th><th>Productos</th><th>Última comisión</th><th>Próx. vencimiento</th><th style="min-width:190px;">Alertas y oportunidades</th></tr></thead>
+        <tbody>${visibles.length ? visibles.map(f=>`<tr>
+          <td class="num">${f.rank}</td>
+          <td style="min-width:220px;">${f.cli.id?`<a href="#" data-ficha-cliente="${f.cli.id}" style="color:var(--primary);font-weight:600;">${f.cli.nombre}</a>`:f.cli.nombre}<div class="hint">${[f.cli.celular1||f.cli.telefono||'', f.aseguradoras.join(', ')].filter(Boolean).join(' · ')}</div></td>
+          <td>${pillCat(f.cat)}</td>
+          <td class="num" style="text-align:right;font-weight:600;">${fmtMoney(f.total)}${f.USD>0.005?`<div class="hint">${f.PEN>0.005?fmtMoney(f.PEN)+' + ':''}${fmtUSD(f.USD)}</div>`:''}</td>
+          <td class="num" style="text-align:right;">${pct(f.pct)}<div class="hint">acum. ${pct(f.pctAcum)}</div></td>
+          <td class="num" style="text-align:center;">${f.activas}</td>
+          <td style="font-size:12px;">${f.productos.map(prodLabel).join(', ')||'—'}</td>
+          <td>${f.ultimo?fmtDate(f.ultimo):'—'}</td>
+          <td>${f.proximo?fmtDate(f.proximo):'—'}</td>
+          <td style="line-height:1.9;">${f.alertas.map(a=>`<span class="pill pill-${a.tipo}" title="${a.tip.replace(/"/g,'&quot;')}">${a.txt}</span>`).join(' ')} ${f.oportunidades.map(o=>`<span class="pill pill-gray" title="No tiene ${o}: oportunidad de venta cruzada">💡 Ofrecer ${o}</span>`).join(' ')}</td>
+        </tr>`).join('') : '<tr class="empty-row"><td colspan="10">No hay clientes con comisión cobrada en este periodo.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="hint" style="margin-top:8px;">Cómo se clasifica: se ordenan los clientes de mayor a menor comisión cobrada. <b>A</b> son los primeros que juntos suman el 50% de tu comisión; <b>B</b>, los siguientes hasta llegar al 80%; <b>C</b>, el resto. Las alertas avisan renovaciones en los próximos 60 días, pólizas vencidas sin renovar y clientes con pólizas vigentes de los que no llega comisión hace más de 4 meses.</div>`;
+}
+function wireAltoValor(){
+  document.querySelectorAll('[data-av-periodo]').forEach(b=> b.onclick = ()=>{ filtroAVPeriodo = b.dataset.avPeriodo; render(); });
+  const sel = document.getElementById('avCategoria'); if(sel) sel.onchange = ()=>{ filtroAVCategoria = sel.value; render(); };
+  const va = document.getElementById('avVerAlertas'); if(va) va.onclick = (e)=>{ e.preventDefault(); filtroAVCategoria = 'alertas'; render(); };
+  const bus = document.getElementById('avBuscar');
+  if(bus){ bus.oninput = ()=>{ filtroAVBusqueda = bus.value; clearTimeout(wireAltoValor._t); wireAltoValor._t = setTimeout(()=>{ render(); const b2 = document.getElementById('avBuscar'); if(b2){ b2.focus(); b2.setSelectionRange(b2.value.length, b2.value.length); } }, 250); }; }
+  document.querySelectorAll('#main-view [data-ficha-cliente]').forEach(a=> a.onclick = (e)=>{ e.preventDefault(); fichaClienteId = a.dataset.fichaCliente; tab = 'clientes'; render(); });
+  const ex = document.getElementById('btnExportAV');
+  if(ex) ex.onclick = ()=>{
+    const { filas } = rankingClientesValor(filtroAVPeriodo);
+    exportExcel(`clientes_alto_valor_${filtroAVPeriodo}_${todayISO()}.xlsx`,
+      ['#','Cliente','Documento','Celular','Categoría','Comisión cobrada (S/ eq.)','Cobrado S/','Cobrado US$','% del total','% acumulado','Pólizas vigentes','Productos vigentes','Aseguradoras','Última comisión','Próximo vencimiento','Alertas','Oportunidades'],
+      filas.map(f=>[f.rank, f.cli.nombre, f.cli.documento||'', f.cli.celular1||f.cli.telefono||'', f.cat, Math.round(f.total*100)/100, Math.round(f.PEN*100)/100, Math.round(f.USD*100)/100, Math.round(f.pct*1000)/10, Math.round(f.pctAcum*1000)/10, f.activas, f.productos.map(prodLabel).join(', '), f.aseguradoras.join(', '), f.ultimo||'', f.proximo||'', f.alertas.map(a=>a.txt).join(' | '), f.oportunidades.map(o=>'Ofrecer '+o).join(' | ')]));
+  };
+}
+
 // ================= CLIENTES =================
 let filtroClienteContacto='todos', filtroClienteEtiqueta='todas', filtroClienteTipo='todos', filtroClienteProducto='todos', filtroClienteAsesor='todos', filtroClienteValor='todos', filtroClienteBusqueda='', filtroClienteActividad='todos';
 function valorHistoricoClientes(){
@@ -7343,6 +7491,7 @@ render = function(){
   if(tab==='cobro_comisiones') wireCobroComisiones();
   if(tab==='pago_comisiones') wirePagoComisiones();
   if(tab==='facturacion') wireFacturacion();
+  if(tab==='alto_valor') wireAltoValor();
   if(tab==='polizas') wirePolizas();
   if(tab==='cobranzas') wireCobranzas();
   if(tab==='soat') wireSoat();
