@@ -4885,12 +4885,26 @@ function wireCobranzas(){
 }
 
 // ================= SOAT Y BENEFICIOS =================
+// Fecha + n años en formato AAAA-MM-DD
+function sumarAniosISO(iso, n){ if(!iso) return ''; const d = new Date(iso+'T00:00:00'); if(isNaN(d)) return ''; d.setFullYear(d.getFullYear()+n); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+// Todos los SOAT de la cartera. Si un SOAT no tiene fin de vigencia registrado se asume 1 año desde su inicio (o la fecha de venta).
 function todosLosSoat(){
-  const directos = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='soat' && v.vigenciaFin)
-    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.vigenciaFin, aseguradora:v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, origen:'SOAT (venta directa)' }));
+  const directos = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='soat' && (v.vigenciaFin || v.vigenciaInicio || v.fechaVenta))
+    .map(v=>{
+      const fin = v.vigenciaFin || sumarAniosISO(v.vigenciaInicio || v.fechaVenta, 1);
+      return { clienteId:v.clienteId, vigenciaFin:fin, vigenciaInicio: v.vigenciaInicio || (v.vigenciaFin ? sumarAniosISO(v.vigenciaFin,-1) : v.fechaVenta), estimado: !v.vigenciaFin, aseguradora:v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (venta directa)' };
+    });
   const enVehicular = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='seguros_vehiculares' && v.tieneSoat && v.soatVigenciaFin)
-    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.soatVigenciaFin, aseguradora:v.soatAseguradora||v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, origen:'SOAT (dentro de póliza vehicular)' }));
-  return [...directos, ...enVehicular];
+    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.soatVigenciaFin, vigenciaInicio: sumarAniosISO(v.soatVigenciaFin,-1), estimado:false, aseguradora:v.soatAseguradora||v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (dentro de póliza vehicular)' }));
+  const lista = [...directos, ...enVehicular];
+  // Un SOAT vencido cuenta como renovado si el mismo cliente tiene otro SOAT vigente que empezó cerca de esa fecha (±60 días)
+  const vigentes = lista.filter(s=> daysUntil(s.vigenciaFin)>=0);
+  const usados = new Set();
+  lista.filter(s=> daysUntil(s.vigenciaFin)<0).sort((a,b)=> b.vigenciaFin.localeCompare(a.vigenciaFin)).forEach(s=>{
+    const r = vigentes.find(a=> a.clienteId===s.clienteId && !usados.has(a) && a.vigenciaInicio && Math.abs((new Date(a.vigenciaInicio) - new Date(s.vigenciaFin))/86400000) <= 60);
+    if(r){ usados.add(r); s.renovado = true; }
+  });
+  return lista;
 }
 let filtroSoatVista = 'vencimientos', filtroSoatAnio = 'todos';
 function viewSoat(){
@@ -4899,6 +4913,15 @@ function viewSoat(){
   const en30 = soatTodos.filter(s=> daysUntil(s.vigenciaFin)>=0 && daysUntil(s.vigenciaFin)<=30);
   const en7 = soatTodos.filter(s=> daysUntil(s.vigenciaFin)>=0 && daysUntil(s.vigenciaFin)<=7);
   const vencidos = soatTodos.filter(s=> daysUntil(s.vigenciaFin)<0);
+  const activosSoat = soatTodos.filter(s=> daysUntil(s.vigenciaFin)>=0);
+  const vencidosSinRenovar = vencidos.filter(s=> !s.renovado && daysUntil(s.vigenciaFin) >= -365);
+  const renovadosCount = vencidos.filter(s=> s.renovado).length;
+  const activosPorAseg = {};
+  activosSoat.forEach(s=>{ const k = (s.aseguradora||'Sin aseguradora').replace(/\s+(Seguros|Security|Perú|Peru)\b/gi,'').trim(); activosPorAseg[k] = (activosPorAseg[k]||0)+1; });
+  const anioActualSoat = todayISO().slice(0,4);
+  const vendidosAnio = soatTodos.filter(s=> (s.fechaVenta||'').slice(0,4)===anioActualSoat).length;
+  const clientesConSoat = new Set(activosSoat.map(s=>s.clienteId)).size;
+  const estimados = activosSoat.filter(s=> s.estimado).length;
   const listaVencimientos = [...soatTodos.filter(s=>daysUntil(s.vigenciaFin)>=0)].sort((a,b)=>daysUntil(a.vigenciaFin)-daysUntil(b.vigenciaFin)).concat(vencidos.sort((a,b)=>daysUntil(b.vigenciaFin)-daysUntil(a.vigenciaFin)));
 
   const gratis = [];
@@ -4927,7 +4950,12 @@ function viewSoat(){
 
   return `
     <div class="page-head"><div><h1>SOAT y Beneficios</h1><p>Vencimientos de SOAT (de todos tus clientes vehiculares) y control de beneficios gratuitos entregados.</p></div></div>
-    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:10px;">
+      <div class="card stat-card" style="background:#1F4B41;color:#fff;padding:16px;">
+        <div class="label" style="color:rgba(255,255,255,0.85);">SOAT activos (vigentes)</div>
+        <div class="value num" style="color:#fff;">${activosSoat.length}</div>
+        <div style="font-size:11.5px;color:rgba(255,255,255,0.85);">${clientesConSoat} cliente(s) · ${soatTodos.length} registrados en total</div>
+      </div>
       <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Por vencer en 30 días</div>
         <div class="value num" style="color:#fff;">${en30.length}</div>
@@ -4937,13 +4965,21 @@ function viewSoat(){
         <div class="value num" style="color:#fff;">${en7.length}</div>
       </div>
       <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">SOAT vencidos</div>
-        <div class="value num" style="color:#fff;">${vencidos.length}</div>
+        <div class="label" style="color:rgba(255,255,255,0.85);">Vencidos sin renovar (último año)</div>
+        <div class="value num" style="color:#fff;">${vencidosSinRenovar.length}</div>
+        <div style="font-size:11.5px;color:rgba(255,255,255,0.85);">${renovadosCount} vencido(s) ya renovado(s)</div>
       </div>
+    </div>
+    <div class="card" style="padding:10px 16px;margin-bottom:16px;font-size:12.5px;display:flex;gap:18px;flex-wrap:wrap;align-items:center;">
+      <span><b>Activos por aseguradora:</b> ${Object.entries(activosPorAseg).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`${k} <b class="num">${n}</b>`).join(' · ') || '—'}</span>
+      <span><b>Vendidos en ${anioActualSoat}:</b> <span class="num">${vendidosAnio}</span></span>
+      ${estimados ? `<span class="hint" title="Estos SOAT no tienen fecha de fin registrada: se asume 1 año desde su inicio o fecha de venta">${estimados} con vencimiento estimado (1 año desde la venta)</span>` : ''}
     </div>
     <div class="toolbar">
       <select id="fSoatVista">
         <option value="vencimientos" ${filtroSoatVista==='vencimientos'?'selected':''}>Vencimientos de SOAT (todos)</option>
+        <option value="activos" ${filtroSoatVista==='activos'?'selected':''}>Solo SOAT activos</option>
+        <option value="sinrenovar" ${filtroSoatVista==='sinrenovar'?'selected':''}>Vencidos sin renovar (último año)</option>
         <option value="30" ${filtroSoatVista==='30'?'selected':''}>Solo por vencer en 30 días</option>
         <option value="7" ${filtroSoatVista==='7'?'selected':''}>Solo por vencer en 7 días</option>
         <option value="beneficios" ${filtroSoatVista==='beneficios'?'selected':''}>Beneficios gratuitos entregados</option>
@@ -4977,7 +5013,7 @@ function viewSoat(){
       </table>
     </div>` :
     filtroSoatVista!=='beneficios' ? (() => {
-      const lista = filtroSoatVista==='30' ? en30 : filtroSoatVista==='7' ? en7 : listaVencimientos;
+      const lista = filtroSoatVista==='30' ? en30 : filtroSoatVista==='7' ? en7 : filtroSoatVista==='activos' ? listaVencimientos.filter(s=>daysUntil(s.vigenciaFin)>=0) : filtroSoatVista==='sinrenovar' ? vencidosSinRenovar.slice().sort((a,b)=>b.vigenciaFin.localeCompare(a.vigenciaFin)) : listaVencimientos;
       return `
     <div class="card" style="padding:0;">
       <table>
@@ -4986,8 +5022,8 @@ function viewSoat(){
           ${lista.length===0 ? `<tr class="empty-row"><td colspan="8">No hay SOAT en este filtro.</td></tr>` : lista.map(s=>{
             const cli = state.clientes.find(c=>c.id===s.clienteId);
             const d = daysUntil(s.vigenciaFin);
-            const pill = d<0 ? `<span class="pill pill-red">Vencido</span>` : d<=7 ? `<span class="pill pill-red">${d} días</span>` : d<=15 ? `<span class="pill pill-gold">${d} días</span>` : `<span class="pill pill-gray">${d} días</span>`;
-            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td><td class="hint">${s.origen}</td><td>${s.numeroPoliza||'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.vigenciaFin)}</td><td>${pill}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${s.ventaId}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-soat="${s.ventaId}" data-soat-fin="${s.vigenciaFin}" style="margin-left:6px;">📲 Avisar</button>`:''}</td></tr>`;
+            const pill = d<0 ? (s.renovado ? `<span class="pill pill-green" title="El cliente tiene otro SOAT vigente que empezó cerca de esta fecha">Renovado</span>` : `<span class="pill pill-red">Vencido</span>`) : d<=7 ? `<span class="pill pill-red">${d} días</span>` : d<=15 ? `<span class="pill pill-gold">${d} días</span>` : `<span class="pill pill-gray">${d} días</span>`;
+            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td><td class="hint">${s.origen}</td><td>${s.numeroPoliza||'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.vigenciaFin)}${s.estimado?' <span class="hint" title="Sin fecha de fin registrada: se asume 1 año desde la venta">(est.)</span>':''}</td><td>${pill}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${s.ventaId}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-soat="${s.ventaId}" data-soat-fin="${s.vigenciaFin}" style="margin-left:6px;">📲 Avisar</button>`:''}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
