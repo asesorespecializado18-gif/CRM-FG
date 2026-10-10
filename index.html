@@ -871,59 +871,48 @@ function resumenComisiones(ventas){
   });
   return { asesorPEN, asesorUSD, fgPEN, fgUSD, netoPEN: fgPEN-asesorPEN, netoUSD: fgUSD-asesorUSD };
 }
-const eqSoles = (pen, usd) => (Number(pen)||0) + (Number(usd)||0) * (Number(state.tipoCambio)||3.75);
 function bloqueFlujoGlobal(label, montoPEN, montoUSD, color, grande, soloPEN){
   return `<div style="background:${color};color:#fff;padding:${grande?'18px 14px':'12px 10px'};">
     <div style="font-size:${grande?'11.5px':'10.5px'};text-transform:uppercase;letter-spacing:.03em;opacity:0.88;line-height:1.3;">${label}</div>
     ${soloPEN ? '' : `<div class="num" style="font-size:${grande?'21px':'16px'};font-weight:700;margin-top:6px;">${fmtUSD(montoUSD)}</div>`}
     <div class="num" style="font-size:${grande?(soloPEN?'21px':'17px'):(soloPEN?'16px':'13.5px')};font-weight:${soloPEN?'700':'600'};opacity:${soloPEN?'1':'0.92'};margin-top:${soloPEN?'6px':'0'};">${fmtMoney(montoPEN)}</div>
-    ${soloPEN ? '' : `<div style="font-size:11px;opacity:0.8;margin-top:4px;" title="Dólares convertidos a soles al tipo de cambio S/ ${Number(state.tipoCambio)||3.75}">≈ ${fmtMoney(eqSoles(montoPEN, montoUSD))} en total</div>`}
   </div>`;
 }
-// Variación porcentual con flecha (verde si sube, rojo si baja)
-function variacionHtml(actual, anterior, etiqueta){
+// Variación porcentual con flecha (verde si sube, rojo si baja), siempre comparando la misma moneda
+function variacionHtml(actual, anterior, etiqueta, fmt){
   if(!(anterior>0)) return '';
   const pct = Math.round((actual - anterior) / anterior * 100);
   const color = pct>=0 ? '#3D6B52' : '#B8483A';
   const txt = pct>300 ? `más de 4 veces ${etiqueta}` : `${Math.abs(pct)}% vs ${etiqueta}`;
-  return `<span style="color:${color};font-weight:600;white-space:nowrap;" title="${etiqueta}: ${fmtMoney(anterior)}">${pct>=0?'▲':'▼'} ${txt}</span>`;
+  return `<span style="color:${color};font-weight:600;white-space:nowrap;" title="${etiqueta}: ${(fmt||fmtMoney)(anterior)}">${pct>=0?'▲':'▼'} ${txt}</span>`;
 }
 // extra (opcional): { cobrado:{PEN,USD}, cobradoPrev:{PEN,USD}, generadoPrev:{fgPEN,fgUSD}, porCobrar:{PEN,USD}, prevLabel }
+// Soles y dólares se muestran siempre por separado (no se convierten ni se suman entre sí).
 function seccionFlujoGlobal(titulo, res, grande, soloPEN, extra){
   const hayAsesores = (res.asesorPEN||0) > 0.005 || (res.asesorUSD||0) > 0.005;
-  const fgEq = eqSoles(res.fgPEN, res.fgUSD), netoEq = eqSoles(res.netoPEN, res.netoUSD);
-  const pctUtil = fgEq>0 ? Math.round(netoEq/fgEq*100) : 0;
+  const pctPEN = res.fgPEN>0 ? Math.round(res.netoPEN/res.fgPEN*100) : null;
+  const pctUSD = res.fgUSD>0 ? Math.round(res.netoUSD/res.fgUSD*100) : null;
   let franja = '';
   if(extra){
-    const cobEq = eqSoles(extra.cobrado.PEN, extra.cobrado.USD);
-    const cobPrevEq = extra.cobradoPrev ? eqSoles(extra.cobradoPrev.PEN, extra.cobradoPrev.USD) : 0;
-    const genPrevEq = extra.generadoPrev ? eqSoles(extra.generadoPrev.fgPEN, extra.generadoPrev.fgUSD) : 0;
-    const porCobEq = extra.porCobrar ? eqSoles(extra.porCobrar.PEN, extra.porCobrar.USD) : 0;
-    const dual = (pen, usd)=> [usd>0.005?fmtUSD(usd):'', pen>0.005?fmtMoney(pen):''].filter(Boolean).join(' · ') || fmtMoney(0);
-    franja = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0;border-top:1px solid var(--border);font-size:12.5px;">
-      <div style="padding:10px 14px;border-right:1px solid var(--border);">
-        <div class="hint" style="font-weight:600;">💵 Cobrado de Alta (pagos recibidos)</div>
-        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;">≈ ${fmtMoney(cobEq)}</div>
-        <div class="hint">${dual(extra.cobrado.PEN, extra.cobrado.USD)}</div>
-        <div style="margin-top:2px;">${variacionHtml(cobEq, cobPrevEq, extra.prevLabel)}</div>
-      </div>
-      <div style="padding:10px 14px;border-right:1px solid var(--border);">
-        <div class="hint" style="font-weight:600;">⏳ Por cobrar de las ventas del período</div>
-        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;color:${porCobEq>0.005?'#B8823D':'inherit'};">≈ ${fmtMoney(porCobEq)}</div>
-        <div class="hint">${extra.porCobrar ? dual(extra.porCobrar.PEN, extra.porCobrar.USD) : '—'}</div>
-      </div>
-      <div style="padding:10px 14px;">
-        <div class="hint" style="font-weight:600;">📈 Comisión generada</div>
-        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;">≈ ${fmtMoney(fgEq)}</div>
-        <div style="margin-top:2px;">${variacionHtml(fgEq, genPrevEq, extra.prevLabel) || '<span class="hint">Sin dato para comparar</span>'}</div>
-      </div>
+    const linea = (moneda, actual, anterior)=>{
+      const fmt = moneda==='USD' ? fmtUSD : fmtMoney;
+      return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;"><span class="num" style="font-weight:700;font-size:14.5px;">${fmt(actual)}</span>${anterior!=null ? variacionHtml(actual, anterior, extra.prevLabel, fmt) : ''}</div>`;
+    };
+    const col = (titulo, PEN, USD, prevPEN, prevUSD, colorMonto)=> `<div style="padding:10px 14px;border-right:1px solid var(--border);">
+        <div class="hint" style="font-weight:600;margin-bottom:3px;">${titulo}</div>
+        <div style="color:${colorMonto||'inherit'};">${linea('USD', USD, prevUSD)}${linea('PEN', PEN, prevPEN)}</div>
+      </div>`;
+    franja = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));border-top:1px solid var(--border);font-size:12.5px;">
+      ${col('💵 Cobrado de Alta (pagos recibidos)', extra.cobrado.PEN, extra.cobrado.USD, extra.cobradoPrev?extra.cobradoPrev.PEN:null, extra.cobradoPrev?extra.cobradoPrev.USD:null)}
+      ${col('⏳ Por cobrar de las ventas del período', extra.porCobrar.PEN, extra.porCobrar.USD, null, null, '#B8823D')}
+      ${col('📈 Comisión generada', res.fgPEN, res.fgUSD, extra.generadoPrev?extra.generadoPrev.fgPEN:null, extra.generadoPrev?extra.generadoPrev.fgUSD:null)}
     </div>`;
   }
   return `
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px;">
       <div style="padding:10px 16px;font-weight:600;text-align:center;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">
         <span>${titulo}</span>
-        ${hayAsesores ? `<span class="pill pill-gray" style="font-weight:600;" title="Lo que te queda después de pagar a los asesores">Te queda el ${pctUtil}%</span>` : ''}
+        ${hayAsesores ? `<span class="pill pill-gray" style="font-weight:600;" title="Lo que te queda después de pagar a los asesores">Te queda: ${[pctUSD!=null?pctUSD+'% en US$':'', pctPEN!=null?pctPEN+'% en S/':''].filter(Boolean).join(' · ')}</span>` : ''}
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);">
         ${bloqueFlujoGlobal('Comisión FG generada <span style="text-transform:none;opacity:.85;">(ventas del período)</span>', res.fgPEN, res.fgUSD, '#2E5266', grande, soloPEN)}
@@ -5644,7 +5633,8 @@ function wireAsesores(){
 
 // ================= CLIENTES DE ALTO VALOR =================
 // Ranking de clientes por la comisión FG que realmente cobraste (pagos de Alta / cobros registrados),
-// clasificados A / B / C con la regla 80/20: A = los que suman el primer 50% de tu comisión, B = hasta el 80%, C = el resto.
+// mostrada siempre en soles y dólares por separado. Solo para ordenar y clasificar se usa el tipo de cambio.
+// Clasificados A / B / C con la regla 80/20: A = los que suman el primer 50% de tu comisión, B = hasta el 80%, C = el resto.
 let filtroAVPeriodo = '12m', filtroAVCategoria = 'todas', filtroAVBusqueda = '';
 const PERIODOS_AV = { '12m':'Últimos 12 meses', 'anio':'Este año', 'todo':'Todo el historial' };
 function rangoPeriodoAV(periodo){
@@ -5726,21 +5716,23 @@ function rankingClientesValor(periodo){
 }
 function viewAltoValor(){
   const { filas, total, tc } = rankingClientesValor(filtroAVPeriodo);
-  const resumenCat = cat=>{ const fs = filas.filter(f=>f.cat===cat); return { n: fs.length, total: fs.reduce((s,f)=>s+f.total,0) }; };
+  const resumenCat = cat=>{ const fs = filas.filter(f=>f.cat===cat); return { n: fs.length, total: fs.reduce((s,f)=>s+f.total,0), PEN: fs.reduce((s,f)=>s+f.PEN,0), USD: fs.reduce((s,f)=>s+f.USD,0) }; };
+  const totPEN = filas.reduce((s,f)=>s+f.PEN,0), totUSD = filas.reduce((s,f)=>s+f.USD,0);
+  const dual = (PEN, USD)=> `<div class="num">${fmtUSD(USD)}</div><div class="num">${fmtMoney(PEN)}</div>`;
   const A = resumenCat('A'), B = resumenCat('B'), C = resumenCat('C');
   const conAlertas = filas.filter(f=> (f.cat==='A'||f.cat==='B') && f.alertas.length).length;
   const q = filtroAVBusqueda.trim().toUpperCase();
   const visibles = filas.filter(f=> (filtroAVCategoria==='todas' || f.cat===filtroAVCategoria || (filtroAVCategoria==='alertas' && (f.cat==='A'||f.cat==='B') && f.alertas.length)) && (!q || (f.cli.nombre||'').toUpperCase().includes(q)));
   const pillCat = c=> c==='A' ? '<span class="pill pill-gold" title="Generan el primer 50% de tu comisión">A</span>' : c==='B' ? '<span class="pill pill-green" title="Junto con los A suman el 80% de tu comisión">B</span>' : '<span class="pill pill-gray">C</span>';
   const pct = x=> (x*100).toFixed(1)+'%';
-  const tarjeta = (titulo, r, color, nota)=> `<div class="card" style="border-top:4px solid ${color};"><div class="hint" style="font-weight:600;">${titulo}</div><div style="font-size:24px;font-weight:700;margin:4px 0;">${r.n} <span style="font-size:13px;font-weight:500;">cliente(s)</span></div><div class="num">${fmtMoney(r.total)} · ${total?pct(r.total/total):'0%'} de tu comisión</div><div class="hint" style="margin-top:4px;">${nota}</div></div>`;
+  const tarjeta = (titulo, r, color, nota)=> `<div class="card" style="border-top:4px solid ${color};"><div class="hint" style="font-weight:600;">${titulo}</div><div style="font-size:24px;font-weight:700;margin:4px 0;">${r.n} <span style="font-size:13px;font-weight:500;">cliente(s)</span></div>${dual(r.PEN, r.USD)}<div class="hint">${total?pct(r.total/total):'0%'} de tu comisión</div><div class="hint" style="margin-top:4px;">${nota}</div></div>`;
   return `
-    <div class="page-head"><div><h1>⭐ Clientes de alto valor</h1><p>Tus clientes ordenados por la comisión FG que realmente cobraste (pagos de Alta y cobros registrados). Montos en dólares convertidos a soles a S/ ${tc}.</p></div>${puedeDescargar() ? '<button class="btn" id="btnExportAV">Exportar a Excel</button>' : ''}</div>
+    <div class="page-head"><div><h1>⭐ Clientes de alto valor</h1><p>Tus clientes ordenados por la comisión FG que realmente cobraste (pagos de Alta y cobros registrados). Los montos se muestran en dólares y en soles por separado.</p></div>${puedeDescargar() ? '<button class="btn" id="btnExportAV">Exportar a Excel</button>' : ''}</div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px;">
       ${tarjeta('Categoría A — tus clientes clave', A, '#B8823D', 'Cuídalos: llamada o visita en cada renovación.')}
       ${tarjeta('Categoría B — clientes importantes', B, '#2E7D5B', 'Con los A suman el 80% de tu comisión.')}
       ${tarjeta('Categoría C — el resto', C, '#9AA5A0', 'Atiéndelos con mensajes y renovaciones automáticas.')}
-      <div class="card" style="border-top:4px solid #B8483A;"><div class="hint" style="font-weight:600;">Comisión cobrada · ${PERIODOS_AV[filtroAVPeriodo]}</div><div style="font-size:24px;font-weight:700;margin:4px 0;" class="num">${fmtMoney(total)}</div><div>${filas.length} cliente(s) con comisión</div><div class="hint" style="margin-top:4px;">${conAlertas ? `<a href="#" id="avVerAlertas" style="color:#B8483A;font-weight:600;">${conAlertas} cliente(s) A/B con alertas →</a>` : 'Sin alertas en tus clientes A y B.'}</div></div>
+      <div class="card" style="border-top:4px solid #B8483A;"><div class="hint" style="font-weight:600;">Comisión cobrada · ${PERIODOS_AV[filtroAVPeriodo]}</div><div style="font-size:17px;font-weight:700;margin:4px 0;">${dual(totPEN, totUSD)}</div><div>${filas.length} cliente(s) con comisión</div><div class="hint" style="margin-top:4px;">${conAlertas ? `<a href="#" id="avVerAlertas" style="color:#B8483A;font-weight:600;">${conAlertas} cliente(s) A/B con alertas →</a>` : 'Sin alertas en tus clientes A y B.'}</div></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       ${Object.entries(PERIODOS_AV).map(([k,l])=>`<button class="btn ${filtroAVPeriodo===k?'btn-primary':'btn-ghost'} btn-sm" data-av-periodo="${k}">${l}</button>`).join('')}
@@ -5755,22 +5747,23 @@ function viewAltoValor(){
     </div>
     <div class="card" style="padding:0;overflow:auto;">
       <table>
-        <thead><tr><th>#</th><th>Cliente</th><th>Cat.</th><th style="text-align:right;">Comisión cobrada</th><th style="text-align:right;" title="Porcentaje de tu comisión total y, debajo, el acumulado">% del total</th><th title="Pólizas vigentes">Vigentes</th><th>Productos</th><th>Última comisión</th><th>Próx. vencimiento</th><th style="min-width:190px;">Alertas y oportunidades</th></tr></thead>
+        <thead><tr><th>#</th><th>Cliente</th><th>Cat.</th><th style="text-align:right;">Cobrado US$</th><th style="text-align:right;">Cobrado S/</th><th style="text-align:right;" title="Porcentaje de tu comisión total y, debajo, el acumulado">% del total</th><th title="Pólizas vigentes">Vigentes</th><th>Productos</th><th>Última comisión</th><th>Próx. vencimiento</th><th style="min-width:190px;">Alertas y oportunidades</th></tr></thead>
         <tbody>${visibles.length ? visibles.map(f=>`<tr>
           <td class="num">${f.rank}</td>
           <td style="min-width:220px;">${f.cli.id?`<a href="#" data-ficha-cliente="${f.cli.id}" style="color:var(--primary);font-weight:600;">${f.cli.nombre}</a>`:f.cli.nombre}<div class="hint">${[f.cli.celular1||f.cli.telefono||'', f.aseguradoras.join(', ')].filter(Boolean).join(' · ')}</div></td>
           <td>${pillCat(f.cat)}</td>
-          <td class="num" style="text-align:right;font-weight:600;">${fmtMoney(f.total)}${f.USD>0.005?`<div class="hint">${f.PEN>0.005?fmtMoney(f.PEN)+' + ':''}${fmtUSD(f.USD)}</div>`:''}</td>
+          <td class="num" style="text-align:right;font-weight:600;">${f.USD>0.005?fmtUSD(f.USD):'—'}</td>
+          <td class="num" style="text-align:right;font-weight:600;">${f.PEN>0.005?fmtMoney(f.PEN):'—'}</td>
           <td class="num" style="text-align:right;">${pct(f.pct)}<div class="hint">acum. ${pct(f.pctAcum)}</div></td>
           <td class="num" style="text-align:center;">${f.activas}</td>
           <td style="font-size:12px;">${f.productos.map(prodLabel).join(', ')||'—'}</td>
           <td>${f.ultimo?fmtDate(f.ultimo):'—'}</td>
           <td>${f.proximo?fmtDate(f.proximo):'—'}</td>
           <td style="line-height:1.9;">${f.alertas.map(a=>`<span class="pill pill-${a.tipo}" title="${a.tip.replace(/"/g,'&quot;')}">${a.txt}</span>`).join(' ')} ${f.oportunidades.map(o=>`<span class="pill pill-gray" title="No tiene ${o}: oportunidad de venta cruzada">💡 Ofrecer ${o}</span>`).join(' ')}</td>
-        </tr>`).join('') : '<tr class="empty-row"><td colspan="10">No hay clientes con comisión cobrada en este periodo.</td></tr>'}</tbody>
+        </tr>`).join('') : '<tr class="empty-row"><td colspan="11">No hay clientes con comisión cobrada en este periodo.</td></tr>'}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:8px;">Cómo se clasifica: se ordenan los clientes de mayor a menor comisión cobrada. <b>A</b> son los primeros que juntos suman el 50% de tu comisión; <b>B</b>, los siguientes hasta llegar al 80%; <b>C</b>, el resto. Las alertas avisan renovaciones en los próximos 60 días, pólizas vencidas sin renovar y clientes con pólizas vigentes de los que no llega comisión hace más de 4 meses.</div>`;
+    <div class="hint" style="margin-top:8px;">Cómo se clasifica: se ordenan los clientes de mayor a menor comisión cobrada. Para ordenar y calcular el % se juntan soles y dólares al tipo de cambio del CRM (S/ ${tc}), pero los montos se muestran por separado. <b>A</b> son los primeros que juntos suman el 50% de tu comisión; <b>B</b>, los siguientes hasta llegar al 80%; <b>C</b>, el resto. Las alertas avisan renovaciones en los próximos 60 días, pólizas vencidas sin renovar y clientes con pólizas vigentes de los que no llega comisión hace más de 4 meses.</div>`;
 }
 function wireAltoValor(){
   document.querySelectorAll('[data-av-periodo]').forEach(b=> b.onclick = ()=>{ filtroAVPeriodo = b.dataset.avPeriodo; render(); });
@@ -5783,8 +5776,8 @@ function wireAltoValor(){
   if(ex) ex.onclick = ()=>{
     const { filas } = rankingClientesValor(filtroAVPeriodo);
     exportExcel(`clientes_alto_valor_${filtroAVPeriodo}_${todayISO()}.xlsx`,
-      ['#','Cliente','Documento','Celular','Categoría','Comisión cobrada (S/ eq.)','Cobrado S/','Cobrado US$','% del total','% acumulado','Pólizas vigentes','Productos vigentes','Aseguradoras','Última comisión','Próximo vencimiento','Alertas','Oportunidades'],
-      filas.map(f=>[f.rank, f.cli.nombre, f.cli.documento||'', f.cli.celular1||f.cli.telefono||'', f.cat, Math.round(f.total*100)/100, Math.round(f.PEN*100)/100, Math.round(f.USD*100)/100, Math.round(f.pct*1000)/10, Math.round(f.pctAcum*1000)/10, f.activas, f.productos.map(prodLabel).join(', '), f.aseguradoras.join(', '), f.ultimo||'', f.proximo||'', f.alertas.map(a=>a.txt).join(' | '), f.oportunidades.map(o=>'Ofrecer '+o).join(' | ')]));
+      ['#','Cliente','Documento','Celular','Categoría','Cobrado US$','Cobrado S/','% del total','% acumulado','Pólizas vigentes','Productos vigentes','Aseguradoras','Última comisión','Próximo vencimiento','Alertas','Oportunidades'],
+      filas.map(f=>[f.rank, f.cli.nombre, f.cli.documento||'', f.cli.celular1||f.cli.telefono||'', f.cat, Math.round(f.USD*100)/100, Math.round(f.PEN*100)/100, Math.round(f.pct*1000)/10, Math.round(f.pctAcum*1000)/10, f.activas, f.productos.map(prodLabel).join(', '), f.aseguradoras.join(', '), f.ultimo||'', f.proximo||'', f.alertas.map(a=>a.txt).join(' | '), f.oportunidades.map(o=>'Ofrecer '+o).join(' | ')]));
   };
 }
 
@@ -6210,13 +6203,13 @@ function wireClientes(){
   const fas = document.getElementById('fClienteAsesor'); if(fas) fas.onchange = e=>{ filtroClienteAsesor=e.target.value; render(); };
   const fv = document.getElementById('fClienteValor'); if(fv) fv.onchange = e=>{ filtroClienteValor=e.target.value; render(); };
   const btnEx = document.getElementById('btnExportClientes'); if(btnEx) btnEx.onclick = () => {
-    const headers = ['Nombre / Razón social','Tipo doc','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Estado de contacto','Etiquetas','OBS','# Ventas','Comisión histórica (S/ equiv.)'];
+    const headers = ['Nombre / Razón social','Tipo doc','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Estado de contacto','Etiquetas','OBS','# Ventas','Comisión histórica US$','Comisión histórica S/'];
     const { valorCliente } = valorHistoricoClientes();
     const rows = clientesFiltrados().map(c=>{
       const n = state.ventas.filter(v=>v.clienteId===c.id).length;
       const est = ESTADOS_CONTACTO.find(e=>e.id===(c.estadoContacto||'nuevo'));
       const tags = (c.etiquetas||[]).map(tid=>{ const t=ETIQUETAS_CLIENTE.find(x=>x.id===tid); return t?t.label:''; }).filter(Boolean).join(', ');
-      return [c.nombre, c.tipoDocumento||'DNI', c.documento||'', c.direccion||'', c.ciudad||'', c.celular1||c.telefono||'', c.celular2||'', c.email||'', c.email2||'', c.personaContacto||'', est?est.label:'', tags, c.datosAdicionales||'', n, (valorCliente[c.id]||0).toFixed(2)];
+      return [c.nombre, c.tipoDocumento||'DNI', c.documento||'', c.direccion||'', c.ciudad||'', c.celular1||c.telefono||'', c.celular2||'', c.email||'', c.email2||'', c.personaContacto||'', est?est.label:'', tags, c.datosAdicionales||'', n, ...(()=>{ const vs = state.ventas.filter(v=>v.clienteId===c.id && v.estadoVenta!=='anulada'); return [vs.filter(v=>v.moneda==='USD').reduce((s,v)=>s+(Number(v.comisionTotal)||0),0).toFixed(2), vs.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+(Number(v.comisionTotal)||0),0).toFixed(2)]; })()];
     });
     exportExcel('clientes.xlsx', headers, rows);
   };
