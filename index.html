@@ -871,28 +871,66 @@ function resumenComisiones(ventas){
   });
   return { asesorPEN, asesorUSD, fgPEN, fgUSD, netoPEN: fgPEN-asesorPEN, netoUSD: fgUSD-asesorUSD };
 }
+const eqSoles = (pen, usd) => (Number(pen)||0) + (Number(usd)||0) * (Number(state.tipoCambio)||3.75);
 function bloqueFlujoGlobal(label, montoPEN, montoUSD, color, grande, soloPEN){
   return `<div style="background:${color};color:#fff;padding:${grande?'18px 14px':'12px 10px'};">
     <div style="font-size:${grande?'11.5px':'10.5px'};text-transform:uppercase;letter-spacing:.03em;opacity:0.88;line-height:1.3;">${label}</div>
     ${soloPEN ? '' : `<div class="num" style="font-size:${grande?'21px':'16px'};font-weight:700;margin-top:6px;">${fmtUSD(montoUSD)}</div>`}
     <div class="num" style="font-size:${grande?(soloPEN?'21px':'17px'):(soloPEN?'16px':'13.5px')};font-weight:${soloPEN?'700':'600'};opacity:${soloPEN?'1':'0.92'};margin-top:${soloPEN?'6px':'0'};">${fmtMoney(montoPEN)}</div>
+    ${soloPEN ? '' : `<div style="font-size:11px;opacity:0.8;margin-top:4px;" title="Dólares convertidos a soles al tipo de cambio S/ ${Number(state.tipoCambio)||3.75}">≈ ${fmtMoney(eqSoles(montoPEN, montoUSD))} en total</div>`}
   </div>`;
 }
-function seccionFlujoGlobal(titulo, res, grande, soloPEN){
-  const pctUtilPEN = res.fgPEN>0 ? Math.round((res.netoPEN/res.fgPEN)*100) : 0;
-  const pctUtilUSD = res.fgUSD>0 ? Math.round((res.netoUSD/res.fgUSD)*100) : 0;
-  const mostrarPct = res.fgPEN>0 || res.fgUSD>0;
+// Variación porcentual con flecha (verde si sube, rojo si baja)
+function variacionHtml(actual, anterior, etiqueta){
+  if(!(anterior>0)) return '';
+  const pct = Math.round((actual - anterior) / anterior * 100);
+  const color = pct>=0 ? '#3D6B52' : '#B8483A';
+  const txt = pct>300 ? `más de 4 veces ${etiqueta}` : `${Math.abs(pct)}% vs ${etiqueta}`;
+  return `<span style="color:${color};font-weight:600;white-space:nowrap;" title="${etiqueta}: ${fmtMoney(anterior)}">${pct>=0?'▲':'▼'} ${txt}</span>`;
+}
+// extra (opcional): { cobrado:{PEN,USD}, cobradoPrev:{PEN,USD}, generadoPrev:{fgPEN,fgUSD}, porCobrar:{PEN,USD}, prevLabel }
+function seccionFlujoGlobal(titulo, res, grande, soloPEN, extra){
+  const hayAsesores = (res.asesorPEN||0) > 0.005 || (res.asesorUSD||0) > 0.005;
+  const fgEq = eqSoles(res.fgPEN, res.fgUSD), netoEq = eqSoles(res.netoPEN, res.netoUSD);
+  const pctUtil = fgEq>0 ? Math.round(netoEq/fgEq*100) : 0;
+  let franja = '';
+  if(extra){
+    const cobEq = eqSoles(extra.cobrado.PEN, extra.cobrado.USD);
+    const cobPrevEq = extra.cobradoPrev ? eqSoles(extra.cobradoPrev.PEN, extra.cobradoPrev.USD) : 0;
+    const genPrevEq = extra.generadoPrev ? eqSoles(extra.generadoPrev.fgPEN, extra.generadoPrev.fgUSD) : 0;
+    const porCobEq = extra.porCobrar ? eqSoles(extra.porCobrar.PEN, extra.porCobrar.USD) : 0;
+    const dual = (pen, usd)=> [usd>0.005?fmtUSD(usd):'', pen>0.005?fmtMoney(pen):''].filter(Boolean).join(' · ') || fmtMoney(0);
+    franja = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0;border-top:1px solid var(--border);font-size:12.5px;">
+      <div style="padding:10px 14px;border-right:1px solid var(--border);">
+        <div class="hint" style="font-weight:600;">💵 Cobrado de Alta (pagos recibidos)</div>
+        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;">≈ ${fmtMoney(cobEq)}</div>
+        <div class="hint">${dual(extra.cobrado.PEN, extra.cobrado.USD)}</div>
+        <div style="margin-top:2px;">${variacionHtml(cobEq, cobPrevEq, extra.prevLabel)}</div>
+      </div>
+      <div style="padding:10px 14px;border-right:1px solid var(--border);">
+        <div class="hint" style="font-weight:600;">⏳ Por cobrar de las ventas del período</div>
+        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;color:${porCobEq>0.005?'#B8823D':'inherit'};">≈ ${fmtMoney(porCobEq)}</div>
+        <div class="hint">${extra.porCobrar ? dual(extra.porCobrar.PEN, extra.porCobrar.USD) : '—'}</div>
+      </div>
+      <div style="padding:10px 14px;">
+        <div class="hint" style="font-weight:600;">📈 Comisión generada</div>
+        <div class="num" style="font-weight:700;font-size:15px;margin-top:2px;">≈ ${fmtMoney(fgEq)}</div>
+        <div style="margin-top:2px;">${variacionHtml(fgEq, genPrevEq, extra.prevLabel) || '<span class="hint">Sin dato para comparar</span>'}</div>
+      </div>
+    </div>`;
+  }
   return `
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px;">
       <div style="padding:10px 16px;font-weight:600;text-align:center;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">
         <span>${titulo}</span>
-        ${mostrarPct ? `<span class="pill pill-gray" style="font-weight:600;">% utilidad: ${soloPEN ? pctUtilPEN : (res.fgUSD>0?pctUtilUSD:pctUtilPEN)}%</span>` : ''}
+        ${hayAsesores ? `<span class="pill pill-gray" style="font-weight:600;" title="Lo que te queda después de pagar a los asesores">Te queda el ${pctUtil}%</span>` : ''}
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);">
-        ${bloqueFlujoGlobal('Comisión FG recibida', res.fgPEN, res.fgUSD, '#2E5266', grande, soloPEN)}
-        ${bloqueFlujoGlobal('(–) Comisión pagada a asesores', res.asesorPEN, res.asesorUSD, '#7A4B42', grande, soloPEN)}
+        ${bloqueFlujoGlobal('Comisión FG generada <span style="text-transform:none;opacity:.85;">(ventas del período)</span>', res.fgPEN, res.fgUSD, '#2E5266', grande, soloPEN)}
+        ${bloqueFlujoGlobal('(–) Comisión de asesores', res.asesorPEN, res.asesorUSD, '#7A4B42', grande, soloPEN)}
         ${bloqueFlujoGlobal('(=) Utilidad neta FG', res.netoPEN, res.netoUSD, '#3D6B52', grande, soloPEN)}
       </div>
+      ${franja}
     </div>`;
 }
 function ventaActiva(v){ return v.estadoVenta !== 'anulada'; }
@@ -2377,7 +2415,7 @@ function viewDashboard(){
   const utilidadRealPEN = cur.empresa - beneficiosMesPEN - gastosMesPEN;
   const utilidadRealUSD = cur.empresaUSD - beneficiosMesUSD - gastosMesUSD;
 
-  const pendientes = state.ventas.filter(v=>ventaSeguroActiva(v) && v.estadoComision==='pendiente' && v.tipoComisionAsesor!=='ninguna');
+  const pendientes = state.ventas.filter(v=>ventaSeguroActiva(v) && v.estadoComision==='pendiente' && v.tipoComisionAsesor!=='ninguna' && comisionAsesor(v) > 0.005);
   const pendientesPEN = pendientes.filter(v=>v.moneda!=='USD');
   const pendientesUSD = pendientes.filter(v=>v.moneda==='USD');
   const pendienteMonto = pendientesPEN.reduce((s,v)=>s+comisionAsesor(v),0);
@@ -2414,6 +2452,17 @@ function viewDashboard(){
     </div>`;
 
   const seccionFlujo = seccionFlujoGlobal;
+  // Cobrado de verdad (pagos de Alta por fecha de pago) y lo que falta cobrar de las ventas de cada período
+  const ventasSegCob = misVentas(state.ventas).filter(ventaSeguroActiva);
+  const ymPrev = (()=>{ const d = new Date(hoy.getFullYear(), hoy.getMonth()-1, 1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const sumarMeses = (anio, hastaMes)=>{ const r = { PEN:0, USD:0 }; for(let m=1; m<=hastaMes; m++){ const c = cobradoEnMes(ventasSegCob, `${anio}-${String(m).padStart(2,'0')}`); r.PEN += c.PEN; r.USD += c.USD; } return r; };
+  const porCobrarDe = lista=>{ const r = { PEN:0, USD:0 }; lista.forEach(v=>{ if(v.estadoCobroFG==='cobrado') return; const falta = Math.max(0, comisionFG(v) - Math.max(0, totalPagado(v))); r[v.moneda==='USD'?'USD':'PEN'] += falta; }); return r; };
+  const ventasMesSeg = state.ventas.filter(v=> ventaSeguroActiva(v) && monthKey(v.fechaVenta)===curKey);
+  const ventasAnioSeg = state.ventas.filter(v=> ventaSeguroActiva(v) && (v.fechaVenta||'').slice(0,4)===String(hoy.getFullYear()));
+  const mesAnteriorLabel = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][(hoy.getMonth()+11)%12];
+  const extraMes = { cobrado: cobradoEnMes(ventasSegCob, curKey), cobradoPrev: cobradoEnMes(ventasSegCob, ymPrev), generadoPrev: resumenComisiones(state.ventas.filter(v=> ventaSeguroActiva(v) && monthKey(v.fechaVenta)===ymPrev)), porCobrar: porCobrarDe(ventasMesSeg), prevLabel: mesAnteriorLabel };
+  const mmdd = todayISO().slice(5);
+  const extraAnio = { cobrado: sumarMeses(hoy.getFullYear(), hoy.getMonth()+1), cobradoPrev: sumarMeses(hoy.getFullYear()-1, hoy.getMonth()+1), generadoPrev: resumenComisiones(state.ventas.filter(v=> ventaSeguroActiva(v) && (v.fechaVenta||'').slice(0,4)===String(hoy.getFullYear()-1) && (v.fechaVenta||'').slice(5)<=mmdd)), porCobrar: porCobrarDe(ventasAnioSeg), prevLabel: `${hoy.getFullYear()-1} (mismo periodo)` };
   const alertas = alertasPendientes();
   const cumples = cumpleañosEstaSemana();
   const urgentes = alertas.porVencer.filter(v=>daysUntil(v.vigenciaFin)<=7);
@@ -2599,8 +2648,8 @@ function viewDashboard(){
       ${alertas.cuotasAtrasadas.length ? `<div style="font-size:12px;margin-top:6px;"><a href="#" class="link-inline" data-goto="polizas">Ver todas las cuotas atrasadas</a></div>` : ''}
       <button class="btn btn-sm" id="btnWhatsAppResumen" style="margin-top:8px;">📲 Enviarme este resumen por WhatsApp</button>
     </div>` : ''}
-    ${seccionFlujo(`Flujo de comisiones — ${meses[hoy.getMonth()]} ${hoy.getFullYear()}`, resMes)}
-    ${seccionFlujo(`Flujo de comisiones — Acumulado ${hoy.getFullYear()}`, resAnio)}
+    ${seccionFlujo(`Flujo de comisiones — ${meses[hoy.getMonth()]} ${hoy.getFullYear()}`, resMes, false, false, extraMes)}
+    ${seccionFlujo(`Flujo de comisiones — Acumulado ${hoy.getFullYear()}`, resAnio, false, false, extraAnio)}
     <div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:18px;">
       <div class="card stat-card" style="background:#7A4B42;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Comisiones de asesores pendientes</div>
@@ -2609,7 +2658,7 @@ function viewDashboard(){
         <div class="value num" style="color:#fff;">${fmtMoney(pendienteMonto)}</div>
         <div class="delta" style="color:rgba(255,255,255,0.9);">${pendientesPEN.length} ventas por pagar</div>
         ${pendientes.length===0 ? '' : `<details style="margin-top:8px;">
-          <summary style="cursor:pointer;font-size:12.5px;color:#fff;font-weight:600;">▶ Ver detalle</summary>
+          <summary style="cursor:pointer;font-size:12.5px;color:#fff;font-weight:600;">Ver detalle</summary>
           <div style="margin-top:6px;max-height:160px;overflow-y:auto;">
             ${pendientes.map(v=>{
               const cli = state.clientes.find(c=>c.id===v.clienteId);
