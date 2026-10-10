@@ -2380,19 +2380,31 @@ function viewDashboard(){
   const keys = Object.keys(agg).sort();
   const curKey = todayISO().slice(0,7);
   const cur = agg[curKey] || {total:0,empresa:0,asesor:0,count:0,totalUSD:0,empresaUSD:0,asesorUSD:0};
-  const idx = keys.indexOf(curKey);
-  const prevKey = idx>0 ? keys[idx-1] : keys[keys.length-2];
+  // mes calendario anterior (aunque no haya tenido ventas)
+  const prevKey = (()=>{ const y = parseInt(curKey.slice(0,4)), m = parseInt(curKey.slice(5,7)); return m===1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`; })();
   const prev = agg[prevKey] || {total:0,empresa:0,asesor:0,count:0,totalUSD:0,empresaUSD:0,asesorUSD:0};
   const delta = (a,b) => b===0 ? (a>0?100:0) : ((a-b)/b*100);
+  // El mes en curso va recién por el día X: se compara contra los mismos días (1 al X) del otro mes, no contra el mes completo
+  const diaHoy = todayISO().slice(8,10);
+  const aggHastaDia = key=>{
+    const r = { empresa:0, empresaUSD:0, count:0 };
+    state.ventas.filter(v=> ventaSeguroActiva(v) && monthKey(v.fechaVenta)===key && (v.fechaVenta||'').slice(8,10) <= diaHoy).forEach(v=>{
+      r.count++; if(v.moneda==='USD') r.empresaUSD += comisionEmpresa(v); else r.empresa += comisionEmpresa(v);
+    });
+    return r;
+  };
+  const prevAlDia = aggHastaDia(prevKey);
   const dTotal = delta(cur.total, prev.total);
-  const dEmpresa = delta(cur.empresa, prev.empresa);
-  const dEmpresaUSD = delta(cur.empresaUSD, prev.empresaUSD);
+  const dEmpresa = delta(cur.empresa, prevAlDia.empresa);
+  const dEmpresaUSD = delta(cur.empresaUSD, prevAlDia.empresaUSD);
 
-  // ---- Comparativo año contra año (mismo mes, año pasado) ----
+  // ---- Comparativo año contra año (mismo mes, año pasado, a la misma fecha) ----
   const anioPrevKey = (parseInt(curKey.slice(0,4))-1) + curKey.slice(4);
   const anioPrev = agg[anioPrevKey] || {empresa:0, empresaUSD:0, count:0};
-  const dAnioPEN = delta(cur.empresa, anioPrev.empresa);
-  const dAnioUSD = delta(cur.empresaUSD, anioPrev.empresaUSD);
+  const anioPrevAlDia = aggHastaDia(anioPrevKey);
+  const dAnioPEN = delta(cur.empresa, anioPrevAlDia.empresa);
+  const dAnioUSD = delta(cur.empresaUSD, anioPrevAlDia.empresaUSD);
+  const pctHtml = (d, base)=> base>0 ? `<div style="font-size:12.5px;font-weight:600;color:${d>=0?'#3D6B52':'#B8483A'};">${d>=0?'▲':'▼'} ${Math.abs(d).toFixed(0)}%</div>` : '<div class="hint">sin dato para comparar</div>';
 
   // ---- Rentabilidad real del mes (comisión FG neta − beneficios regalados − gastos operativos) ----
   const ventasDelMesActivas = state.ventas.filter(v=>ventaSeguroActiva(v) && monthKey(v.fechaVenta)===curKey);
@@ -2480,9 +2492,18 @@ function viewDashboard(){
   // ---- Tasa de renovación / persistencia de cartera (últimos 12 meses) ----
   const hace12Meses = new Date(); hace12Meses.setMonth(hace12Meses.getMonth()-12);
   const hace12MesesISO = hace12Meses.toISOString().slice(0,10);
-  const vencidasParaRenovar = state.ventas.filter(v=> esSeguro(v.tipoProducto) && v.vigenciaFin && v.vigenciaFin >= hace12MesesISO && v.vigenciaFin < todayISO());
-  const fueRenovada = vOrig => state.ventas.some(v2=> v2.clienteId===vOrig.clienteId && v2.tipoProducto===vOrig.tipoProducto && v2.id!==vOrig.id && v2.vigenciaInicio && v2.vigenciaInicio >= vOrig.vigenciaFin && v2.vigenciaInicio <= addDaysISO(vOrig.vigenciaFin, 15));
-  const renovadas = vencidasParaRenovar.filter(fueRenovada);
+  const vencidasParaRenovar = state.ventas.filter(v=> ventaSeguroActiva(v) && v.vigenciaFin && v.vigenciaFin >= hace12MesesISO && v.vigenciaFin < todayISO());
+  // Renovada = el mismo cliente tiene otra póliza del mismo producto (SCTR salud/pensión cuentan juntos) que empieza
+  // entre 60 días antes y 60 días después del vencimiento (muchas renovaciones se emiten antes de vencer).
+  // Cada póliza nueva cuenta como renovación de una sola póliza vencida.
+  const familiaProd = t => /^sctr/.test(t||'') ? 'sctr' : t;
+  const usadasRenov = new Set();
+  const fueRenovada = vOrig => {
+    const r = state.ventas.find(v2=> !usadasRenov.has(v2.id) && v2.id!==vOrig.id && ventaActiva(v2) && v2.clienteId===vOrig.clienteId && familiaProd(v2.tipoProducto)===familiaProd(vOrig.tipoProducto) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(vOrig.vigenciaFin, -60) && ini <= addDaysISO(vOrig.vigenciaFin, 60); })());
+    if(r){ usadasRenov.add(r.id); return true; }
+    return false;
+  };
+  const renovadas = vencidasParaRenovar.slice().sort((a,b)=> a.vigenciaFin.localeCompare(b.vigenciaFin)).filter(fueRenovada);
   const tasaRenovacion = vencidasParaRenovar.length ? Math.round((renovadas.length/vencidasParaRenovar.length)*100) : null;
   const tamano = tamanoDatosInfo();
 
@@ -2525,43 +2546,45 @@ function viewDashboard(){
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card">
         <div class="panel-title" style="margin-top:0;">Comisión FG — este mes vs. mes anterior</div>
+        <div class="hint">Del 1 al ${parseInt(diaHoy)} de cada mes, para comparar parejo.</div>
         <div style="margin-top:6px;">
           <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Soles</div>
           <div style="display:flex;align-items:baseline;gap:10px;">
             <div class="num" style="font-size:22px;font-weight:700;">${fmtMoney(cur.empresa)}</div>
-            <div style="font-size:12.5px;font-weight:600;color:${dEmpresa>=0?'#3D6B52':'#B8483A'};">${dEmpresa>=0?'▲':'▼'} ${Math.abs(dEmpresa).toFixed(0)}%</div>
+            ${pctHtml(dEmpresa, prevAlDia.empresa)}
           </div>
-          <div class="hint">Mes anterior: ${fmtMoney(prev.empresa)}</div>
+          <div class="hint">Al ${parseInt(diaHoy)} de ${meses[parseInt(prevKey.slice(5,7))-1].toLowerCase()}: ${fmtMoney(prevAlDia.empresa)} · ${meses[parseInt(prevKey.slice(5,7))-1].toLowerCase()} completo: ${fmtMoney(prev.empresa)}</div>
         </div>
         <div style="margin-top:10px;">
           <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Dólares</div>
           <div style="display:flex;align-items:baseline;gap:10px;">
             <div class="num" style="font-size:22px;font-weight:700;">${fmtUSD(cur.empresaUSD)}</div>
-            <div style="font-size:12.5px;font-weight:600;color:${dEmpresaUSD>=0?'#3D6B52':'#B8483A'};">${dEmpresaUSD>=0?'▲':'▼'} ${Math.abs(dEmpresaUSD).toFixed(0)}%</div>
+            ${pctHtml(dEmpresaUSD, prevAlDia.empresaUSD)}
           </div>
-          <div class="hint">Mes anterior: ${fmtUSD(prev.empresaUSD)}</div>
+          <div class="hint">Al ${parseInt(diaHoy)} de ${meses[parseInt(prevKey.slice(5,7))-1].toLowerCase()}: ${fmtUSD(prevAlDia.empresaUSD)} · ${meses[parseInt(prevKey.slice(5,7))-1].toLowerCase()} completo: ${fmtUSD(prev.empresaUSD)}</div>
         </div>
-        <div class="hint" style="margin-top:8px;">${cur.count} venta(s) este mes vs. ${prev.count||0} el mes pasado</div>
+        <div class="hint" style="margin-top:8px;">${cur.count} venta(s) este mes vs. ${prevAlDia.count} al mismo día de ${meses[parseInt(prevKey.slice(5,7))-1].toLowerCase()} (${prev.count||0} en todo el mes)</div>
       </div>
       <div class="card">
         <div class="panel-title" style="margin-top:0;">📊 Este mes vs. mismo mes, año pasado</div>
+        <div class="hint">Del 1 al ${parseInt(diaHoy)} de ${meses[parseInt(curKey.slice(5,7))-1].toLowerCase()} de cada año.</div>
         <div style="margin-top:6px;">
           <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Soles</div>
           <div style="display:flex;align-items:baseline;gap:10px;">
             <div class="num" style="font-size:22px;font-weight:700;">${fmtMoney(cur.empresa)}</div>
-            <div style="font-size:12.5px;font-weight:600;color:${dAnioPEN>=0?'#3D6B52':'#B8483A'};">${dAnioPEN>=0?'▲':'▼'} ${Math.abs(dAnioPEN).toFixed(0)}%</div>
+            ${pctHtml(dAnioPEN, anioPrevAlDia.empresa)}
           </div>
-          <div class="hint">${meses[parseInt(curKey.slice(5,7))-1]} ${anioPrevKey.slice(0,4)}: ${fmtMoney(anioPrev.empresa)}</div>
+          <div class="hint">Al ${parseInt(diaHoy)} de ${meses[parseInt(curKey.slice(5,7))-1].toLowerCase()} ${anioPrevKey.slice(0,4)}: ${fmtMoney(anioPrevAlDia.empresa)} · mes completo: ${fmtMoney(anioPrev.empresa)}</div>
         </div>
         <div style="margin-top:10px;">
           <div style="font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.03em;">Dólares</div>
           <div style="display:flex;align-items:baseline;gap:10px;">
             <div class="num" style="font-size:22px;font-weight:700;">${fmtUSD(cur.empresaUSD)}</div>
-            <div style="font-size:12.5px;font-weight:600;color:${dAnioUSD>=0?'#3D6B52':'#B8483A'};">${dAnioUSD>=0?'▲':'▼'} ${Math.abs(dAnioUSD).toFixed(0)}%</div>
+            ${pctHtml(dAnioUSD, anioPrevAlDia.empresaUSD)}
           </div>
-          <div class="hint">${meses[parseInt(curKey.slice(5,7))-1]} ${anioPrevKey.slice(0,4)}: ${fmtUSD(anioPrev.empresaUSD)}</div>
+          <div class="hint">Al ${parseInt(diaHoy)} de ${meses[parseInt(curKey.slice(5,7))-1].toLowerCase()} ${anioPrevKey.slice(0,4)}: ${fmtUSD(anioPrevAlDia.empresaUSD)} · mes completo: ${fmtUSD(anioPrev.empresaUSD)}</div>
         </div>
-        <div class="hint" style="margin-top:8px;">${cur.count} venta(s) este mes vs. ${anioPrev.count||0} el mismo mes el año pasado</div>
+        <div class="hint" style="margin-top:8px;">${cur.count} venta(s) este mes vs. ${anioPrevAlDia.count} a la misma fecha del año pasado (${anioPrev.count||0} en todo el mes)</div>
       </div>
     </div>
     <div class="card" style="margin-bottom:16px;">
