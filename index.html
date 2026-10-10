@@ -362,6 +362,7 @@ const PRODUCTOS = [
   { id:'seguro_domicilio', label:'Seguro de Domicilio', categoria:'seguro' },
   { id:'trec', label:'TREC', categoria:'seguro' },
   { id:'car', label:'CAR', categoria:'seguro' },
+  { id:'desgravamen', label:'Desgravamen', categoria:'seguro' },
   { id:'responsabilidad_civil', label:'Responsabilidad Civil', categoria:'seguro' },
   { id:'multiriesgo', label:'Multiriesgo', categoria:'seguro' },
   { id:'cartas_fianza', label:'Cartas Fianza', categoria:'seguro' },
@@ -3425,7 +3426,7 @@ function viewCobroComisiones(){
   return `
     <div class="page-head">
       <div><h1>Comisiones</h1><p>Calcula la comisión de cada venta, revisa qué te falta cobrar de las aseguradoras, y su margen para FG.</p></div>
-      <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
+      <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${sesionUsuario && sesionUsuario.rol==='admin' && !vistaComo ? '<button class="btn" id="btnImportarHistorial" title="Carga un archivo de historial de pólizas preparado a partir de los reportes de Alta">📂 Importar historial</button><input type="file" id="inputImportarHistorial" accept=".json,application/json" style="display:none">' : ''}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
     </div>
     ${pendientesCalculo.length>0 ? `
     <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;border:1px solid var(--border);">
@@ -3588,6 +3589,19 @@ function wireCobroComisiones(){
     save(); render();
   });
   const btnConc = document.getElementById('btnConciliarAlta'); if(btnConc) btnConc.onclick = abrirConciliacionAlta;
+  const btnImpH = document.getElementById('btnImportarHistorial'), inpImpH = document.getElementById('inputImportarHistorial');
+  if(btnImpH && inpImpH){
+    btnImpH.onclick = () => inpImpH.click();
+    inpImpH.onchange = e => {
+      const file = e.target.files[0]; if(!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        let data; try{ data = JSON.parse(reader.result); }catch(err){ alert('El archivo no es un historial válido.'); return; }
+        importarHistorialPolizas(data);
+      };
+      reader.readAsText(file); e.target.value = '';
+    };
+  }
   document.querySelectorAll('[data-pagos-venta]').forEach(b=> b.onclick = ()=> abrirPagosVenta(b.dataset.pagosVenta));
 }
 
@@ -3623,6 +3637,51 @@ function extraerPolizasDeTexto(texto){
     encontrados.set(n, { veces: (prev?prev.veces:0)+1, extorno: (prev?prev.extorno:false) || esExtorno, lineas: (prev?prev.lineas:[]).concat(linea?[linea]:[]), contexto: prev?prev.contexto:texto.slice(Math.max(0,m.index-50), m.index+m[0].length+40).replace(/\s+/g,' ') });
   }
   return encontrados;
+}
+// Importa fichas de pólizas (con sus pagos de comisión) preparadas a partir de los reportes de Alta.
+// Es idempotente: una ficha con el mismo identificador de carga no se vuelve a crear, y los pagos repetidos se ignoran.
+function importarHistorialPolizas(data){
+  if(!data || data.formato!=='fg-historial-polizas-v1' || !Array.isArray(data.fichas)){ alert('El archivo no tiene el formato de historial del CRM.'); return; }
+  const norm = t => String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const resumen = { clientesCreados:0, fichasCreadas:0, fichasExistentes:0, pagosAgregados:0, pagosRepetidos:0 };
+  const buscarCliente = c => {
+    if(c.clienteId){ const x = state.clientes.find(k=>k.id===c.clienteId); if(x) return x; }
+    const doc = normDocumento ? normDocumento(c.documento) : String(c.documento||'').replace(/\D/g,'');
+    if(doc){ const x = state.clientes.find(k=> (normDocumento ? normDocumento(k.documento) : String(k.documento||'').replace(/\D/g,''))===doc); if(x) return x; }
+    const n = norm(c.nombre); return state.clientes.find(k=>norm(k.nombre)===n) || null;
+  };
+  data.fichas.forEach(f=>{
+    let cli = buscarCliente(f.cliente||{});
+    if(!cli){
+      cli = { id: uid(), nombre: f.cliente.nombre, tipoDocumento: f.cliente.tipoDocumento||'RUC', documento: f.cliente.documento||'', estadoContacto:'cliente', etiquetas:[], datosAdicionales: f.cliente.nota||'' };
+      state.clientes.push(cli); resumen.clientesCreados++;
+      registrarAuditoria('crear','cliente',cli.id,`Cliente (historial Alta): ${cli.nombre}`);
+    }
+    let v = state.ventas.find(x=>x.cargaId && x.cargaId===f.cargaId);
+    if(v){ resumen.fichasExistentes++; }
+    else{
+      const totalFG = (f.pagos||[]).reduce((a,p)=>a+(Number(p.monto)||0),0);
+      v = { id: uid(), folio: ++state.folioVenta, cargaId: f.cargaId, origenCarga: 'historial_alta_corporativo',
+        clienteId: cli.id, asesorId: f.asesorId||'', canalVenta:'alta_corredores', aseguradora: f.aseguradora, numeroPoliza: f.numeroPoliza||'',
+        tipoProducto: f.tipoProducto, tipoVenta:'renovacion', fechaVenta: f.fechaVenta, moneda: f.moneda||'PEN',
+        primaBruta: 0, porcentajeComisionAseguradora: 0, modoComisionAseguradora:'fijo',
+        comisionTotal: Math.round(totalFG/0.7*100)/100, porcentajeFG: 70, tipoComisionAsesor:'ninguna', valorComisionAsesor:0,
+        formaPago:'contado', vigenciaInicio: f.vigenciaInicio||f.fechaVenta, vigenciaFin: f.vigenciaFin||'',
+        estadoVenta:'emitida', estadoComision:'pagada', estadoCobroFG:'pendiente', fechaCobroFG:'', comisionAprobada:true,
+        notas: f.notas||'', pagosComision: [] };
+      state.ventas.push(v); resumen.fichasCreadas++;
+      registrarAuditoria('crear','venta',v.id,`Ficha historial Alta ${folioV(v.folio)} — ${cli.nombre}`);
+    }
+    (f.pagos||[]).forEach(p=>{ if(registrarPagoComision(v, p)) resumen.pagosAgregados++; else resumen.pagosRepetidos++; });
+  });
+  (data.pagosExistentes||[]).forEach(p=>{
+    const v = state.ventas.find(x=>x.id===p.ventaId);
+    if(!v) return;
+    if(registrarPagoComision(v, p)) resumen.pagosAgregados++; else resumen.pagosRepetidos++;
+  });
+  save(); render();
+  window.__ultimoImportHistorial = resumen;
+  alert(`Historial importado: ${resumen.fichasCreadas} ficha(s) nueva(s), ${resumen.clientesCreados} cliente(s) nuevo(s), ${resumen.pagosAgregados} pago(s) registrado(s).${resumen.fichasExistentes?` ${resumen.fichasExistentes} ficha(s) ya existían.`:''}${resumen.pagosRepetidos?` ${resumen.pagosRepetidos} pago(s) ya estaban.`:''}`);
 }
 function abrirConciliacionAlta(){
   const fechaDefecto = todayISO();
