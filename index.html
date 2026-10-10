@@ -936,6 +936,7 @@ async function load(opts){
           state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
           state.folioSiniestro = Math.max(Number(state.folioSiniestro)||0, ...state.siniestros.map(x=>Number(x.folio)||0));
           snapshotGuardado();
+          coreGuardado = JSON.stringify(coreState());
           cargadoDeNube = true;
           actualizarIndicadorNube('ok');
         } else if(coreSnap.exists && coreSnap.data().json){
@@ -1090,6 +1091,118 @@ function avisarFoliosReasignados(asignaciones){
   setTimeout(()=>host.remove(), 8000);
   if(!document.querySelector('.modal-backdrop')) render();
 }
+// ---- Sincronización en tiempo real ----
+// Escucha los cambios que hacen otros usuarios y los incorpora sin recargar la página.
+// Regla de conflicto: si este dispositivo tiene un cambio propio aún sin subir en ese mismo registro,
+// se conserva el cambio local (se subirá en el siguiente guardado).
+let coreGuardado = null;
+let escuchasNube = [];
+let renderRemotoPendiente = false;
+let cambiosRemotosContador = 0;
+function jsonEstable(o){
+  if(o===null || typeof o!=='object') return JSON.stringify(o);
+  if(Array.isArray(o)) return '[' + o.map(jsonEstable).join(',') + ']';
+  return '{' + Object.keys(o).sort().filter(k=>o[k]!==undefined).map(k=>JSON.stringify(k)+':'+jsonEstable(o[k])).join(',') + '}';
+}
+function puedeRenderizarAhora(){
+  if(document.querySelector('.modal-backdrop') || document.getElementById('pagosVentaOverlay')) return false;
+  const a = document.activeElement;
+  if(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.id!=='buscadorGlobal') return false;
+  return true;
+}
+function pedirRenderRemoto(){
+  renderRemotoPendiente = true;
+  if(puedeRenderizarAhora()) ejecutarRenderRemoto();
+}
+function ejecutarRenderRemoto(){
+  if(!renderRemotoPendiente || !sesionIniciada) return;
+  renderRemotoPendiente = false;
+  const y = window.scrollY;
+  try{ render(); }catch(e){ console.error(e); }
+  window.scrollTo(0, y);
+  const ind = document.getElementById('indicadorNube');
+  if(ind && usandoNube){ ind.textContent = '🔄 Actualizado con cambios de otro usuario'; setTimeout(()=>actualizarIndicadorNube('ok'), 4000); }
+}
+setInterval(()=>{ if(renderRemotoPendiente && puedeRenderizarAhora()) ejecutarRenderRemoto(); }, 1500);
+const primeraLecturaHecha = {};
+function aplicarCambiosColeccion(clave, snap){
+  if(snap.metadata.hasPendingWrites) return; // eco de nuestros propios cambios
+  // la primera lectura trae lo mismo que ya se cargó al ingresar: no hace falta aplicarla
+  if(!primeraLecturaHecha[clave]){ primeraLecturaHecha[clave] = true; return; }
+  const prev = ultimoGuardado[clave] || (ultimoGuardado[clave] = {});
+  let hubo = false;
+  snap.docChanges().forEach(ch=>{
+    const id = ch.doc.id;
+    const lista = state[clave];
+    const idx = lista.findIndex(x=>x.id===id);
+    const local = idx>=0 ? lista[idx] : null;
+    const localSinSubir = local ? (prev[id]!==JSON.stringify(local)) : false;
+    if(ch.type==='removed'){
+      if(local && !localSinSubir){ lista.splice(idx,1); delete prev[id]; hubo = true; }
+      else if(!local) delete prev[id];
+      return;
+    }
+    const remoto = ch.doc.data();
+    if(local && jsonEstable(local)===jsonEstable(remoto)){ prev[id] = JSON.stringify(local); return; }
+    if(localSinSubir) return;            // gana el cambio local pendiente
+    if(!local && prev[id]) return;       // lo borramos aquí y aún no se sube el borrado
+    if(local) lista[idx] = remoto; else lista.push(remoto);
+    prev[id] = JSON.stringify(remoto);
+    hubo = true;
+  });
+  if(hubo){ cambiosRemotosContador++; pedirRenderRemoto(); }
+}
+function aplicarCambioCore(snap){
+  if(snap.metadata.hasPendingWrites || !snap.exists) return;
+  const remoto = (snap.data()||{}).core;
+  if(!remoto) return;
+  const actual = JSON.stringify(coreState());
+  if(coreGuardado!==null && actual!==coreGuardado) return; // hay cambios locales sin subir
+  if(jsonEstable(JSON.parse(actual))===jsonEstable(remoto)) return;
+  const temaLocal = state.tema;
+  Object.keys(remoto).forEach(k=>{ state[k] = remoto[k]; });
+  state.tema = temaLocal; // el tema claro/oscuro es preferencia de cada dispositivo
+  aplicarMigracionesState();
+  state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
+  coreGuardado = JSON.stringify(coreState());
+  cambiosRemotosContador++;
+  pedirRenderRemoto();
+}
+function iniciarSincronizacion(){
+  if(!fbDb || escuchasNube.length || !usandoNube) return;
+  const err = e => console.warn('Sincronización en tiempo real interrumpida', e);
+  escuchasNube = [
+    FB_CLIENTES_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('clientes', s), err),
+    FB_VENTAS_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('ventas', s), err),
+    FB_ASESORES_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('asesores', s), err),
+    FB_SINIESTROS_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('siniestros', s), err),
+    FB_DOC_REF().onSnapshot({ includeMetadataChanges:false }, aplicarCambioCore, err),
+  ];
+}
+function detenerSincronizacion(){ escuchasNube.forEach(u=>{ try{ u(); }catch(e){} }); escuchasNube = []; Object.keys(primeraLecturaHecha).forEach(k=>delete primeraLecturaHecha[k]); }
+// ---- Aviso de versión nueva ----
+let versionCargada = null, avisoVersionMostrado = false;
+async function firmaVersion(){
+  try{
+    const r = await fetch(location.pathname + '?v=' + Date.now(), { method:'HEAD', cache:'no-store' });
+    return r.headers.get('etag') || r.headers.get('last-modified') || null;
+  }catch(e){ return null; }
+}
+async function revisarVersionNueva(){
+  const f = await firmaVersion();
+  if(!f) return;
+  if(versionCargada===null){ versionCargada = f; return; }
+  if(f!==versionCargada && !avisoVersionMostrado){
+    avisoVersionMostrado = true;
+    const b = document.createElement('div');
+    b.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#1F4B41;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;z-index:10000;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;gap:10px;align-items:center;max-width:92vw;';
+    b.innerHTML = '<span>Hay una versión nueva del CRM.</span><button class="btn btn-sm" style="background:#fff;color:#1F4B41;">Recargar</button>';
+    b.querySelector('button').onclick = () => { save(true); setTimeout(()=>location.reload(), 600); };
+    document.body.appendChild(b);
+  }
+}
+revisarVersionNueva();
+setInterval(revisarVersionNueva, 5*60*1000);
 let guardadoEnCurso = false;
 let guardadoPendiente = false;
 function save(inmediato){
@@ -1136,13 +1249,15 @@ function save(inmediato){
           });
           Object.keys(prev).forEach(id=>{ if(!idsActuales.has(id)) operaciones.push({ tipo:'delete', ref: col.doc(id), clave, id }); });
         });
-        operaciones.push({ tipo:'set', ref: FB_DOC_REF(), data: { core: coreState(), migradoARegistros: true, actualizado: new Date().toISOString() } });
+        const coreJson = JSON.stringify(coreState());
+        operaciones.push({ tipo:'set', ref: FB_DOC_REF(), data: { core: JSON.parse(coreJson), migradoARegistros: true, actualizado: new Date().toISOString() }, esCore: true, coreJson });
         for(const grupo of chunkArray(operaciones, 400)){
           const batch = fbDb.batch();
           grupo.forEach(op=>{ if(op.tipo==='set') batch.set(op.ref, op.data); else batch.delete(op.ref); });
           await batch.commit();
           // registrar como guardado solo lo que este lote envió
           grupo.forEach(op=>{
+            if(op.esCore){ coreGuardado = op.coreJson; return; }
             if(!op.clave) return;
             if(op.tipo==='set') ultimoGuardado[op.clave][op.id] = op.json;
             else delete ultimoGuardado[op.clave][op.id];
@@ -1225,6 +1340,7 @@ function checkAuthAndRender(){
     if(!esAsesorSesion()) mostrarAvisoNavegador();
     verificarRespaldoAutomatico();
     verificarResumenSemanalAutomatico();
+    iniciarSincronizacion();
   }
 }
 
@@ -1630,7 +1746,7 @@ function wireCommon(){
   const btnSalirVista = document.getElementById('btnSalirVistaComo'); if(btnSalirVista) btnSalirVista.onclick = () => { vistaComo = null; tab = 'dashboard'; render(); };
   const btnTema = document.getElementById('btnToggleTema'); if(btnTema) btnTema.onclick = toggleTema;
   const btnAvisos = document.getElementById('btnActivarAvisos'); if(btnAvisos) btnAvisos.onclick = activarAvisosNavegador;
-  const btnSalir = document.getElementById('btnCerrarSesion'); if(btnSalir) btnSalir.onclick = () => { sesionIniciada = false; sesionUsuario = null; vistaComo = null; if(fbAuth) fbAuth.signOut().catch(()=>{}); checkAuthAndRender(); };
+  const btnSalir = document.getElementById('btnCerrarSesion'); if(btnSalir) btnSalir.onclick = () => { detenerSincronizacion(); sesionIniciada = false; sesionUsuario = null; vistaComo = null; if(fbAuth) fbAuth.signOut().catch(()=>{}); checkAuthAndRender(); };
   const btnDescargar = document.getElementById('btnDescargarRespaldo'); if(btnDescargar) btnDescargar.onclick = descargarRespaldo;
   const btnVerAuto = document.getElementById('btnVerRespaldosAuto'); if(btnVerAuto) btnVerAuto.onclick = abrirRespaldosAutomaticos;
   const btnVerPapelera = document.getElementById('btnVerPapelera'); if(btnVerPapelera) btnVerPapelera.onclick = abrirPapelera;
