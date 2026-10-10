@@ -842,12 +842,18 @@ function cobradoEnMes(ventas, ym){
   });
   return r;
 }
-// Registra un pago evitando duplicados (misma fecha y mismo monto). Devuelve true si lo agregó.
+// ¿La venta ya tiene este pago? Misma fecha y mismo monto. Si los dos pagos traen referencia de línea del reporte
+// (ref), solo es el mismo cuando la referencia coincide: así dos líneas idénticas de un reporte no se pierden.
+function pagoYaExiste(v, pago){
+  const monto = Math.round((Number(pago.monto)||0)*100)/100;
+  return pagosDe(v).some(p=> p.fecha===pago.fecha && Math.abs((Number(p.monto)||0)-monto)<0.005 && (!pago.ref || !p.ref || p.ref===pago.ref));
+}
+// Registra un pago evitando duplicados (ver pagoYaExiste). Devuelve true si lo agregó.
 function registrarPagoComision(v, pago){
   if(!Array.isArray(v.pagosComision)) v.pagosComision = [];
   const monto = Math.round((Number(pago.monto)||0)*100)/100;
-  if(v.pagosComision.some(p=> p.fecha===pago.fecha && Math.abs((Number(p.monto)||0)-monto)<0.005)) return false;
-  v.pagosComision.push({ id: uid(), fecha: pago.fecha, monto, moneda: pago.moneda || v.moneda || 'PEN', reporte: pago.reporte || '', nota: pago.nota || '' });
+  if(pagoYaExiste(v, pago)) return false;
+  v.pagosComision.push(Object.assign({ id: uid(), fecha: pago.fecha, monto, moneda: pago.moneda || v.moneda || 'PEN', reporte: pago.reporte || '', nota: pago.nota || '' }, pago.ref ? { ref: pago.ref } : {}));
   v.pagosComision.sort((a,b)=> (a.fecha||'').localeCompare(b.fecha||''));
   if(monto>0 && v.estadoCobroFG!=='cobrado'){ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = pago.fecha; }
   return true;
@@ -3683,22 +3689,132 @@ function importarHistorialPolizas(data){
   window.__ultimoImportHistorial = resumen;
   alert(`Historial importado: ${resumen.fichasCreadas} ficha(s) nueva(s), ${resumen.clientesCreados} cliente(s) nuevo(s), ${resumen.pagosAgregados} pago(s) registrado(s).${resumen.fichasExistentes?` ${resumen.fichasExistentes} ficha(s) ya existían.`:''}${resumen.pagosRepetidos?` ${resumen.pagosRepetidos} pago(s) ya estaban.`:''}`);
 }
+// ---- Reporte de comisiones de Alta: limpieza del texto, totales y líneas de "Corporativo" ----
+const MESES_ES = { enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6, julio:7, agosto:8, septiembre:9, setiembre:9, octubre:10, noviembre:11, diciembre:12 };
+// Limpia el texto pegado del correo y separa el reporte más reciente en Modulares y Corporativo.
+function prepararReporteAlta(textoOriginal){
+  let t = String(textoOriginal||'').replace(/\r/g,'');
+  // quita las marcas de cita ("> >") de los correos respondidos y los enlaces de teléfono que agrega Gmail
+  t = t.split('\n').map(l=> l.replace(/^\s*(>\s*)+/, '')).join('\n');
+  t = t.replace(/<\([^>\n]*>/g,' ').replace(/<(mailto:|https?:)[^>\n]*>/gi,' ');
+  // fecha del reporte, si se pegó el asunto ("Detalle de comisiones 30.09.2026")
+  let fecha = '';
+  const mf = t.match(/comisiones\s+(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/i);
+  if(mf) fecha = `${mf[3]}-${mf[2].padStart(2,'0')}-${mf[1].padStart(2,'0')}`;
+  // si se pegó la conversación completa el reporte aparece varias veces (el más reciente primero): se usa solo el primero
+  let reporte = t, varios = false;
+  const marcasMod = Array.from(t.matchAll(/Modulares\s*:/gi)).map(m=>m.index);
+  const marcasCorp = Array.from(t.matchAll(/Corporativo\s*:/gi)).map(m=>m.index);
+  if(marcasMod.length>=2){ reporte = t.slice(0, marcasMod[1]); varios = true; }
+  else if(marcasCorp.length>=2){ reporte = t.slice(0, marcasCorp[1]); varios = true; }
+  const iCorp = reporte.search(/Corporativo\s*:/i);
+  const iMod = reporte.search(/Modulares\s*:/i);
+  const modular = reporte.slice(iMod>=0 && (iCorp<0 || iMod<iCorp) ? iMod : 0, iCorp>=0 ? iCorp : reporte.length);
+  const corporativo = iCorp>=0 ? reporte.slice(iCorp) : '';
+  const total = re => { const m = reporte.match(re); return m ? { moneda: /S\//.test(m[1]) ? 'PEN' : 'USD', monto: parseFloat(m[2].replace(/,/g,'')) } : null; };
+  return { fecha, varios, modular, corporativo,
+    totalModular: total(/Modulares\s*:\s*(USD|US\$|\$|S\/)\s*(-?[\d,]+\.\d{2})/i),
+    totalCorporativo: total(/Corporativo\s*:\s*(USD|US\$|\$|S\/)\s*(-?[\d,]+\.\d{2})/i) };
+}
+// Lee las líneas de Corporativo: "Eduardo Flores 25 Septiembre 8061 SANITAS SCTR ESCAR MARYORY E.I.R.L S/ 10.74"
+function extraerLineasCorporativas(sec){
+  const t = String(sec||'').replace(/\s+/g,' ');
+  const re = new RegExp('(\\d{1,2})\\s+(' + Object.keys(MESES_ES).join('|') + ')\\s+(\\d{3,7})\\s+(LA POSITIVA|[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\\s+(SCTR SALUD|SCTR PENSI[OÓ]N|SCTR|VIDA LEY|[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\\s+(.+?)\\s+(-?)\\s*(S\\/|US\\$|\\$)\\s*(-?)\\s*(\\d[\\d,]*\\.\\d{2})', 'gi');
+  const lineas = [], vistas = {};
+  for(const m of t.matchAll(re)){
+    const aseg = m[4].toUpperCase(), prod = m[5].toUpperCase().replace('Ó','O');
+    if(aseg==='CARGO' || prod==='CARGO') continue; // cargos de correo: no son comisiones
+    const monto = parseFloat(m[10].replace(/,/g,'')) * ((m[7]||m[9]) ? -1 : 1);
+    const cliente = m[6].trim();
+    const clave = `${m[3]}|${cliente.toUpperCase()}|${monto.toFixed(2)}`;
+    vistas[clave] = (vistas[clave]||0) + 1;
+    lineas.push({ dia: +m[1], mes: m[2], factura: m[3], aseg, prod, cliente, monto, moneda: m[8]==='S/' ? 'PEN' : 'USD', ocurrencia: vistas[clave] });
+  }
+  return lineas;
+}
+// Parecido entre el nombre que trae el reporte (a veces cortado o con otro orden) y el del cliente en el CRM (0 a 1)
+const STOP_NOMBRE = new Set(['SAC','SA','SAA','SRL','EIRL','S','A','C','E','I','R','L','SOCIEDAD','ANONIMA','CERRADA','DE','DEL','LA','LAS','LOS','EL','Y','LTDA','SUCURSAL','SUCUR']);
+function tokensNombre(n){ return String(n||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/&/g,' Y ').replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(x=> x && !STOP_NOMBRE.has(x)); }
+function tokensIguales(a,b){ if(a===b) return true; if(Math.min(a.length,b.length)<4) return false; return a.startsWith(b)||b.startsWith(a)||a.endsWith(b)||b.endsWith(a); }
+function similitudNombre(a,b){
+  const A = tokensNombre(a), B = tokensNombre(b);
+  if(!A.length || !B.length) return 0;
+  const usados = new Set(); let n = 0;
+  A.forEach(x=>{ const j = B.findIndex((y,k)=> !usados.has(k) && tokensIguales(x,y)); if(j>=0){ usados.add(j); n++; } });
+  const menor = Math.min(A.length, B.length);
+  if(n < Math.min(2, menor)) return 0;
+  // las palabras que sobran restan un poco: "DERMATOLOGICA EXPRESS" se parece más a sí misma que a "DERMATOLOGICA S.A.C."
+  return (n / menor) * (0.85 + 0.15 * n / Math.max(A.length, B.length));
+}
+// Producto del reporte → productos del CRM
+const PROD_REPORTE = { 'SCTR':['sctr_salud','sctr_pension'], 'SCTR SALUD':['sctr_salud'], 'SCTR PENSION':['sctr_pension'], 'VL':['vida_ley'], 'VIDA LEY':['vida_ley'], 'SOAT':['soat'], 'EPS':['eps','salud'], 'SALUD':['salud','eps'], 'DESGRAVAMEN':['desgravamen'], 'FIANZA':['cartas_fianza','cauciones'], 'RC':['responsabilidad_civil'], 'CAR':['car'], 'TREC':['trec'], 'VEHICULAR':['seguros_vehiculares'] };
+const normTxtSimple = t => String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+function ventaPendienteCalculo(v){ return esSeguro(v.tipoProducto) && v.modoComisionAseguradora!=='fijo' && v.primaBruta && !v.porcentajeComisionAseguradora; }
+// Calcula el % de comisión de la aseguradora a partir de lo que pagó Alta (que es la parte FG de la comisión)
+function porcentajeDesdePago(v, monto){
+  const pn = Number(v.primaNeta) || calcPrimaNeta(v.primaBruta);
+  if(!(pn>0) || !(monto>0)) return 0;
+  return Math.round((monto / ((Number(v.porcentajeFG)||70)/100)) / pn * 10000) / 100;
+}
+function completarCalculoConPago(v, monto, moneda){
+  if(!ventaPendienteCalculo(v) || (moneda||'PEN')!==(v.moneda||'PEN')) return false;
+  const pct = porcentajeDesdePago(v, monto);
+  if(!pct) return false;
+  const pn = Number(v.primaNeta) || calcPrimaNeta(v.primaBruta);
+  v.porcentajeComisionAseguradora = pct;
+  v.modoComisionAseguradora = 'porcentaje';
+  v.comisionTotal = Math.round(pn * pct) / 100;
+  return true;
+}
+const refLineaCorp = (fecha, l) => `alta|${fecha}|${l.factura}|${l.monto.toFixed(2)}|${l.ocurrencia}`;
+// Ventas del CRM que pueden corresponder a una línea de Corporativo, de la más probable a la menos
+function opcionesLineaCorporativa(l, fecha, ventas){
+  const prods = PROD_REPORTE[l.prod] || null;
+  const asegRep = normTxtSimple(l.aseg);
+  const ref = refLineaCorp(fecha, l);
+  const opciones = [];
+  ventas.forEach(v=>{
+    const cli = state.clientes.find(c=>c.id===v.clienteId);
+    if(!cli) return;
+    const sim = similitudNombre(l.cliente, cli.nombre);
+    if(sim < 0.7) return;
+    const asegOk = !!asegRep && normTxtSimple(v.aseguradora).includes(asegRep);
+    const prodOk = !prods || prods.includes(v.tipoProducto);
+    const pagos = pagosDe(v);
+    const yaReg = pagoYaExiste(v, { fecha, monto: l.monto, ref });
+    let score = sim*10 + (asegOk?6:0) + (prodOk?6:0) + (yaReg?30:0);
+    if(l.prod==='SOAT'){
+      if(!pagos.some(p=>(Number(p.monto)||0)>0)) score += 4;                // SOAT todavía sin cobrar
+      if(v.fechaVenta && fecha && v.fechaVenta > fecha) score -= 10;          // vendido después del reporte
+      else if(v.fechaVenta && fecha) score += Math.max(0, 2 - (new Date(fecha)-new Date(v.fechaVenta))/86400000/120); // más reciente primero
+      const esperado = comisionFG(v);
+      if(esperado>0 && Math.abs(esperado - l.monto) < 0.5) score += 3;
+    } else {
+      if(pagos.length) score += 2;                                            // la ficha que ya recibe los pagos de esa póliza
+      if(v.vigenciaInicio && fecha && v.vigenciaInicio > fecha) score -= 3;
+    }
+    opciones.push({ v, score, sim, asegOk, prodOk, yaReg });
+  });
+  opciones.sort((a,b)=> b.score-a.score || b.v.folio-a.v.folio);
+  return opciones;
+}
 function abrirConciliacionAlta(){
-  const fechaDefecto = todayISO();
   const ov = document.createElement('div');
   ov.id = 'conciliacionOverlay';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;';
   ov.innerHTML = `
-    <div class="card" style="max-width:860px;width:100%;padding:20px;background:var(--bg,#fff);">
+    <div class="card" style="max-width:1020px;width:100%;padding:20px;background:var(--bg,#fff);">
       <h2 style="margin:0 0 4px;">📥 Conciliar reporte de comisiones de Alta</h2>
-      <p class="hint" style="margin:0 0 14px;">Copia del correo <b>"Detalle de comisiones"</b> la parte de <b>Modulares</b> (o todo el correo) y pégala aquí. El CRM busca cada N° de póliza con su monto y te muestra los pagos que registrará con la fecha del reporte. Nada se guarda hasta que confirmes.</p>
+      <p class="hint" style="margin:0 0 14px;">Copia el correo <b>"Detalle de comisiones"</b> completo, con <b>Modulares</b> y <b>Corporativo</b>, y pégalo aquí. Si pegas toda la conversación, el CRM usa solo el reporte más reciente. Te propone a qué venta va cada pago y revisa que la suma cuadre con el total del reporte. Nada se guarda hasta que confirmes.</p>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
-        <div class="field"><label>Fecha de pago del reporte</label><input type="date" id="concFecha" value="${fechaDefecto}"></div>
-        <button class="btn" id="concAnalizar">Buscar pólizas</button>
+        <div class="field"><label>Fecha del reporte (va en el asunto del correo)</label><input type="date" id="concFecha" value="${todayISO()}"></div>
+        <button class="btn" id="concAnalizar">Buscar pagos</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;margin-left:auto;max-width:360px;"><input type="checkbox" id="concCompletar" checked> Completar el cálculo de comisión de las ventas "pendientes de calcular" con lo que pagó Alta</label>
       </div>
-      <textarea id="concTexto" rows="9" style="width:100%;font-family:monospace;font-size:12px;" placeholder="Pega aquí el detalle de comisiones…"></textarea>
+      <textarea id="concTexto" rows="8" style="width:100%;font-family:monospace;font-size:12px;" placeholder="Pega aquí el correo del detalle de comisiones…"></textarea>
       <div id="concResultado" style="margin-top:14px;"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px;">
+        <span id="concResumen" class="hint" style="margin-right:auto;"></span>
         <button class="btn btn-ghost" id="concCancelar">Cerrar</button>
         <button class="btn btn-primary" id="concAplicar" disabled>Registrar pagos seleccionados</button>
       </div>
@@ -3707,73 +3823,178 @@ function abrirConciliacionAlta(){
   const cerrar = ()=> ov.remove();
   ov.querySelector('#concCancelar').onclick = cerrar;
   ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
-  let candidatos = [];
+  const inpFecha = ov.querySelector('#concFecha');
+  let fechaManual = false;
+  let prep = null, filasMod = [], filasCorp = [], sinRegistrar = [], sumaMod = null;
+  const completarActivo = ()=> ov.querySelector('#concCompletar').checked;
+
+  const estadoMod = (f, fecha)=>{
+    const { v, info, linea } = f;
+    const monto = linea.monto;
+    const yaRegistrado = monto!=null && pagoYaExiste(v, { fecha, monto });
+    const esNegativo = monto!=null ? monto<0 : info.extorno;
+    return { yaRegistrado, esNegativo, yaCobrado: v.estadoCobroFG==='cobrado' };
+  };
+  const estadoCorp = (f, fecha)=>{
+    const op = f.opciones.find(o=> o.v.id===f.sel) || null;
+    const v = op ? op.v : null;
+    const yaRegistrado = v ? pagoYaExiste(v, { fecha, monto: f.l.monto, ref: refLineaCorp(fecha, f.l) }) : false;
+    return { op, v, yaRegistrado, esNegativo: f.l.monto<0 };
+  };
+
   const analizar = ()=>{
-    const texto = ov.querySelector('#concTexto').value;
-    const fecha = ov.querySelector('#concFecha').value;
-    const encontrados = extraerPolizasDeTexto(texto);
-    const ventas = misVentas(state.ventas).filter(v=> ventaActiva(v) && normPoliza(v.numeroPoliza).length>=4);
+    prep = prepararReporteAlta(ov.querySelector('#concTexto').value);
+    if(prep.fecha && !fechaManual) inpFecha.value = prep.fecha;
+    const fecha = inpFecha.value;
+    const ventasAct = misVentas(state.ventas).filter(ventaActiva);
+    // --- Modulares: se buscan por N° de póliza ---
+    const encontrados = extraerPolizasDeTexto(prep.modular);
     const usados = new Set();
-    candidatos = [];
-    ventas.forEach(v=>{
+    filasMod = [];
+    ventasAct.filter(v=> normPoliza(v.numeroPoliza).length>=4).forEach(v=>{
       const n = normPoliza(v.numeroPoliza);
       const info = encontrados.get(n);
       if(!info) return;
       usados.add(n);
-      // una fila por cada línea del reporte (una póliza puede venir con un pago y su extorno)
       const lineas = info.lineas.length ? info.lineas : [{ monto:null, moneda:v.moneda }];
-      lineas.forEach(l=> candidatos.push({ v, info, linea: l }));
+      lineas.forEach(l=> filasMod.push({ v, info, linea: l }));
     });
-    candidatos.sort((a,b)=> a.v.folio-b.v.folio);
-    // números largos del reporte (6+ dígitos) que no están en el CRM: posibles pólizas sin registrar
-    const sinRegistrar = Array.from(encontrados.entries()).filter(([n])=> !usados.has(n) && n.length>=6);
-    const fila = ({v, info, linea}, i)=>{
-      const cli = state.clientes.find(c=>c.id===v.clienteId);
-      const yaCobrado = v.estadoCobroFG==='cobrado';
-      const monto = linea.monto;
-      const yaRegistrado = monto!=null && pagosDe(v).some(p=> p.fecha===fecha && Math.abs((Number(p.monto)||0)-monto)<0.005);
-      const esNegativo = monto!=null ? monto<0 : info.extorno;
-      const marcar = !yaRegistrado && !esNegativo && !(monto==null && yaCobrado);
-      const pills = [];
-      if(yaRegistrado) pills.push('<span class="pill pill-gray">Pago ya registrado</span>');
-      else if(yaCobrado) pills.push(`<span class="pill pill-green">Cobrado ${fmtDate(v.fechaCobroFG)}</span>`);
-      else pills.push('<span class="pill pill-gold">Pendiente</span>');
-      if(esNegativo) pills.push('<span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>');
-      const difiere = monto!=null && monto>0 && info.lineas.length===1 && Math.abs(monto-comisionFG(v))>1;
-      return `<tr><td><input type="checkbox" data-conc-idx="${i}" ${marcar?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num" style="font-weight:600;${esNegativo?'color:#B8483A;':''}">${monto!=null?fmtMonedaVal(monto, linea.moneda):'—'}</td><td class="num" ${difiere?'style="color:#B8483A;" title="La comisión calculada en el CRM no coincide con lo que pagó Alta"':''}>${fmtMonedaVal(comisionFG(v), v.moneda)}${difiere?' ⚠':''}</td><td>${pills.join(' ')}</td></tr>`;
-    };
+    filasMod.sort((a,b)=> a.v.folio-b.v.folio);
+    filasMod.forEach(f=>{ const e = estadoMod(f, fecha); f.marcado = !e.yaRegistrado && !e.esNegativo && !(f.linea.monto==null && e.yaCobrado); });
+    sinRegistrar = Array.from(encontrados.entries()).filter(([n])=> !usados.has(n) && n.length>=6);
+    sumaMod = prep.totalModular ? Array.from(encontrados.values()).reduce((s,i)=> s + i.lineas.filter(l=>l.moneda===prep.totalModular.moneda).reduce((a,l)=>a+l.monto,0), 0) : null;
+    // --- Corporativo: no trae N° de póliza; se busca por cliente, aseguradora y producto ---
+    const soatUsados = new Set();
+    filasCorp = extraerLineasCorporativas(prep.corporativo).map(l=>{
+      const opciones = opcionesLineaCorporativa(l, fecha, ventasAct);
+      const fuertes = opciones.filter(o=> o.yaReg || (o.asegOk && o.prodOk));
+      const elegida = fuertes.find(o=> o.yaReg || !(l.prod==='SOAT' && soatUsados.has(o.v.id)));
+      if(elegida && l.prod==='SOAT') soatUsados.add(elegida.v.id);
+      const soatPendientes = l.prod==='SOAT' ? fuertes.filter(o=> !pagosDe(o.v).some(p=>(Number(p.monto)||0)>0)).length : 0;
+      return { l, opciones: opciones.slice(0, 10), sel: elegida ? elegida.v.id : '', soatPendientes };
+    });
+    filasCorp.forEach(f=>{ const e = estadoCorp(f, fecha); f.marcado = !!e.v && !e.yaRegistrado && !e.esNegativo; });
+    pintar();
+  };
+
+  const actualizarResumen = ()=>{
+    const fecha = inpFecha.value;
+    let n = 0, pen = 0, usd = 0, calc = 0;
+    const sumar = (monto, moneda)=>{ n++; if(moneda==='USD') usd += monto; else pen += monto; };
+    filasMod.forEach(f=>{ if(f.marcado && f.linea.monto!=null){ sumar(f.linea.monto, f.linea.moneda); if(completarActivo() && f.linea.monto>0 && ventaPendienteCalculo(f.v)) calc++; } });
+    filasCorp.forEach(f=>{ const e = estadoCorp(f, fecha); if(f.marcado && e.v){ sumar(f.l.monto, f.l.moneda); if(completarActivo() && f.l.monto>0 && ventaPendienteCalculo(e.v)) calc++; } });
+    ov.querySelector('#concResumen').innerHTML = n ? `Se registrarán <b>${n}</b> pago(s): ${[pen?fmtMoney(pen):'', usd?fmtUSD(usd):''].filter(Boolean).join(' + ')}${calc?` · ${calc} venta(s) quedarán con su comisión calculada`:''}` : '';
+    ov.querySelector('#concAplicar').disabled = !n;
+  };
+
+  const pintar = ()=>{
+    const fecha = inpFecha.value;
     const res = ov.querySelector('#concResultado');
-    if(!encontrados.size){ res.innerHTML = '<div class="hint">No se encontró ningún N° de póliza en el texto pegado.</div>'; ov.querySelector('#concAplicar').disabled = true; return; }
+    const scroll = res.querySelector('.conc-corp-scroll'); const scrollTop = scroll ? scroll.scrollTop : 0;
+    if(!filasMod.length && !filasCorp.length && !sinRegistrar.length){
+      res.innerHTML = '<div class="hint">No se encontró ninguna póliza ni línea de Corporativo en el texto pegado.</div>';
+      actualizarResumen(); return;
+    }
+    const cuadre = (titulo, total, suma)=>{
+      if(!total) return '';
+      const dif = suma!=null ? Math.abs(suma - total.monto) : Infinity;
+      const ok = dif < 0.10; // Alta redondea su total: unos céntimos de diferencia son normales
+      return `<div style="font-size:12.5px;margin:2px 0;">${ok?'✅':'⚠️'} <b>${titulo}:</b> el reporte dice ${fmtMonedaVal(total.monto, total.moneda)} y las líneas leídas suman ${fmtMonedaVal(suma||0, total.moneda)}${ok?(dif>=0.005?' — cuadra (céntimos de redondeo).':' — cuadra.'):' — <span style="color:#B8483A;">no cuadra; revisa si falta alguna línea.</span>'}</div>`;
+    };
+    const sumaCorp = prep.totalCorporativo ? filasCorp.filter(f=>f.l.moneda===prep.totalCorporativo.moneda).reduce((s,f)=>s+f.l.monto,0) : null;
+    const avisos = [];
+    if(prep.varios) avisos.push('Pegaste la conversación completa: se usó solo el reporte más reciente.');
+    if(prep.fecha) avisos.push(`Fecha tomada del texto pegado: <b>${fmtDate(prep.fecha)}</b>.`);
+    const filaMod = (f, i)=>{
+      const { v, info, linea } = f;
+      const cli = state.clientes.find(c=>c.id===v.clienteId);
+      const e = estadoMod(f, fecha);
+      const monto = linea.monto;
+      const pills = [];
+      if(e.yaRegistrado) pills.push('<span class="pill pill-gray">Pago ya registrado</span>');
+      else if(e.yaCobrado) pills.push(`<span class="pill pill-green">Cobrado ${fmtDate(v.fechaCobroFG)}</span>`);
+      else pills.push('<span class="pill pill-gold">Pendiente</span>');
+      if(e.esNegativo) pills.push('<span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>');
+      const pendCalc = ventaPendienteCalculo(v);
+      if(pendCalc && monto>0 && completarActivo()) pills.push(`<span class="pill pill-gold" title="La venta está pendiente de calcular: se guardará el % que resulta de lo pagado">Se calcula: ${porcentajeDesdePago(v, monto)}%</span>`);
+      const difiere = !pendCalc && monto!=null && monto>0 && info.lineas.length===1 && Math.abs(monto-comisionFG(v))>1;
+      return `<tr><td><input type="checkbox" data-conc-mod="${i}" ${f.marcado?'checked':''}></td><td class="folio">${folioV(v.folio)}</td><td>${v.numeroPoliza}</td><td>${cli?cli.nombre:'—'}</td><td>${v.aseguradora||'—'}</td><td class="num" style="font-weight:600;${e.esNegativo?'color:#B8483A;':''}">${monto!=null?fmtMonedaVal(monto, linea.moneda):'—'}</td><td class="num" ${difiere?'style="color:#B8483A;" title="La comisión calculada en el CRM no coincide con lo que pagó Alta"':''}>${pendCalc?'—':fmtMonedaVal(comisionFG(v), v.moneda)}${difiere?' ⚠':''}</td><td>${pills.join(' ')}</td></tr>`;
+    };
+    const filaCorp = (f, i)=>{
+      const { l } = f;
+      const e = estadoCorp(f, fecha);
+      const pills = [];
+      if(e.yaRegistrado) pills.push('<span class="pill pill-gray">Pago ya registrado</span>');
+      else if(!f.opciones.length) pills.push('<span class="pill pill-red" title="No hay un cliente con ese nombre en el CRM. Registra la venta y vuelve a conciliar.">No está en el CRM</span>');
+      else if(!e.v) pills.push('<span class="pill pill-gold">Elige la venta</span>');
+      if(e.esNegativo) pills.push('<span class="pill pill-red" title="En el reporte aparece con monto negativo">Extorno</span>');
+      if(e.op && !e.yaRegistrado && !(e.op.asegOk && e.op.prodOk)) pills.push('<span class="pill pill-gold" title="La venta elegida tiene otra aseguradora o producto que la línea del reporte">Revisa aseguradora/producto</span>');
+      if(l.prod==='SOAT' && f.soatPendientes>1 && !e.yaRegistrado) pills.push(`<span class="pill pill-gold" title="El cliente tiene varios SOAT sin cobrar: confirma a cuál corresponde">${f.soatPendientes} SOAT sin cobrar</span>`);
+      if(e.v && ventaPendienteCalculo(e.v) && l.monto>0 && completarActivo() && !e.yaRegistrado) pills.push(`<span class="pill pill-gold" title="La venta está pendiente de calcular: se guardará el % que resulta de lo pagado">Se calcula: ${porcentajeDesdePago(e.v, l.monto)}%</span>`);
+      const opcion = o=>{
+        const cli = state.clientes.find(c=>c.id===o.v.clienteId);
+        const np = pagosDe(o.v).length;
+        return `<option value="${o.v.id}" ${o.v.id===f.sel?'selected':''}>${folioV(o.v.folio)} · ${(cli?cli.nombre:'').slice(0,26)} · ${prodLabel(o.v.tipoProducto)} · ${(o.v.aseguradora||'').split(' ')[0]} · ${fmtDate(o.v.fechaVenta)}${np?` · ${np} pago(s)`:''}</option>`;
+      };
+      return `<tr><td><input type="checkbox" data-conc-corp="${i}" ${f.marcado?'checked':''} ${e.v?'':'disabled'}></td><td>${l.factura}</td><td>${l.cliente}</td><td>${l.aseg} · ${l.prod}</td><td class="num" style="font-weight:600;${e.esNegativo?'color:#B8483A;':''}">${fmtMonedaVal(l.monto, l.moneda)}</td><td>${f.opciones.length ? `<select data-conc-sel="${i}" style="max-width:330px;font-size:12px;"><option value="">— No registrar —</option>${f.opciones.map(opcion).join('')}</select>` : '—'}</td><td>${pills.join(' ')}</td></tr>`;
+    };
     res.innerHTML = `
-      <div class="panel-title">Pólizas del reporte encontradas en el CRM (${candidatos.length})</div>
-      ${candidatos.length ? `<div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
+      ${avisos.length?`<div class="hint" style="margin-bottom:6px;">${avisos.join(' ')}</div>`:''}
+      ${cuadre('Modulares', prep.totalModular, sumaMod)}${cuadre('Corporativo', prep.totalCorporativo, sumaCorp)}
+      ${filasMod.length ? `<div class="panel-title" style="margin-top:10px;">Modulares — pólizas encontradas en el CRM (${filasMod.length})</div>
+        <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
         <thead><tr><th></th><th>Folio</th><th>N° póliza</th><th>Cliente</th><th>Aseguradora</th><th>Pagó Alta</th><th>Comisión FG (CRM)</th><th>Estado</th></tr></thead>
-        <tbody>${candidatos.map(fila).join('')}</tbody></table></div>
-        <div class="hint" style="margin-top:6px;">Cada línea marcada se guarda como un <b>pago de comisión</b> de la venta con la fecha del reporte (si la venta estaba pendiente, queda cobrada). Los extornos no se marcan por defecto; si los marcas se registran como pago negativo. Los pagos que ya están registrados con esa fecha no se duplican. ⚠ = la comisión del CRM no coincide con lo que pagó Alta.</div>` : '<div class="hint">Ninguna póliza del reporte coincide con ventas del CRM.</div>'}
-      ${sinRegistrar.length ? `<div class="panel-title" style="margin-top:14px;">Números del reporte que no están en el CRM (${sinRegistrar.length})</div>
+        <tbody>${filasMod.map(filaMod).join('')}</tbody></table></div>` : ''}
+      ${sinRegistrar.length ? `<div class="panel-title" style="margin-top:12px;">Modulares — números que no están en el CRM (${sinRegistrar.length})</div>
         <div class="hint">Pueden ser pólizas que aún no registraste como venta. Regístralas y vuelve a conciliar.</div>
         <ul style="margin:6px 0 0;padding-left:18px;font-size:12.5px;">${sinRegistrar.map(([n,info])=>`<li><b>${n}</b>${info.lineas.length?' — '+info.lineas.map(l=>fmtMonedaVal(l.monto,l.moneda)).join(', '):''}${info.extorno?' <span class="pill pill-red">extorno</span>':''} <span class="hint" style="display:inline;">…${info.contexto.replace(/</g,'&lt;')}…</span></li>`).join('')}</ul>` : ''}
-      <div class="hint" style="margin-top:10px;">Nota: las líneas de <b>Corporativo</b> (SCTR, Vida Ley, SOAT) no traen N° de póliza; esas se registran a mano con el botón "💵 Pagos" de cada venta.</div>`;
-    ov.querySelector('#concAplicar').disabled = !candidatos.length;
-  };
-  ov.querySelector('#concAnalizar').onclick = analizar;
-  ov.querySelector('#concFecha').onchange = ()=>{ if(ov.querySelector('#concTexto').value.trim()) analizar(); };
-  ov.querySelector('#concAplicar').onclick = ()=>{
-    const fecha = ov.querySelector('#concFecha').value;
-    if(!fecha){ alert('Indica la fecha de pago del reporte.'); return; }
-    const elegidos = Array.from(ov.querySelectorAll('[data-conc-idx]:checked')).map(chk=> candidatos[Number(chk.dataset.concIdx)]).filter(Boolean);
-    if(!elegidos.length){ alert('No marcaste ninguna línea.'); return; }
-    if(!confirm(`Se registrarán ${elegidos.length} pago(s) de comisión con fecha ${fmtDate(fecha)}. ¿Continuar?`)) return;
-    let pagos = 0, cobradas = 0;
-    elegidos.forEach(({v, linea})=>{
-      const estaba = v.estadoCobroFG==='cobrado';
-      if(linea.monto!=null){ if(registrarPagoComision(v, { fecha, monto: linea.monto, moneda: linea.moneda, reporte: `Reporte Alta ${fmtDate(fecha)}` })) pagos++; }
-      else if(!estaba){ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = fecha; }
-      if(!estaba && v.estadoCobroFG==='cobrado') cobradas++;
+      ${filasCorp.length ? `<div class="panel-title" style="margin-top:12px;">Corporativo — SCTR, Vida Ley, SOAT y otros (${filasCorp.length} líneas)</div>
+        <div class="hint" style="margin-bottom:4px;">Estas líneas no traen N° de póliza: el CRM propone la venta por cliente, aseguradora y producto. Si la propuesta no es la correcta, cámbiala en la lista.</div>
+        <div class="conc-corp-scroll" style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:8px;"><table>
+        <thead><tr><th></th><th>Factura</th><th>Cliente (reporte)</th><th>Aseg. · Producto</th><th>Pagó Alta</th><th>Venta en el CRM</th><th>Estado</th></tr></thead>
+        <tbody>${filasCorp.map(filaCorp).join('')}</tbody></table></div>` : ''}
+      <div class="hint" style="margin-top:8px;">Cada línea marcada se guarda como un <b>pago de comisión</b> de su venta con la fecha del reporte (si la venta estaba pendiente, queda cobrada). Los extornos no se marcan por defecto; si los marcas se registran como pago negativo. Los pagos que ya están registrados no se duplican.</div>`;
+    const sc = res.querySelector('.conc-corp-scroll'); if(sc) sc.scrollTop = scrollTop;
+    res.querySelectorAll('[data-conc-mod]').forEach(chk=> chk.onchange = ()=>{ filasMod[Number(chk.dataset.concMod)].marcado = chk.checked; actualizarResumen(); });
+    res.querySelectorAll('[data-conc-corp]').forEach(chk=> chk.onchange = ()=>{ filasCorp[Number(chk.dataset.concCorp)].marcado = chk.checked; actualizarResumen(); });
+    res.querySelectorAll('[data-conc-sel]').forEach(sel=> sel.onchange = ()=>{
+      const f = filasCorp[Number(sel.dataset.concSel)];
+      f.sel = sel.value;
+      const e = estadoCorp(f, inpFecha.value);
+      f.marcado = !!e.v && !e.yaRegistrado && !e.esNegativo;
+      pintar();
     });
-    registrarAuditoria('editar', 'venta', elegidos[0].v.id, `Conciliación reporte Alta ${fmtDate(fecha)}: ${pagos} pago(s) registrados, ${cobradas} venta(s) pasaron a cobradas (${Array.from(new Set(elegidos.map(e=>folioV(e.v.folio)))).join(', ')})`);
+    actualizarResumen();
+  };
+
+  ov.querySelector('#concAnalizar').onclick = analizar;
+  ov.querySelector('#concCompletar').onchange = ()=>{ if(prep) pintar(); };
+  inpFecha.onchange = ()=>{ fechaManual = true; if(ov.querySelector('#concTexto').value.trim()) analizar(); };
+  ov.querySelector('#concTexto').addEventListener('paste', ()=> setTimeout(analizar, 0));
+  ov.querySelector('#concAplicar').onclick = ()=>{
+    const fecha = inpFecha.value;
+    if(!fecha){ alert('Indica la fecha del reporte.'); return; }
+    const mod = filasMod.filter(f=> f.marcado);
+    const corp = filasCorp.map(f=> ({ f, e: estadoCorp(f, fecha) })).filter(x=> x.f.marcado && x.e.v);
+    const total = mod.length + corp.length;
+    if(!total){ alert('No marcaste ninguna línea.'); return; }
+    if(!confirm(`Se registrarán ${total} pago(s) de comisión con fecha ${fmtDate(fecha)}. ¿Continuar?`)) return;
+    const completar = completarActivo();
+    let pagos = 0, cobradas = 0, calculadas = 0;
+    const folios = new Set();
+    const aplicar = (v, pago, sinMonto)=>{
+      const estaba = v.estadoCobroFG==='cobrado';
+      if(completar && pago && pago.monto>0 && completarCalculoConPago(v, pago.monto, pago.moneda)) calculadas++;
+      if(pago){ if(registrarPagoComision(v, pago)) pagos++; }
+      else if(sinMonto && !estaba){ v.estadoCobroFG = 'cobrado'; v.fechaCobroFG = fecha; }
+      if(!estaba && v.estadoCobroFG==='cobrado') cobradas++;
+      folios.add(folioV(v.folio));
+    };
+    mod.forEach(({ v, linea })=> aplicar(v, linea.monto!=null ? { fecha, monto: linea.monto, moneda: linea.moneda, reporte: `Reporte Alta ${fmtDate(fecha)}` } : null, true));
+    corp.forEach(({ f, e })=> aplicar(e.v, { fecha, monto: f.l.monto, moneda: f.l.moneda, reporte: `Reporte Alta ${fmtDate(fecha)} — Fact. ${f.l.factura}`, ref: refLineaCorp(fecha, f.l) }, false));
+    registrarAuditoria('editar', 'venta', (mod[0]||{}).v ? mod[0].v.id : corp[0].e.v.id, `Conciliación reporte Alta ${fmtDate(fecha)}: ${pagos} pago(s) registrados, ${cobradas} venta(s) pasaron a cobradas${calculadas?`, ${calculadas} comisión(es) calculada(s)`:''} (${Array.from(folios).join(', ')})`);
     save(); cerrar(); render();
-    alert(`Listo: ${pagos} pago(s) registrados y ${cobradas} venta(s) marcadas como cobradas (fecha ${fmtDate(fecha)}).`);
+    alert(`Listo: ${pagos} pago(s) registrados y ${cobradas} venta(s) marcadas como cobradas (fecha ${fmtDate(fecha)}).${calculadas?` ${calculadas} venta(s) quedaron con su comisión calculada.`:''}`);
   };
 }
 
