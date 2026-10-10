@@ -176,6 +176,7 @@
     <button class="nav-btn" data-tab="ventas_seguros"><span class="nav-icon">①</span>Venta de Seguros</button>
     <div class="nav-group-label">Postventa y Retención</div>
     <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
+      <button class="nav-btn" data-tab="seguimiento" style="justify-content:space-between;"><span style="display:flex;align-items:center;gap:10px;"><span class="nav-icon">🔔</span>Seguimiento</span><span id="badgeSeguimiento" class="pill pill-red" style="display:none;font-size:10.5px;padding:1px 7px;">0</span></button>
     <button class="nav-btn" data-tab="cobranzas"><span class="nav-icon">💰</span>Cobranzas</button>
     <button class="nav-btn" data-tab="cartera_recuperacion"><span class="nav-icon">♻</span>Recuperación de Cartera</button>
     <button class="nav-btn" data-tab="siniestros"><span class="nav-icon">⚠</span>Siniestros</button>
@@ -1650,6 +1651,7 @@ function render(){
   else if(tab==='pago_comisiones') el.innerHTML = viewPagoComisiones();
   else if(tab==='facturacion') el.innerHTML = viewFacturacion();
   else if(tab==='alto_valor') el.innerHTML = viewAltoValor();
+  else if(tab==='seguimiento') el.innerHTML = viewSeguimiento();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
   else if(tab==='cobranzas') el.innerHTML = viewCobranzas();
   else if(tab==='soat') el.innerHTML = viewSoat();
@@ -3666,7 +3668,8 @@ function wireCobroComisiones(){
       const reader = new FileReader();
       reader.onload = () => {
         let data; try{ data = JSON.parse(reader.result); }catch(err){ alert('El archivo no es un historial válido.'); return; }
-        importarHistorialPolizas(data);
+        if(data && data.formato==='fg-acciones-v1') importarAccionesCorreo(data);
+        else importarHistorialPolizas(data);
       };
       reader.readAsText(file); e.target.value = '';
     };
@@ -5654,6 +5657,188 @@ function wireAsesores(){
   });
 }
 
+// ================= SEGUIMIENTO: RENOVACIONES Y COTIZACIONES =================
+// 1) Renovaciones: pólizas del CRM que vencen pronto o vencieron sin renovar, con su estado (avisado, confirma, renovado, no renueva).
+// 2) Seguimientos: cotizaciones enviadas y renovaciones/pedidos de clientes que aún no están en el CRM, con fecha de próximo seguimiento.
+const ESTADOS_RENOV = [
+  { id:'',           label:'Por avisar',   clase:'pill-gray' },
+  { id:'avisado',    label:'Avisado',      clase:'pill-gold' },
+  { id:'confirma',   label:'Confirmó que renueva', clase:'pill-green' },
+  { id:'renovado',   label:'Renovado',     clase:'pill-green' },
+  { id:'no_renueva', label:'No renueva',   clase:'pill-red' },
+];
+const TIPOS_SEGUIMIENTO = { cotizacion:'Cotización', renovacion:'Renovación', otro:'Pendiente' };
+const DIAS_SIN_RESPUESTA = 3, DIAS_SEGUIMIENTO_DEFECTO = 5;
+let filtroSegVista = 'abiertos', filtroSegBusqueda = '';
+const nombreSesionActual = ()=> sesionUsuario && sesionUsuario.nombre ? sesionUsuario.nombre : 'Administrador';
+const familiaProducto = t => /^sctr/.test(t||'') ? 'sctr' : t;
+// Póliza nueva del mismo cliente y producto que empieza entre 60 días antes y 60 después del vencimiento
+function polizaQueRenueva(v){
+  if(!v.vigenciaFin) return null;
+  return state.ventas.find(v2=> v2.id!==v.id && ventaActiva(v2) && v2.clienteId===v.clienteId && familiaProducto(v2.tipoProducto)===familiaProducto(v.tipoProducto) && (v2.fechaVenta||'') >= addDaysISO(v.vigenciaFin, -120) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })()) || null;
+}
+function renovacionesParaSeguimiento(){
+  const hoy = todayISO();
+  return misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && v.vigenciaFin && v.vigenciaFin >= addDaysISO(hoy, -60) && v.vigenciaFin <= addDaysISO(hoy, 45)).map(v=>{
+    const renueva = polizaQueRenueva(v);
+    const r = v.renov || {};
+    const estado = renueva && !r.estado ? 'renovado' : (r.estado || '');
+    const dias = daysUntil(v.vigenciaFin);
+    const diasDesdeAviso = r.estado==='avisado' && r.fecha ? -daysUntil(r.fecha) : null;
+    return { v, renueva, estado, dias, diasDesdeAviso, sinRespuesta: diasDesdeAviso!=null && diasDesdeAviso >= DIAS_SIN_RESPUESTA };
+  }).sort((a,b)=> a.dias - b.dias);
+}
+function seguimientosLista(){ if(!Array.isArray(state.seguimientos)) state.seguimientos = []; return state.seguimientos; }
+function marcarRenovacion(v, estado, nota){
+  const hoy = todayISO();
+  v.renov = { estado, fecha: hoy, nota: nota||'', por: nombreSesionActual() };
+  v.renovLog = (v.renovLog||[]).concat([{ fecha: hoy, estado, nota: nota||'', por: nombreSesionActual() }]);
+  const cli = state.clientes.find(c=>c.id===v.clienteId);
+  registrarAuditoria('editar', 'venta', v.id, `Renovación ${folioV(v.folio)} — ${cli?cli.nombre:''}: ${(ESTADOS_RENOV.find(e=>e.id===estado)||{}).label||estado}${nota?' ('+nota+')':''}`);
+}
+function viewSeguimiento(){
+  const hoy = todayISO();
+  const renov = renovacionesParaSeguimiento();
+  const vencidasSinConfirmar = renov.filter(r=> r.dias<0 && !['renovado','no_renueva'].includes(r.estado));
+  const proximas15 = renov.filter(r=> r.dias>=0 && r.dias<=15 && !['renovado','no_renueva'].includes(r.estado));
+  const sinRespuesta = renov.filter(r=> r.sinRespuesta);
+  const segs = seguimientosLista();
+  const abiertos = segs.filter(s=> s.estado==='abierto');
+  const atrasados = abiertos.filter(s=> s.proximo && s.proximo <= hoy);
+  const cotAbiertas = abiertos.filter(s=> s.tipo==='cotizacion');
+  const cotPEN = cotAbiertas.filter(s=>s.moneda!=='USD').reduce((a,s)=>a+(Number(s.prima)||0),0);
+  const cotUSD = cotAbiertas.filter(s=>s.moneda==='USD').reduce((a,s)=>a+(Number(s.prima)||0),0);
+  const cerradas30 = segs.filter(s=> s.tipo==='cotizacion' && s.estado!=='abierto' && (s.fechaCierre||'') >= addDaysISO(hoy,-90));
+  const tasaCierre = cerradas30.length ? Math.round(cerradas30.filter(s=>s.estado==='ganado').length / cerradas30.length * 100) : null;
+  const q = filtroSegBusqueda.trim().toLowerCase();
+  const nombreCliente = s=> { const c = s.clienteId && state.clientes.find(x=>x.id===s.clienteId); return c ? c.nombre : (s.clienteNombre||'—'); };
+  const coincide = txt => !q || String(txt||'').toLowerCase().includes(q);
+  const renovVisibles = renov.filter(r=>{ const c = state.clientes.find(x=>x.id===r.v.clienteId); return coincide((c?c.nombre:'')+' '+(r.v.numeroPoliza||'')+' '+prodLabel(r.v.tipoProducto)); });
+  const segVisibles = segs.filter(s=> (filtroSegVista==='abiertos' ? s.estado==='abierto' : filtroSegVista==='atrasados' ? (s.estado==='abierto' && s.proximo && s.proximo<=hoy) : filtroSegVista==='cerrados' ? s.estado!=='abierto' : true) && coincide(nombreCliente(s)+' '+(s.detalle||'')+' '+prodLabel(s.producto)))
+    .sort((a,b)=> (a.estado==='abierto'?0:1)-(b.estado==='abierto'?0:1) || (a.proximo||'9999').localeCompare(b.proximo||'9999'));
+  const tarjeta = (titulo, valor, color, nota)=> `<div class="card stat-card" style="background:${color};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.88);">${titulo}</div><div class="value num" style="color:#fff;">${valor}</div>${nota?`<div style="font-size:11.5px;color:rgba(255,255,255,0.85);">${nota}</div>`:''}</div>`;
+  const pillRenov = id=>{ const e = ESTADOS_RENOV.find(x=>x.id===id) || ESTADOS_RENOV[0]; return `<span class="pill ${e.clase}">${e.label}</span>`; };
+  const filaRenov = r=>{
+    const v = r.v, cli = state.clientes.find(c=>c.id===v.clienteId);
+    const tel = cli && (cli.celular1||cli.telefono);
+    const venc = r.dias<0 ? `<span class="pill pill-red">Venció hace ${-r.dias} d</span>` : r.dias<=7 ? `<span class="pill pill-red">${r.dias} d</span>` : r.dias<=15 ? `<span class="pill pill-gold">${r.dias} d</span>` : `<span class="pill pill-gray">${r.dias} d</span>`;
+    const msg = `Hola ${cli?cli.nombre:''}, le saluda Eduardo Flores de Alta Corredores. Su póliza de ${prodLabel(v.tipoProducto)} (${v.aseguradora||''}${v.numeroPoliza?' N° '+v.numeroPoliza:''}) ${r.dias<0?'venció':'vence'} el ${fmtDate(v.vigenciaFin)}. ¿Desea que procedamos con la renovación?`;
+    return `<tr>
+      <td>${cli?`<a href="#" data-ficha-cliente="${cli.id}" style="color:var(--primary);font-weight:600;">${cli.nombre}</a>`:'—'}<div class="hint">${folioV(v.folio)}${v.numeroPoliza?' · '+v.numeroPoliza:''}</div></td>
+      <td>${prodLabel(v.tipoProducto)}<div class="hint">${v.aseguradora||''}</div></td>
+      <td>${fmtDate(v.vigenciaFin)}<div>${venc}</div></td>
+      <td>${pillRenov(r.estado)}${r.renueva?`<div class="hint">Nueva: ${folioV(r.renueva.folio)}</div>`:''}${r.sinRespuesta?`<div><span class="pill pill-red" title="Se avisó y no hay respuesta">Sin respuesta hace ${r.diasDesdeAviso} d</span></div>`:''}${v.renov&&v.renov.nota?`<div class="hint" title="${(v.renov.nota||'').replace(/"/g,'&quot;')}">📝 ${(v.renov.nota||'').slice(0,40)}</div>`:''}</td>
+      <td style="white-space:nowrap;">
+        ${tel?`<a class="btn btn-sm" href="${linkWhatsApp(tel, msg)}" target="_blank" rel="noopener" data-renov-wa="${v.id}" title="Avisar por WhatsApp (queda marcado como avisado)">📲</a>`:''}
+        <select data-renov-estado="${v.id}" style="font-size:12px;">${ESTADOS_RENOV.map(e=>`<option value="${e.id}" ${((v.renov||{}).estado||'')===e.id?'selected':''}>${e.label}</option>`).join('')}</select>
+        <button class="btn btn-ghost btn-sm" data-renov-nota="${v.id}" title="Agregar nota">📝</button>
+      </td></tr>`;
+  };
+  const filaSeg = s=>{
+    const atras = s.estado==='abierto' && s.proximo && s.proximo<=hoy;
+    const est = s.estado==='ganado' ? '<span class="pill pill-green">Ganada</span>' : s.estado==='perdido' ? `<span class="pill pill-red" title="${(s.motivo||'').replace(/"/g,'&quot;')}">Perdida</span>` : atras ? `<span class="pill pill-red">Seguimiento atrasado</span>` : '<span class="pill pill-gold">Abierta</span>';
+    const ult = (s.log||[]).slice(-1)[0];
+    return `<tr>
+      <td><span class="pill pill-gray">${TIPOS_SEGUIMIENTO[s.tipo]||s.tipo}</span></td>
+      <td>${s.clienteId?`<a href="#" data-ficha-cliente="${s.clienteId}" style="color:var(--primary);font-weight:600;">${nombreCliente(s)}</a>`:`<b>${nombreCliente(s)}</b>`}<div class="hint">${prodLabel(s.producto)||''}${s.aseguradora?' · '+s.aseguradora:''}</div></td>
+      <td style="max-width:320px;font-size:12.5px;">${s.detalle||''}${ult?`<div class="hint">📝 ${fmtDate(ult.fecha)}: ${(ult.texto||'').slice(0,80)}</div>`:''}</td>
+      <td class="num">${s.prima?fmtMonedaVal(s.prima, s.moneda):'—'}</td>
+      <td>${fmtDate(s.fecha)}<div class="hint">${s.fecha?(-daysUntil(s.fecha))+' d':''}</div></td>
+      <td>${s.estado==='abierto'?fmtDate(s.proximo):fmtDate(s.fechaCierre)}</td>
+      <td>${est}</td>
+      <td style="white-space:nowrap;">${s.estado==='abierto'?`<button class="btn btn-sm" data-seg-hecho="${s.id}" title="Registrar que hiciste el seguimiento (se reprograma en ${DIAS_SEGUIMIENTO_DEFECTO} días)">✓ Seguimiento</button> <button class="btn btn-ghost btn-sm" data-seg-ganado="${s.id}">Ganada</button> <button class="btn btn-ghost btn-sm" data-seg-perdido="${s.id}">Perdida</button>`:`<button class="btn btn-ghost btn-sm" data-seg-reabrir="${s.id}">Reabrir</button>`} <button class="btn btn-ghost btn-sm" data-seg-editar="${s.id}" title="Editar">✎</button></td>
+    </tr>`;
+  };
+  return `
+    <div class="page-head"><div><h1>🔔 Seguimiento</h1><p>Renovaciones por confirmar y cotizaciones abiertas: que ningún cliente se quede sin respuesta.</p></div><button class="btn btn-primary" id="btnNuevoSeguimiento">+ Nueva cotización / pendiente</button></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:14px;">
+      ${tarjeta('Vencidas sin confirmar', vencidasSinConfirmar.length, '#B8483A', 'Últimos 60 días')}
+      ${tarjeta('Vencen en 15 días', proximas15.length, '#B8823D', 'Sin confirmar todavía')}
+      ${tarjeta('Avisadas sin respuesta', sinRespuesta.length, '#7A4B42', `Más de ${DIAS_SIN_RESPUESTA} días`)}
+      ${tarjeta('Seguimientos atrasados', atrasados.length, '#4A5D7A', `${abiertos.length} abiertos en total`)}
+      ${tarjeta('Cotizaciones abiertas', cotAbiertas.length, '#1F4B41', [cotUSD?fmtUSD(cotUSD):'', cotPEN?fmtMoney(cotPEN):''].filter(Boolean).join(' · ') + (tasaCierre!=null?` · cierre ${tasaCierre}% (90 d)`:''))}
+    </div>
+    <div class="toolbar"><input type="text" id="segBuscar" placeholder="Buscar cliente, póliza o producto…" value="${filtroSegBusqueda.replace(/"/g,'&quot;')}" style="min-width:260px;"></div>
+    <div class="panel-title">Renovaciones (${renovVisibles.length}) <span class="hint" style="font-weight:400;">— pólizas del CRM que vencen en 45 días o vencieron hace menos de 60 días</span></div>
+    <div class="card" style="padding:0;overflow:auto;margin-bottom:18px;max-height:460px;">
+      <table><thead><tr><th>Cliente</th><th>Producto</th><th>Vence</th><th>Estado</th><th>Acción</th></tr></thead>
+      <tbody>${renovVisibles.length ? renovVisibles.map(filaRenov).join('') : '<tr class="empty-row"><td colspan="5">No hay renovaciones en este rango.</td></tr>'}</tbody></table>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+      <div class="panel-title" style="margin:0;">Cotizaciones y pendientes</div>
+      ${[['abiertos','Abiertos'],['atrasados','Atrasados'],['cerrados','Cerrados'],['todos','Todos']].map(([k,l])=>`<button class="btn ${filtroSegVista===k?'btn-primary':'btn-ghost'} btn-sm" data-seg-vista="${k}">${l}</button>`).join('')}
+    </div>
+    <div class="card" style="padding:0;overflow:auto;">
+      <table><thead><tr><th>Tipo</th><th>Cliente</th><th>Detalle</th><th>Prima</th><th>Enviada</th><th>Próximo seguimiento</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${segVisibles.length ? segVisibles.map(filaSeg).join('') : '<tr class="empty-row"><td colspan="8">No hay registros en este filtro. Usa "+ Nueva cotización / pendiente".</td></tr>'}</tbody></table>
+    </div>
+    <div class="hint" style="margin-top:8px;">Cuando avisas por 📲 la póliza queda como "Avisado"; si pasan ${DIAS_SIN_RESPUESTA} días sin respuesta se marca en rojo. Una póliza pasa sola a "Renovado" si registras la póliza nueva del mismo cliente y producto. Cada cotización se reprograma ${DIAS_SEGUIMIENTO_DEFECTO} días después de cada seguimiento.</div>`;
+}
+function abrirFormSeguimiento(id){
+  const s = id ? seguimientosLista().find(x=>x.id===id) : null;
+  const d = s || { tipo:'cotizacion', fecha: todayISO(), proximo: addDaysISO(todayISO(), DIAS_SEGUIMIENTO_DEFECTO), moneda:'PEN' };
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;';
+  const clientesOrd = state.clientes.filter(c=>clientePerteneceAAsesor(c)).slice().sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const esc = t => String(t||'').replace(/"/g,'&quot;');
+  ov.innerHTML = `<div class="card" style="max-width:620px;width:100%;padding:20px;background:var(--bg,#fff);">
+    <h2 style="margin:0 0 10px;">${s?'Editar':'Nueva'} cotización / pendiente</h2>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="field"><label>Tipo</label><select id="sgTipo" style="width:100%;">${Object.entries(TIPOS_SEGUIMIENTO).map(([k,l])=>`<option value="${k}" ${d.tipo===k?'selected':''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label>Producto</label><select id="sgProducto" style="width:100%;"><option value="">—</option>${todosLosProductos().map(p=>`<option value="${p.id}" ${d.producto===p.id?'selected':''}>${p.label}</option>`).join('')}</select></div>
+      <div class="field" style="grid-column:1/-1;"><label>Cliente del CRM</label><select id="sgCliente" style="width:100%;"><option value="">— Prospecto nuevo (escribe el nombre abajo) —</option>${clientesOrd.map(c=>`<option value="${c.id}" ${d.clienteId===c.id?'selected':''}>${c.nombre}</option>`).join('')}</select></div>
+      <div class="field" style="grid-column:1/-1;"><label>Nombre del prospecto (si no está en el CRM)</label><input type="text" id="sgNombre" style="width:100%;" value="${esc(d.clienteNombre)}"></div>
+      <div class="field"><label>Aseguradora(s)</label><input type="text" id="sgAseg" style="width:100%;" value="${esc(d.aseguradora)}" placeholder="Ej. Protecta / Pacífico"></div>
+      <div class="field"><label>Prima cotizada</label><div style="display:flex;gap:6px;"><input type="number" step="0.01" id="sgPrima" style="flex:1;" value="${d.prima||''}"><select id="sgMoneda"><option value="PEN" ${d.moneda!=='USD'?'selected':''}>S/</option><option value="USD" ${d.moneda==='USD'?'selected':''}>US$</option></select></div></div>
+      <div class="field"><label>Fecha de envío</label><input type="date" id="sgFecha" style="width:100%;" value="${d.fecha||''}"></div>
+      <div class="field"><label>Próximo seguimiento</label><input type="date" id="sgProximo" style="width:100%;" value="${d.proximo||''}"></div>
+      <div class="field" style="grid-column:1/-1;"><label>Detalle</label><textarea id="sgDetalle" style="width:100%;min-height:60px;">${d.detalle||''}</textarea></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:12px;">
+      <div>${s?'<button class="btn btn-ghost" id="sgBorrar" style="color:var(--danger);">Eliminar</button>':''}</div>
+      <div><button class="btn btn-ghost" id="sgCancelar">Cancelar</button> <button class="btn btn-primary" id="sgGuardar">Guardar</button></div>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const cerrar = ()=> ov.remove();
+  ov.querySelector('#sgCancelar').onclick = cerrar;
+  const b = ov.querySelector('#sgBorrar'); if(b) b.onclick = ()=>{ if(!confirm('¿Eliminar este registro de seguimiento?')) return; state.seguimientos = seguimientosLista().filter(x=>x.id!==s.id); save(); cerrar(); render(); };
+  ov.querySelector('#sgGuardar').onclick = ()=>{
+    const datos = { tipo: ov.querySelector('#sgTipo').value, producto: ov.querySelector('#sgProducto').value, clienteId: ov.querySelector('#sgCliente').value, clienteNombre: ov.querySelector('#sgNombre').value.trim(), aseguradora: ov.querySelector('#sgAseg').value.trim(), prima: parseFloat(ov.querySelector('#sgPrima').value)||0, moneda: ov.querySelector('#sgMoneda').value, fecha: ov.querySelector('#sgFecha').value, proximo: ov.querySelector('#sgProximo').value, detalle: ov.querySelector('#sgDetalle').value.trim() };
+    if(!datos.clienteId && !datos.clienteNombre){ alert('Elige un cliente o escribe el nombre del prospecto.'); return; }
+    if(s) Object.assign(s, datos);
+    else seguimientosLista().push(Object.assign({ id: uid(), estado:'abierto', log:[], creadoPor: nombreSesionActual() }, datos));
+    save(); cerrar(); render();
+  };
+}
+function wireSeguimiento(){
+  const nuevo = document.getElementById('btnNuevoSeguimiento'); if(nuevo) nuevo.onclick = ()=> abrirFormSeguimiento(null);
+  const bus = document.getElementById('segBuscar');
+  if(bus) bus.oninput = ()=>{ filtroSegBusqueda = bus.value; clearTimeout(wireSeguimiento._t); wireSeguimiento._t = setTimeout(()=>{ render(); const b2 = document.getElementById('segBuscar'); if(b2){ b2.focus(); b2.setSelectionRange(b2.value.length, b2.value.length); } }, 250); };
+  document.querySelectorAll('[data-seg-vista]').forEach(b=> b.onclick = ()=>{ filtroSegVista = b.dataset.segVista; render(); });
+  document.querySelectorAll('#main-view [data-ficha-cliente]').forEach(a=> a.onclick = e=>{ e.preventDefault(); fichaClienteId = a.dataset.fichaCliente; tab = 'clientes'; render(); });
+  const venta = id => state.ventas.find(v=>v.id===id);
+  document.querySelectorAll('[data-renov-estado]').forEach(sel=> sel.onchange = ()=>{ const v = venta(sel.dataset.renovEstado); if(!v) return; marcarRenovacion(v, sel.value, ''); save(); render(); });
+  document.querySelectorAll('[data-renov-wa]').forEach(a=> a.addEventListener('click', ()=>{ const v = venta(a.dataset.renovWa); if(v && !(v.renov&&v.renov.estado)){ marcarRenovacion(v, 'avisado', 'Aviso por WhatsApp'); save(); setTimeout(render, 300); } }));
+  document.querySelectorAll('[data-renov-nota]').forEach(b=> b.onclick = ()=>{ const v = venta(b.dataset.renovNota); if(!v) return; const nota = prompt('Nota de seguimiento de la renovación:', ''); if(!nota) return; marcarRenovacion(v, (v.renov&&v.renov.estado)||'avisado', nota); save(); render(); });
+  const seg = id => seguimientosLista().find(s=>s.id===id);
+  document.querySelectorAll('[data-seg-hecho]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segHecho); if(!s) return; const nota = prompt('¿Qué pasó en el seguimiento? (opcional)', ''); if(nota===null) return; s.log = (s.log||[]).concat([{ fecha: todayISO(), texto: nota||'Seguimiento realizado', por: nombreSesionActual() }]); s.proximo = addDaysISO(todayISO(), DIAS_SEGUIMIENTO_DEFECTO); save(); render(); });
+  document.querySelectorAll('[data-seg-ganado]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segGanado); if(!s) return; s.estado = 'ganado'; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Cotización ganada', por: nombreSesionActual() }]); save(); render(); alert('¡Bien! Recuerda registrar la venta en "Venta de Seguros".'); });
+  document.querySelectorAll('[data-seg-perdido]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segPerdido); if(!s) return; const motivo = prompt('¿Por qué se perdió? (precio, otro corredor, no respondió…)', ''); if(motivo===null) return; s.estado = 'perdido'; s.motivo = motivo; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Perdida: '+(motivo||'sin motivo'), por: nombreSesionActual() }]); save(); render(); });
+  document.querySelectorAll('[data-seg-reabrir]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segReabrir); if(!s) return; s.estado = 'abierto'; s.proximo = todayISO(); save(); render(); });
+  document.querySelectorAll('[data-seg-editar]').forEach(b=> b.onclick = ()=> abrirFormSeguimiento(b.dataset.segEditar));
+}
+// Importa acciones preparadas desde el correo: anulaciones, estados de renovación, siniestros y seguimientos (idempotente)
+function importarAccionesCorreo(data){
+  const r = { anuladas:0, renov:0, siniestros:0, seguimientos:0, omitidos:0 };
+  (data.anular||[]).forEach(a=>{ const v = state.ventas.find(x=>x.id===a.ventaId); if(!v || v.estadoVenta==='anulada'){ r.omitidos++; return; } v.estadoVenta = 'anulada'; v.motivoAnulacion = a.motivo||''; v.fechaAnulacion = a.fecha||todayISO(); registrarAuditoria('editar','venta',v.id,`Venta ${folioV(v.folio)} anulada: ${a.motivo||''}`); r.anuladas++; });
+  (data.renov||[]).forEach(a=>{ const v = state.ventas.find(x=>x.id===a.ventaId); if(!v){ r.omitidos++; return; } if(v.renov && v.renov.estado===a.estado && v.renov.nota===a.nota){ r.omitidos++; return; } marcarRenovacion(v, a.estado, a.nota); if(a.fecha) v.renov.fecha = a.fecha; r.renov++; });
+  (data.siniestros||[]).forEach(a=>{ if(state.siniestros.some(x=>x.ref && x.ref===a.ref)){ r.omitidos++; return; } const sn = Object.assign({ id: uid(), folio: ++state.folioSiniestro }, a); state.siniestros.push(sn); const cli = state.clientes.find(c=>c.id===a.clienteId); registrarAuditoria('crear','siniestro',sn.id,`Siniestro SN-${String(sn.folio).padStart(4,'0')} — ${cli?cli.nombre:''}`); r.siniestros++; });
+  (data.seguimientos||[]).forEach(a=>{ const lista = seguimientosLista(); if(lista.some(x=>x.id===a.id)){ r.omitidos++; return; } lista.push(Object.assign({ estado:'abierto', log:[], creadoPor:'Importado del correo' }, a)); r.seguimientos++; });
+  save(); render();
+  window.__ultimoImportAcciones = r;
+  alert(`Acciones importadas: ${r.anuladas} venta(s) anulada(s), ${r.renov} estado(s) de renovación, ${r.siniestros} siniestro(s), ${r.seguimientos} seguimiento(s).${r.omitidos?` ${r.omitidos} ya estaban.`:''}`);
+}
+
 // ================= CLIENTES DE ALTO VALOR =================
 // Ranking de clientes por la comisión FG que realmente cobraste (pagos de Alta / cobros registrados),
 // mostrada siempre en soles y dólares por separado. Solo para ordenar y clasificar se usa el tipo de cambio.
@@ -7593,6 +7778,15 @@ render = function(){
   if(tab==='pago_comisiones') wirePagoComisiones();
   if(tab==='facturacion') wireFacturacion();
   if(tab==='alto_valor') wireAltoValor();
+  if(tab==='seguimiento') wireSeguimiento();
+  try{ // contador del menú: renovaciones vencidas sin confirmar + avisadas sin respuesta + seguimientos atrasados
+    const badge = document.getElementById('badgeSeguimiento');
+    if(badge && sesionIniciada){
+      const rv = renovacionesParaSeguimiento();
+      const n = rv.filter(r=> (r.dias<0 && !['renovado','no_renueva'].includes(r.estado)) || r.sinRespuesta).length + seguimientosLista().filter(s=> s.estado==='abierto' && s.proximo && s.proximo<=todayISO()).length;
+      badge.textContent = n; badge.style.display = n ? '' : 'none';
+    }
+  }catch(e){}
   if(tab==='polizas') wirePolizas();
   if(tab==='cobranzas') wireCobranzas();
   if(tab==='soat') wireSoat();
