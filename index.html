@@ -924,6 +924,11 @@ function seccionFlujoGlobal(titulo, res, grande, soloPEN, extra){
     </div>`;
 }
 function ventaActiva(v){ return v.estadoVenta !== 'anulada'; }
+// Un endoso (inclusión, exclusión, etc.) se guarda como una venta aparte, ligada a su póliza, sin fin de vigencia propio:
+// así su prima y comisión entran a los reportes, pero no aparece como otra póliza por renovar.
+function esEndoso(v){ return v.tipoVenta==='endoso'; }
+const etiquetaTipoVenta = t => ({ nueva:'Nueva', renovacion:'Renovación', anulacion:'Anulación', endoso:'Endoso' })[t] || 'Renovación';
+const claseTipoVenta = t => t==='nueva' ? 'pill-green' : t==='anulacion' ? 'pill-red' : t==='endoso' ? 'pill-gray' : 'pill-gold';
 function ventaSeguroActiva(v){ return ventaActiva(v) && esSeguro(v.tipoProducto); }
 
 function ventasEnMes(asesorId, key){
@@ -2501,7 +2506,7 @@ function viewDashboard(){
   const familiaProd = t => /^sctr/.test(t||'') ? 'sctr' : t;
   const usadasRenov = new Set();
   const fueRenovada = vOrig => {
-    const r = state.ventas.find(v2=> !usadasRenov.has(v2.id) && v2.id!==vOrig.id && ventaActiva(v2) && v2.clienteId===vOrig.clienteId && familiaProd(v2.tipoProducto)===familiaProd(vOrig.tipoProducto) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(vOrig.vigenciaFin, -60) && ini <= addDaysISO(vOrig.vigenciaFin, 60); })());
+    const r = state.ventas.find(v2=> !usadasRenov.has(v2.id) && v2.id!==vOrig.id && ventaActiva(v2) && !esEndoso(v2) && v2.clienteId===vOrig.clienteId && familiaProd(v2.tipoProducto)===familiaProd(vOrig.tipoProducto) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(vOrig.vigenciaFin, -60) && ini <= addDaysISO(vOrig.vigenciaFin, 60); })());
     if(r){ usadasRenov.add(r.id); return true; }
     return false;
   };
@@ -3125,7 +3130,7 @@ function resumenOperativo(ventas){
     const neta = Number(v.primaNeta)||0;
     const bruta = Number(v.primaBruta)||0;
     if(v.moneda==='USD'){ primaNetaUSD += neta; primaBrutaUSD += bruta; } else { primaNetaPEN += neta; primaBrutaPEN += bruta; }
-    if(v.tipoVenta==='renovacion') renovaciones++; else nuevas++;
+    if(v.tipoVenta==='renovacion') renovaciones++; else if(!esEndoso(v)) nuevas++;
     if(!porProducto[v.tipoProducto]) porProducto[v.tipoProducto] = { count:0, primaNetaPEN:0, primaNetaUSD:0 };
     porProducto[v.tipoProducto].count++;
     if(v.moneda==='USD') porProducto[v.tipoProducto].primaNetaUSD += neta; else porProducto[v.tipoProducto].primaNetaPEN += neta;
@@ -3247,7 +3252,7 @@ function viewVentas(){
               <td>${prodLabel(v.tipoProducto)}</td>
               <td>${ase?ase.nombre:'<span class="pill pill-gray">Directa</span>'}</td>
               <td><span class="pill ${v.canalVenta==='alta_corredores'?'pill-gold':'pill-gray'}">${v.canalVenta==='alta_corredores'?'Alta Corredores':'Directo'}</span></td>
-              <td><span class="pill ${v.tipoVenta==='nueva'?'pill-green':v.tipoVenta==='anulacion'?'pill-red':'pill-gold'}">${v.tipoVenta==='nueva'?'Nueva':v.tipoVenta==='anulacion'?'Anulación':'Renovación'}</span></td>
+              <td><span class="pill ${claseTipoVenta(v.tipoVenta)}">${etiquetaTipoVenta(v.tipoVenta)}</span>${esEndoso(v) && v.endosoNumero ? `<div class="hint">N° ${v.endosoNumero}</div>` : ''}</td>
               <td>${fmtDate(v.fechaVenta)}</td>
               <td class="num">${celdaComision}</td>
               <td>${vigenciaCelda}</td>
@@ -3275,7 +3280,7 @@ function wireVentas(){
     const rows = filteredVentas().map(v=>{
       const cli = state.clientes.find(c=>c.id===v.clienteId);
       const ase = state.asesores.find(a=>a.id===v.asesorId);
-      return [folioV(v.folio), cli?cli.nombre:'', v.aseguradora||'', v.numeroPoliza||'', prodLabel(v.tipoProducto), ase?ase.nombre:'Directa', v.tipoVenta==='nueva'?'Nueva':v.tipoVenta==='anulacion'?'Anulación':'Renovación', v.fechaVenta, v.moneda==='USD'?'USD':'PEN', Number(v.comisionTotal)||0, comisionAsesor(v), comisionTotalSoles(v), v.estadoVenta==='anulada'?'Anulada':'Emitida'];
+      return [folioV(v.folio), cli?cli.nombre:'', v.aseguradora||'', v.numeroPoliza||'', prodLabel(v.tipoProducto), ase?ase.nombre:'Directa', etiquetaTipoVenta(v.tipoVenta), v.fechaVenta, v.moneda==='USD'?'USD':'PEN', Number(v.comisionTotal)||0, comisionAsesor(v), comisionTotalSoles(v), v.estadoVenta==='anulada'?'Anulada':'Emitida'];
     });
     exportExcel('ventas.xlsx', headers, rows);
   };
@@ -4484,7 +4489,8 @@ let filtroPolAseguradora = 'todas', filtroPolProducto = 'todos', filtroPolOrdenC
 let filtroCarteraEtapa = 'todas', filtroCarteraMotivo = 'todos', filtroCarteraTexto = '';
 const POLIZAS_POR_PAGINA = 50;
 function viewPolizas(){
-  let rows = misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto) && v.numeroPoliza);
+  let rows = misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto) && v.numeroPoliza && !esEndoso(v));
+  const endososDe = id => state.ventas.filter(e=> esEndoso(e) && ventaActiva(e) && e.endosoDeVentaId===id);
 
   if(filtroPolEstado==='vigentes') rows = rows.filter(v=> ventaActiva(v) && daysUntil(v.vigenciaFin) >= 0);
   else if(filtroPolEstado==='por_renovar_mes') rows = rows.filter(v=> ventaActiva(v) && v.vigenciaFin && (v.vigenciaFin||'').slice(0,7)===todayISO().slice(0,7));
@@ -4620,7 +4626,7 @@ function viewPolizas(){
               ? (v.tipoComisionAsesor==='ninguna' ? '—' : !v.comisionAprobada ? '<span class="pill pill-gray">⏳ Por aprobar</span>' : fmtMonedaVal(comisionAsesor(v), v.moneda))
               : fmtDual(v);
             return `<tr>
-              <td class="folio">${v.numeroPoliza}</td>
+              <td class="folio">${v.numeroPoliza}${(()=>{ const ends = endososDe(v.id); return ends.length ? `<div><span class="pill pill-gray" title="${ends.map(e=>`${e.endosoNumero?'N° '+e.endosoNumero+' · ':''}${fmtDate(e.fechaVenta)}${e.endosoDescripcion?' · '+e.endosoDescripcion:''}`).join('\n').replace(/"/g,'&quot;')}">📎 ${ends.length} endoso${ends.length>1?'s':''}</span></div>` : ''; })()}</td>
               <td>${cli?cli.nombre:'—'}</td>
               <td>${v.aseguradora||'—'}</td>
               <td>${prodLabel(v.tipoProducto)}</td>
@@ -4630,7 +4636,8 @@ function viewPolizas(){
               <td>${enCuotas ? (v.formaPago==='cupones'?'Cupones':'Débito automático') + (v.cantidadCuotas?` (${v.cantidadCuotas})`:'') : 'Al contado'}</td>
               <td style="white-space:nowrap;">
                 <button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>
-                ${cercaDeVencer ? `<button class="btn btn-ghost btn-sm" data-aviso="${v.id}" style="margin-left:6px;">Aviso de renovación</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}" style="margin-left:6px;">📲 Renovación</button><button class="btn btn-sm" data-renovar="${v.id}" style="margin-left:6px;">Generar renovación</button>` : ''}
+                ${ventaActiva(v) ? `<button class="btn btn-ghost btn-sm" data-endoso="${v.id}" style="margin-left:6px;" title="Registrar un endoso de inclusión (u otro endoso) de esta póliza, a mano o desde su PDF">＋ Endoso</button>` : ''}
+                ${cercaDeVencer ? `<button class="btn btn-ghost btn-sm" data-aviso="${v.id}" style="margin-left:6px;">Aviso de renovación</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}" style="margin-left:6px;">📲 Renovación</button><button class="btn btn-sm" data-renovar="${v.id}" style="margin-left:6px;">Generar renovación</button><button class="btn btn-sm" data-renovar-pdf="${v.id}" style="margin-left:6px;" title="Sube el PDF de la renovación y la IA llena la nueva vigencia, la prima y las cuotas">🤖 Renovar con PDF</button>` : ''}
               </td>
             </tr>`;
           }).join('')}
@@ -4783,6 +4790,8 @@ function wirePolizas(){
       save(); render();
     };
   });
+  document.querySelectorAll('[data-endoso]').forEach(b=> b.onclick = () => abrirEndosoManual(b.dataset.endoso));
+  document.querySelectorAll('[data-renovar-pdf]').forEach(b=> b.onclick = () => elegirPDFYRegistrar(b, { modo:'renovacion', ventaId: b.dataset.renovarPdf }));
   document.querySelectorAll('[data-renovar]').forEach(b=>{
     b.onclick = () => {
       const ventaOrig = state.ventas.find(v=>v.id===b.dataset.renovar);
@@ -5677,7 +5686,7 @@ const familiaProducto = t => /^sctr/.test(t||'') ? 'sctr' : t;
 // Póliza nueva del mismo cliente y producto que empieza entre 60 días antes y 60 después del vencimiento
 function polizaQueRenueva(v){
   if(!v.vigenciaFin) return null;
-  return state.ventas.find(v2=> v2.id!==v.id && ventaActiva(v2) && v2.clienteId===v.clienteId && familiaProducto(v2.tipoProducto)===familiaProducto(v.tipoProducto) && (v2.fechaVenta||'') >= addDaysISO(v.vigenciaFin, -120) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })()) || null;
+  return state.ventas.find(v2=> v2.id!==v.id && ventaActiva(v2) && !esEndoso(v2) && v2.clienteId===v.clienteId && familiaProducto(v2.tipoProducto)===familiaProducto(v.tipoProducto) && (v2.fechaVenta||'') >= addDaysISO(v.vigenciaFin, -120) && (()=>{ const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })()) || null;
 }
 function renovacionesParaSeguimiento(){
   const hoy = todayISO();
@@ -6680,6 +6689,9 @@ function esquemaPolizaIA(){
       numeroPoliza: txt,
       producto: { type:'string', enum: todosLosProductos().map(p=>p.id) },
       esRenovacion: { type:'boolean' },
+      tipoDocumento: { type:'string', enum:['poliza','renovacion','endoso'] },
+      numeroEndoso: txt,
+      descripcionEndoso: txt,
       contratanteNombre: txt,
       contratanteTipoDocumento: { type:'string', enum:['DNI','RUC','CE','PASAPORTE',''] },
       contratanteDocumento: txt,
@@ -6696,7 +6708,7 @@ function esquemaPolizaIA(){
       vehSumaAsegurada: { type:'number' },
       observaciones: txt,
     },
-    required:['aseguradora','aseguradoraTexto','numeroPoliza','producto','esRenovacion','contratanteNombre','contratanteTipoDocumento','contratanteDocumento','contratanteDireccion','contratanteEmail','contratanteCelular','vigenciaInicio','vigenciaFin','fechaEmision','moneda','primaNeta','primaTotal','comisionCorredor','formaPago','cuotas','vehMarca','vehModelo','vehAnio','vehPlaca','vehMotor','vehSerie','vehColor','vehUso','vehSumaAsegurada','observaciones'],
+    required:['aseguradora','aseguradoraTexto','numeroPoliza','producto','esRenovacion','tipoDocumento','numeroEndoso','descripcionEndoso','contratanteNombre','contratanteTipoDocumento','contratanteDocumento','contratanteDireccion','contratanteEmail','contratanteCelular','vigenciaInicio','vigenciaFin','fechaEmision','moneda','primaNeta','primaTotal','comisionCorredor','formaPago','cuotas','vehMarca','vehModelo','vehAnio','vehPlaca','vehMotor','vehSerie','vehColor','vehUso','vehSumaAsegurada','observaciones'],
   };
 }
 const IA_INSTRUCCIONES = `Eres asistente de una corredora de seguros en Perú. Lee la póliza (o endoso, certificado o renovación) adjunta y extrae sus datos para registrarla en el CRM.
@@ -6706,6 +6718,8 @@ const IA_INSTRUCCIONES = `Eres asistente de una corredora de seguros en Perú. L
 - primaTotal es la prima total con IGV; primaNeta es la prima comercial o neta sin IGV; comisionCorredor es el monto de comisión del corredor si figura.
 - formaPago: "contado" si es un solo pago; "cupones" si hay cuotas o cupones; "debito_automatico" si se carga a tarjeta o cuenta. En cuotas pon cada cuota con su fecha de vencimiento y monto; vacío si es al contado.
 - esRenovacion: true si el documento dice que es una renovación.
+- tipoDocumento: "endoso" si el documento es un endoso o suplemento de una póliza ya emitida (inclusión o exclusión de vehículos, trabajadores, asegurados o dependientes, cambio de suma asegurada, etc.); "renovacion" si es la renovación de una póliza; "poliza" si es una póliza nueva.
+- En un endoso: numeroPoliza es el número de la póliza a la que pertenece; numeroEndoso es el número del endoso o suplemento; descripcionEndoso dice en una línea qué se incluye o excluye (por ejemplo "Inclusión de vehículo Toyota Hilux placa ABC123" o "Inclusión de 3 trabajadores"); vigenciaInicio es la fecha desde la que rige el endoso; primaTotal, primaNeta, comisionCorredor y cuotas son solo los del endoso, no los de toda la póliza. Si no es un endoso, deja numeroEndoso y descripcionEndoso vacíos.
 - Datos del vehículo solo si es un seguro vehicular; vehAnio con 4 dígitos.
 - observaciones: una línea con algo importante que el corredor deba revisar (deducibles altos, endosos a favor de un banco, datos ilegibles), o vacío.`;
 async function leerPolizaConIA(file){
@@ -6784,19 +6798,35 @@ function prefillDesdeLecturaIA(d){
     if(!cli.email && d.contratanteEmail) cli.email = d.contratanteEmail;
     if(!cli.celular1 && d.contratanteCelular) cli.celular1 = d.contratanteCelular;
   }
+  const numPol = String(d.numeroPoliza||'').trim();
+  const previa = polizaPorNumero(numPol);
+  const p = Object.assign({
+    clienteId: cli ? cli.id : '',
+    numeroPoliza: numPol, tipoProducto: d.producto,
+    tipoVenta: (d.esRenovacion || previa) ? 'renovacion' : 'nueva',
+    vigenciaFin: fechaISOValida(d.vigenciaFin) || addYears(fechaISOValida(d.vigenciaInicio) || todayISO(), 1),
+  }, camposPolizaIA(d));
+  save(); // guarda el cliente nuevo y las listas de aseguradoras, marcas y modelos que se hayan agregado
+  return { prefill: p, cliente: cli, clienteNuevo, previa };
+}
+const normTextoIA = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+// La póliza (no un endoso) con ese número; si hay varias, la de vigencia más reciente.
+function polizaPorNumero(numPol){
+  if(!numPol) return null;
+  return state.ventas.filter(v=> ventaActiva(v) && !esEndoso(v) && v.numeroPoliza && normTextoIA(v.numeroPoliza)===normTextoIA(numPol))
+    .sort((a,b)=> (b.vigenciaInicio||b.fechaVenta||'').localeCompare(a.vigenciaInicio||a.fechaVenta||''))[0] || null;
+}
+// Datos de la lectura que valen igual para una póliza, una renovación o un endoso: compañía, fechas, prima, cuotas, vehículo y notas.
+function camposPolizaIA(d){
+  const norm = normTextoIA;
   let aseguradora = d.aseguradora!=='OTRA' ? d.aseguradora : (d.aseguradoraTexto||'').trim();
   if(aseguradora && !(state.aseguradoras||[]).includes(aseguradora)){ state.aseguradoras = (state.aseguradoras||[]).concat([aseguradora]); }
-  const numPol = String(d.numeroPoliza||'').trim();
-  const previa = numPol && state.ventas.find(v=> ventaActiva(v) && v.numeroPoliza && norm(v.numeroPoliza)===norm(numPol));
   const cuotas = (d.cuotas||[]).filter(q=> fechaISOValida(q.fecha)).map(q=>({ fecha: q.fecha, monto: Number(q.monto)||0, pagada:false }));
   const formaPago = cuotas.length>1 && d.formaPago==='contado' ? 'cupones' : d.formaPago;
   const p = {
-    clienteId: cli ? cli.id : '',
-    aseguradora, numeroPoliza: numPol, tipoProducto: d.producto,
-    tipoVenta: (d.esRenovacion || previa) ? 'renovacion' : 'nueva',
+    aseguradora,
     fechaVenta: fechaISOValida(d.fechaEmision) || todayISO(),
     vigenciaInicio: fechaISOValida(d.vigenciaInicio) || todayISO(),
-    vigenciaFin: fechaISOValida(d.vigenciaFin) || addYears(fechaISOValida(d.vigenciaInicio) || todayISO(), 1),
     moneda: d.moneda==='USD' ? 'USD' : 'PEN',
     formaPago,
   };
@@ -6824,16 +6854,75 @@ function prefillDesdeLecturaIA(d){
     if(d.vehSumaAsegurada>0) p.vehSumaAsegurada = d.vehSumaAsegurada;
   }
   if(d.observaciones) p.notas = `Revisar (lectura IA): ${d.observaciones}`;
-  save(); // guarda el cliente nuevo y las listas de aseguradoras, marcas y modelos que se hayan agregado
-  return { prefill: p, cliente: cli, clienteNuevo, previa };
+  return p;
+}
+// Lo que una renovación o un endoso hereda de su póliza: cliente, asesor, compañía, producto y reglas de comisión.
+function datosHeredadosDePoliza(pol){
+  const p = {};
+  ['clienteId','asesorId','canalVenta','aseguradora','numeroPoliza','tipoProducto','moneda','modoComisionAseguradora','porcentajeComisionAseguradora','porcentajeFG','tipoComisionAsesor','valorComisionAsesor']
+    .forEach(k=>{ if(pol[k]!==undefined && pol[k]!==null) p[k] = pol[k]; });
+  return p;
+}
+const CAMPOS_VEHICULO = ['vehMarca','vehModelo','vehAnio','vehPlaca','vehMotor','vehSerie','vehColor','vehUso','vehAsientos','vehSumaAsegurada','vehEndosado','vehEntidadEndosataria','vehOtraEntidad','vehGPS'];
+// Arma el formulario de una renovación o un endoso de la póliza base con lo leído del PDF.
+function prefillDesdeBase(d, base){
+  const pol = state.ventas.find(v=> v.id===base.ventaId);
+  if(!pol) return null;
+  const ia = camposPolizaIA(d);
+  const p = Object.assign(datosHeredadosDePoliza(pol), ia);
+  if(!ia.aseguradora) p.aseguradora = pol.aseguradora;
+  if(String(d.numeroPoliza||'').trim()) p.numeroPoliza = String(d.numeroPoliza).trim();
+  const tieneVehiculoIA = !!(ia.vehPlaca || ia.vehMarca);
+  const avisos = [];
+  const cliPol = state.clientes.find(c=> c.id===pol.clienteId);
+  const docIA = String(d.contratanteDocumento||'').replace(/\D/g,''), docCli = String((cliPol||{}).documento||'').replace(/\D/g,'');
+  if(docIA && docCli && docIA!==docCli) avisos.push(`Ojo: el PDF es de otro contratante (documento ${docIA}) y la póliza es de ${cliPol.nombre}.`);
+  let extra;
+  if(base.modo==='renovacion'){
+    p.tipoVenta = 'renovacion';
+    p.vigenciaFin = fechaISOValida(d.vigenciaFin) || addYears(p.vigenciaInicio, 1);
+    if(!tieneVehiculoIA) CAMPOS_VEHICULO.forEach(k=>{ if(pol[k]!==undefined) p[k] = pol[k]; });
+    extra = { renuevaVentaId: pol.id, primaAnteriorRenovacion: Number(pol.primaBruta)||0, primaAnteriorRenovacionMoneda: pol.moneda, oficina: pol.oficina };
+    if(pol.primaBruta && p.primaBruta) avisos.push(`Prima anterior: ${pol.moneda==='USD'?'US$':'S/'} ${Number(pol.primaBruta).toFixed(2)}.`);
+  } else {
+    p.tipoVenta = 'endoso';
+    p.vigenciaFin = '';
+    p.endosoNumero = String(d.numeroEndoso||'').trim();
+    p.endosoDescripcion = String(d.descripcionEndoso||'').trim();
+    extra = { endosoDeVentaId: pol.id, oficina: pol.oficina };
+  }
+  save(); // guarda aseguradoras, marcas y modelos nuevos
+  return { prefill: p, extra, avisos, poliza: pol };
+}
+function abrirEndosoManual(ventaId){
+  const pol = state.ventas.find(v=> v.id===ventaId);
+  if(!pol) return;
+  const p = Object.assign(datosHeredadosDePoliza(pol), { tipoVenta:'endoso', fechaVenta: todayISO(), vigenciaInicio: todayISO(), vigenciaFin:'', formaPago:'contado', primaBruta:'', comisionTotal:'', endosoNumero:'', endosoDescripcion:'' });
+  editing = { type:'venta', id:null, prefill: p, base: { modo:'endoso', ventaId }, extra: { endosoDeVentaId: pol.id, oficina: pol.oficina } };
+  render();
 }
 // Lee el PDF y abre el formulario de venta ya llenado para revisarlo y guardar.
-async function registrarVentaDesdePDF(file, boton){
+async function registrarVentaDesdePDF(file, boton, base){
   const textoBoton = boton ? boton.textContent : '';
-  if(boton){ boton.disabled = true; boton.textContent = '⏳ Leyendo la póliza…'; }
+  if(boton){ boton.disabled = true; boton.textContent = '⏳ Leyendo el PDF…'; }
   try{
     const lectura = await leerPolizaConIA(file);
     if(!lectura) return;
+    // Sin póliza base: si el PDF es un endoso o renovación de una póliza que ya está en el CRM, se liga a ella.
+    if(!base){
+      const pol = polizaPorNumero(String(lectura.datos.numeroPoliza||'').trim());
+      if(pol && lectura.datos.tipoDocumento==='endoso') base = { modo:'endoso', ventaId: pol.id };
+      else if(pol && (lectura.datos.tipoDocumento==='renovacion' || lectura.datos.esRenovacion) && (lectura.datos.vigenciaInicio||'') > (pol.vigenciaInicio||'')) base = { modo:'renovacion', ventaId: pol.id };
+    }
+    if(base){
+      const rb = prefillDesdeBase(lectura.datos, base);
+      if(rb){
+        const tipo = base.modo==='endoso' ? `Endoso de la póliza ${rb.poliza.numeroPoliza||folioV(rb.poliza.folio)}` : `Renovación de la póliza ${rb.poliza.numeroPoliza||folioV(rb.poliza.folio)} (${folioV(rb.poliza.folio)})`;
+        editing = { type:'venta', id:null, prefill: rb.prefill, base, extra: rb.extra, pdfLeido: lectura.archivo, avisoIA: [tipo + '.'].concat(rb.avisos).join(' ') };
+        render();
+        return;
+      }
+    }
     const r = prefillDesdeLecturaIA(lectura.datos);
     const avisos = [];
     if(r.clienteNuevo) avisos.push(`Se creó el cliente "${r.cliente.nombre}".`);
@@ -6845,10 +6934,10 @@ async function registrarVentaDesdePDF(file, boton){
     if(boton && document.body.contains(boton)){ boton.disabled = false; boton.textContent = textoBoton; }
   }
 }
-function elegirPDFYRegistrar(boton){
+function elegirPDFYRegistrar(boton, base){
   const input = document.createElement('input');
   input.type = 'file'; input.accept = 'application/pdf';
-  input.onchange = () => { if(input.files[0]) registrarVentaDesdePDF(input.files[0], boton); };
+  input.onchange = () => { if(input.files[0]) registrarVentaDesdePDF(input.files[0], boton, base); };
   input.click();
 }
 function modalVenta(){
@@ -6875,9 +6964,11 @@ function modalVenta(){
   const pctFGMostrar = v.porcentajeFG || (tasaSugerida ? pctFGVigente(tasaSugerida, v.fechaVenta||todayISO()) : null) || 70;
   return `
   <div class="modal-backdrop"><div class="modal">
-    <h2>${editing.id?'Editar venta':ventaOrigen?'Duplicar venta (renovación)':'Registrar venta'}</h2>
+    <h2>${editing.id ? (esEndoso(v)?'Editar endoso':'Editar venta') : ventaOrigen ? 'Duplicar venta (renovación)' : v.tipoVenta==='endoso' ? 'Registrar endoso' : (editing.base && editing.base.modo==='renovacion') ? 'Registrar renovación' : 'Registrar venta'}</h2>
     <p class="modal-hint">${editing.id ? folioV(v.folio) : ventaOrigen ? `Copiando los datos de ${folioV(ventaOrigen.folio)} — revisa fechas, prima y comisión antes de guardar. Se asignará un folio nuevo.` : 'Se asignará un folio interno automático al guardar.'}</p>
-    ${editing.prefill ? `<div style="background:var(--primary-soft, #E7F0EC);border:1px solid var(--primary);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">🤖 Datos llenados desde el PDF de la póliza. Revisa cada pestaña antes de guardar.${editing.avisoIA ? ' '+editing.avisoIA : ''}</div>` : ''}
+    ${editing.prefill && editing.pdfLeido ? `<div style="background:var(--primary-soft, #E7F0EC);border:1px solid var(--primary);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">🤖 Datos llenados desde el PDF. Revisa cada pestaña antes de guardar.${editing.avisoIA ? ' '+editing.avisoIA : ''}</div>` : ''}
+    ${!editing.id && editing.base && editing.base.modo==='endoso' && !editing.pdfLeido ? (()=>{ const pol = state.ventas.find(x=>x.id===editing.base.ventaId)||{}; return `<div style="background:var(--primary-soft, #E7F0EC);border:1px solid var(--primary);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">Endoso de la póliza <b>${pol.numeroPoliza||''}</b> (${pol.folio?folioV(pol.folio):''}). Ya copié el cliente, la compañía y la comisión. Llena la prima del endoso a mano, o sube su PDF en "Datos de la póliza" y pulsa 🤖.</div>`; })() : ''}
+    ${editing.id && esEndoso(v) && v.endosoDeVentaId ? (()=>{ const pol = state.ventas.find(x=>x.id===v.endosoDeVentaId); return pol ? `<p class="hint">Endoso de la póliza ${pol.numeroPoliza||''} (${folioV(pol.folio)}).</p>` : ''; })() : ''}
 
     <div id="mValidationError" style="display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13.5px;font-weight:600;"></div>
 
@@ -6931,7 +7022,7 @@ function modalVenta(){
         <optgroup label="Seguros oncológicos">${todosLosProductos().filter(r=>esOncologico(r.id)).map(r=>`<option value="${r.id}" ${v.tipoProducto===r.id?'selected':''}>${r.label}</option>`).join('')}</optgroup>
       </select></div>
       <div class="field" style="flex:0;"><button type="button" class="btn btn-ghost btn-sm" id="mNuevoProducto" style="white-space:nowrap;">${esAsesoriaModal ? '+ Agregar servicio' : '+ Agregar producto'}</button></div>
-      <div class="field" style="flex:1;"><label>Tipo de venta</label><select id="mTipoVenta" style="width:100%;"><option value="nueva" ${v.tipoVenta==='nueva'?'selected':''}>Nueva</option><option value="renovacion" ${v.tipoVenta==='renovacion'?'selected':''}>Renovación</option><option value="anulacion" ${v.tipoVenta==='anulacion'?'selected':''}>Anulación</option></select></div>
+      <div class="field" style="flex:1;"><label>Tipo de venta</label><select id="mTipoVenta" style="width:100%;"><option value="nueva" ${v.tipoVenta==='nueva'?'selected':''}>Nueva</option><option value="renovacion" ${v.tipoVenta==='renovacion'?'selected':''}>Renovación</option><option value="anulacion" ${v.tipoVenta==='anulacion'?'selected':''}>Anulación</option><option value="endoso" ${v.tipoVenta==='endoso'?'selected':''}>Endoso</option></select></div>
     </div>
     <div id="mBloqueSCTR" style="${['sctr_pension','sctr_salud','vida_ley'].includes(v.tipoProducto)?'':'display:none;'}">
       <div class="field-row">
@@ -7030,6 +7121,13 @@ function modalVenta(){
 
     <div class="divider"></div>
 
+    <div id="mBloqueEndoso" style="${v.tipoVenta==='endoso'?'':'display:none;'}">
+      <div class="field-row">
+        <div class="field" style="max-width:180px;"><label>N° de endoso</label><input type="text" id="mEndosoNumero" style="width:100%;" value="${v.endosoNumero||''}" placeholder="Ej. 3"></div>
+        <div class="field" style="flex:1;"><label>¿Qué se incluye o cambia?</label><input type="text" id="mEndosoDescripcion" style="width:100%;" value="${(v.endosoDescripcion||'').replace(/"/g,'&quot;')}" placeholder="Ej. Inclusión de vehículo placa ABC123"></div>
+      </div>
+      <div class="hint">La prima y la comisión que registres son solo las del endoso. El endoso no tiene vencimiento propio: vence con su póliza.</div>
+    </div>
     <div class="panel-title">4 · 5. Fechas y moneda</div>
     <div class="field-row">
       <div class="field"><label>Fecha de emisión</label><input type="date" id="mFecha" style="width:100%;" value="${v.fechaVenta||''}"></div>
@@ -7039,8 +7137,8 @@ function modalVenta(){
       </select></div>
     </div>
     <div class="field-row" id="mFieldsVigencia">
-      <div class="field"><label>Inicio de vigencia</label><input type="date" id="mVigenciaInicio" style="width:100%;" value="${v.vigenciaInicio||''}"></div>
-      <div class="field"><label>Fin de vigencia (anualizada)</label><input type="date" id="mVigenciaFin" style="width:100%;" value="${v.vigenciaFin||''}"></div>
+      <div class="field"><label>${v.tipoVenta==='endoso'?'Rige desde':'Inicio de vigencia'}</label><input type="date" id="mVigenciaInicio" style="width:100%;" value="${v.vigenciaInicio||''}"></div>
+      <div class="field" id="mCampoVigenciaFin" style="${v.tipoVenta==='endoso'?'display:none;':''}"><label>Fin de vigencia (anualizada)</label><input type="date" id="mVigenciaFin" style="width:100%;" value="${v.vigenciaFin||''}"></div>
     </div>
     </div>
 
@@ -7369,7 +7467,7 @@ function wireModal(){
     const btnLeerPDFIA = document.getElementById('mLeerPDFIA');
     if(btnLeerPDFIA) btnLeerPDFIA.onclick = () => {
       const file = polizaPDFInput && polizaPDFInput.files[0];
-      if(file) registrarVentaDesdePDF(file, btnLeerPDFIA); else elegirPDFYRegistrar(btnLeerPDFIA);
+      if(file) registrarVentaDesdePDF(file, btnLeerPDFIA, editing.base); else elegirPDFYRegistrar(btnLeerPDFIA, editing.base);
     };
     if(polizaPDFInput) polizaPDFInput.onchange = async () => {
       const file = polizaPDFInput.files[0];
@@ -7542,6 +7640,12 @@ function wireModal(){
     toggleCamposEspeciales();
     prodSel.onchange = () => { if(!editing.id){ tipoSel.value = esSeguro(prodSel.value) ? 'porcentaje' : 'fijo'; } toggleModoComision(); toggleCamposEspeciales(); };
     if(vigenciaInicioInput) vigenciaInicioInput.onchange = () => { if(vigenciaInicioInput.value) vigenciaFinInput.value = addYears(vigenciaInicioInput.value, 1); };
+    const tipoVentaSel = document.getElementById('mTipoVenta');
+    if(tipoVentaSel) tipoVentaSel.addEventListener('change', () => {
+      const esEnd = tipoVentaSel.value==='endoso';
+      const bloque = document.getElementById('mBloqueEndoso'); if(bloque) bloque.style.display = esEnd ? '' : 'none';
+      const campoFin = document.getElementById('mCampoVigenciaFin'); if(campoFin) campoFin.style.display = esEnd ? 'none' : '';
+    });
     const formaPagoSel = document.getElementById('mFormaPago');
     const chkTieneSoat = document.getElementById('mTieneSoat');
     const filaSoat = document.getElementById('mFilaSoat');
@@ -7858,7 +7962,9 @@ function wireModal(){
         tipoVenta: document.getElementById('mTipoVenta').value,
         fechaVenta: document.getElementById('mFecha').value,
         vigenciaInicio: document.getElementById('mVigenciaInicio').value,
-        vigenciaFin: document.getElementById('mVigenciaFin').value,
+        vigenciaFin: document.getElementById('mTipoVenta').value==='endoso' ? '' : document.getElementById('mVigenciaFin').value,
+        endosoNumero: document.getElementById('mTipoVenta').value==='endoso' ? document.getElementById('mEndosoNumero').value.trim() : '',
+        endosoDescripcion: document.getElementById('mTipoVenta').value==='endoso' ? document.getElementById('mEndosoDescripcion').value.trim() : '',
         formaPago: document.getElementById('mFormaPago').value,
         cantidadCuotas: (document.getElementById('mFormaPago').value!=='contado') ? (parseInt(document.getElementById('mCantidadCuotas').value)||null) : null,
         cronogramaCuotas: (document.getElementById('mFormaPago').value!=='contado') ? cronogramaActual : [],
@@ -7903,7 +8009,9 @@ function wireModal(){
       const requiereComisionAhora = modoComisionAseguradora==='fijo' || editing.calculoComision;
       if(requiereComisionAhora && (!data.comisionTotal || data.comisionTotal<=0)){ irAPestanaModal('comisiones'); mostrarErrorModal('Falta ingresar un monto de Comisión válido, mayor a 0 (pestaña "Comisiones").'); return; }
       if(data.numeroPoliza){
-        const polizaDuplicada = state.ventas.find(v=> v.id!==editing.id && v.numeroPoliza && String(v.numeroPoliza).trim().toLowerCase()===String(data.numeroPoliza).trim().toLowerCase());
+        // un endoso o una renovación del mismo cliente comparten el N° de la póliza: no es un error
+        const polizaDuplicada = state.ventas.find(v=> v.id!==editing.id && v.numeroPoliza && String(v.numeroPoliza).trim().toLowerCase()===String(data.numeroPoliza).trim().toLowerCase()
+          && !((data.tipoVenta==='endoso' || data.tipoVenta==='renovacion' || esEndoso(v)) && v.clienteId===data.clienteId));
         if(polizaDuplicada){
           const cliDup = state.clientes.find(c=>c.id===polizaDuplicada.clienteId);
           if(!confirm(`Ya existe otra venta con el N° de póliza "${data.numeroPoliza}" (folio ${folioV(polizaDuplicada.folio)}, cliente: ${cliDup?cliDup.nombre:'—'}).\n\n¿Es un error de tipeo? Cancela para revisar. Si estás seguro de que es correcto (por ejemplo, una renovación con el mismo número), presiona Aceptar para continuar.`)) { irAPestanaModal('poliza'); return; }
@@ -7918,7 +8026,15 @@ function wireModal(){
         data.id = uid(); data.folio = ++state.folioVenta;
         data.fechaPagoComision = data.estadoComision==='pagada' ? todayISO() : '';
         data.comisionAprobada = false;
+        // datos que no están en el formulario: póliza base del endoso o de la renovación, prima anterior, oficina
+        if(editing.extra){
+          Object.entries(editing.extra).forEach(([k,val])=>{ if(val!==undefined && data[k]===undefined) data[k] = val; });
+          if(data.tipoVenta!=='endoso') delete data.endosoDeVentaId;
+          if(data.tipoVenta!=='renovacion'){ delete data.renuevaVentaId; delete data.primaAnteriorRenovacion; delete data.primaAnteriorRenovacionMoneda; }
+        }
         state.ventas.push(data);
+        const polRenovada = data.renuevaVentaId && state.ventas.find(x=>x.id===data.renuevaVentaId);
+        if(polRenovada && !['renovado','no_renueva'].includes((polRenovada.renov||{}).estado)) marcarRenovacion(polRenovada, 'renovado', `Renovada con ${folioV(data.folio)}`);
       }
       const cliAud = state.clientes.find(c=>c.id===data.clienteId);
       const ventaGuardadaAud = state.ventas.find(v=>v.id===(editing.id||data.id));
