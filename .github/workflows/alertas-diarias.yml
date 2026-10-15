@@ -1,0 +1,37 @@
+name: Alertas diarias FG Pólizas
+
+# Todos los días a las 6:52 a. m. hora de Lima (11:52 UTC) envía el correo de vencimientos.
+# También se puede lanzar a mano desde la pestaña Actions ("Run workflow").
+on:
+  schedule:
+    - cron: '52 11 * * *'
+  workflow_dispatch:
+    inputs:
+      prueba:
+        description: 'Solo generar el correo sin enviarlo'
+        type: boolean
+        default: false
+
+jobs:
+  alertas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install --no-save --no-package-lock nodemailer@6.9.14
+      - name: Generar y enviar alertas
+        env:
+          FG_EMAIL: ${{ secrets.FG_EMAIL }}
+          FG_PASSWORD: ${{ secrets.FG_PASSWORD }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERTAS_PARA: ${{ secrets.ALERTAS_PARA }}
+        run: node scripts/alertas-diarias.mjs ${{ inputs.prueba && '--prueba' || '' }}
+      - name: Guardar copia del correo (modo prueba)
+        if: ${{ inputs.prueba }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: alertas
+          path: alertas.html
