@@ -5,6 +5,7 @@
 //   node scripts/alertas-diarias.mjs                       → lee Firebase y envía el correo
 //   node scripts/alertas-diarias.mjs --prueba              → lee Firebase y solo guarda el correo en alertas.html
 //   node scripts/alertas-diarias.mjs --respaldo r.json     → usa un respaldo del CRM en vez de Firebase (implica --prueba)
+//   node scripts/alertas-diarias.mjs --semanal             → resumen de los lunes: renovaciones de 30 días, cobranzas de la semana y todas las cuotas atrasadas
 //
 // Variables de entorno (secretos del repositorio en GitHub):
 //   FG_EMAIL, FG_PASSWORD        usuario administrador del CRM (para leer Firebase)
@@ -21,6 +22,11 @@ const DESTINO_DEFECTO = 'eflores@altacorredores.com';
 const args = process.argv.slice(2);
 const rutaRespaldo = args.includes('--respaldo') ? args[args.indexOf('--respaldo') + 1] : null;
 const soloPrueba = args.includes('--prueba') || !!rutaRespaldo;
+const semanal = args.includes('--semanal');
+// Ventanas en días: el diario mira 7 días; el semanal mira las renovaciones de todo el mes y todo lo atrasado del último año.
+const DIAS_POLIZAS = semanal ? 30 : 7;
+const DIAS_CUOTAS = 7;
+const DIAS_ATRASO = semanal ? 365 : 90;
 
 // ---------------- fechas (hora de Lima) ----------------
 const hoyLima = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date());
@@ -123,7 +129,7 @@ function calcularAlertas(datos) {
   // Pólizas que vencen (sin las ya renovadas ni las marcadas "no renueva")
   const polizas = seguros.filter(v => v.vigenciaFin && !['renovado', 'no_renueva'].includes((v.renov || {}).estado))
     .map(v => ({ v, dias: diasHasta(v.vigenciaFin) }))
-    .filter(x => x.dias >= 0 && x.dias <= 7 && !yaRenovada(x.v))
+    .filter(x => x.dias >= 0 && x.dias <= DIAS_POLIZAS && !yaRenovada(x.v))
     .sort((a, b) => a.dias - b.dias)
     .map(x => fila(x.v, { fecha: x.v.vigenciaFin, dias: x.dias }));
 
@@ -136,22 +142,23 @@ function calcularAlertas(datos) {
       pendientes.forEach(q => {
         const dias = diasHasta(q.fecha);
         const item = fila(v, { fecha: q.fecha, dias, cuota: q.n, monto: q.monto, moneda: v.moneda === 'USD' ? 'US$' : 'S/' });
-        if (dias >= 0 && dias <= 7) cuotasProximas.push(item);
-        else if (dias < 0 && dias >= -90) cuotasAtrasadas.push(item);
+        if (dias >= 0 && dias <= DIAS_CUOTAS) cuotasProximas.push(item);
+        else if (dias < 0 && dias >= -DIAS_ATRASO) cuotasAtrasadas.push(item);
       });
     } else if (v.proximaCuotaFecha) {
       const dias = diasHasta(v.proximaCuotaFecha);
       const monto = v.primaBruta ? Number(v.primaBruta) / (v.cantidadCuotas || 1) : null;
       const item = fila(v, { fecha: v.proximaCuotaFecha, dias, cuota: '', monto, moneda: v.moneda === 'USD' ? 'US$' : 'S/' });
-      if (dias >= 0 && dias <= 7) cuotasProximas.push(item);
-      else if (dias < 0 && dias >= -90) cuotasAtrasadas.push(item);
+      if (dias >= 0 && dias <= DIAS_CUOTAS) cuotasProximas.push(item);
+      else if (dias < 0 && dias >= -DIAS_ATRASO) cuotasAtrasadas.push(item);
     }
   });
   cuotasProximas.sort((a, b) => a.dias - b.dias);
   cuotasAtrasadas.sort((a, b) => a.dias - b.dias);
 
   // Seguimientos y cotizaciones con fecha cumplida
-  const tareas = (datos.seguimientos || []).filter(s => s.estado === 'abierto' && s.proximo && s.proximo <= HOY)
+  const limiteTareas = semanal ? addDaysISO(HOY, 6) : HOY;
+  const tareas = (datos.seguimientos || []).filter(s => s.estado === 'abierto' && s.proximo && s.proximo <= limiteTareas)
     .sort((a, b) => a.proximo.localeCompare(b.proximo))
     .map(s => ({
       cliente: (clientePorId[s.clienteId] || {}).nombre || s.clienteNombre || '—', fecha: s.proximo, dias: diasHasta(s.proximo),
@@ -159,9 +166,11 @@ function calcularAlertas(datos) {
       detalle: [prodLabel(s.producto), s.aseguradora, s.detalle].filter(x => x && x !== '—').join(' · '),
     }));
 
-  // Cumpleaños de hoy
-  const cumpleanos = datos.clientes.filter(c => c.fechaNacimiento && c.fechaNacimiento.slice(5, 10) === HOY.slice(5, 10))
-    .map(c => ({ cliente: c.nombre, celular: c.celular1 || c.telefono || '' }));
+  // Cumpleaños de hoy (o de los próximos 7 días en el semanal)
+  const diasCumple = semanal ? [0, 1, 2, 3, 4, 5, 6] : [0];
+  const cumpleanos = diasCumple.flatMap(n => { const f = addDaysISO(HOY, n);
+    return datos.clientes.filter(c => c.fechaNacimiento && c.fechaNacimiento.slice(5, 10) === f.slice(5, 10))
+      .map(c => ({ cliente: c.nombre, celular: c.celular1 || c.telefono || '', fecha: f })); });
 
   return { polizas, cuotasProximas, cuotasAtrasadas, tareas, cumpleanos };
 }
@@ -183,30 +192,35 @@ ${filas.map(f => `<tr>${columnas.map(c => `<td ${td}>${c[1](f)}</td>`).join('')}
 
 function armarCorreo(a) {
   const partes = [];
-  if (a.polizas.length) partes.push(tabla('📄 Pólizas que vencen en los próximos 7 días', [
+  if (a.polizas.length) partes.push(tabla(semanal ? '🔄 Renovaciones: pólizas que vencen en los próximos 30 días' : '📄 Pólizas que vencen en los próximos 7 días', [
     ['Vence', f => `${fmtDate(f.fecha)}<br>${cuando(f.dias)}`], ['Cliente', f => esc(f.cliente) + (f.celular ? `<br><span style="color:#667085">${esc(f.celular)}</span>` : '')],
     ['Póliza', f => esc(f.poliza)], ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Detalle', f => esc(f.detalle)],
   ], a.polizas));
-  if (a.cuotasProximas.length) partes.push(tabla('💰 Cuotas que vencen en los próximos 7 días', [
+  if (a.cuotasProximas.length) partes.push(tabla(semanal ? '💰 Cobranzas de la semana: cuotas que vencen en los próximos 7 días' : '💰 Cuotas que vencen en los próximos 7 días', [
     ['Vence', f => `${fmtDate(f.fecha)}<br>${cuando(f.dias)}`], ['Cliente', f => esc(f.cliente) + (f.celular ? `<br><span style="color:#667085">${esc(f.celular)}</span>` : '')],
     ['Póliza', f => esc(f.poliza) + (f.cuota ? ` · cuota ${f.cuota}` : '')], ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Importe', f => monto(f.monto, f.moneda)],
   ], a.cuotasProximas));
-  if (a.tareas.length) partes.push(tabla('📋 Seguimientos y cotizaciones para hoy', [
+  if (a.tareas.length) partes.push(tabla(semanal ? '📋 Seguimientos y cotizaciones de la semana' : '📋 Seguimientos y cotizaciones para hoy', [
     ['Fecha', f => `${fmtDate(f.fecha)}<br>${cuando(f.dias)}`], ['Tipo', f => esc(f.tipo)], ['Cliente', f => esc(f.cliente)], ['Detalle', f => esc(f.detalle)],
   ], a.tareas));
-  if (a.cuotasAtrasadas.length) partes.push(tabla('⚠️ Cuotas atrasadas (hasta 90 días)', [
+  if (a.cuotasAtrasadas.length) partes.push(tabla(`⚠️ Cuotas atrasadas (hasta ${DIAS_ATRASO} días)`, [
     ['Venció', f => `${fmtDate(f.fecha)}<br>${cuando(f.dias)}`], ['Cliente', f => esc(f.cliente) + (f.celular ? `<br><span style="color:#667085">${esc(f.celular)}</span>` : '')],
     ['Póliza', f => esc(f.poliza) + (f.cuota ? ` · cuota ${f.cuota}` : '')], ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Importe', f => monto(f.monto, f.moneda)],
   ], a.cuotasAtrasadas));
-  if (a.cumpleanos.length) partes.push(tabla('🎂 Cumpleaños de hoy', [
-    ['Cliente', f => esc(f.cliente)], ['Celular', f => esc(f.celular) || '—'],
+  if (a.cumpleanos.length) partes.push(tabla(semanal ? '🎂 Cumpleaños de la semana' : '🎂 Cumpleaños de hoy', [
+    ...(semanal ? [['Fecha', f => fmtDate(f.fecha)]] : []), ['Cliente', f => esc(f.cliente)], ['Celular', f => esc(f.celular) || '—'],
   ], a.cumpleanos));
 
-  const total = a.polizas.length + a.cuotasProximas.length + a.tareas.length;
-  const asunto = `FG Pólizas · Alertas ${fmtDate(HOY)}: ${a.polizas.length} pólizas, ${a.cuotasProximas.length} cuotas, ${a.tareas.length} seguimientos`;
+  const total = a.polizas.length + a.cuotasProximas.length + a.tareas.length + (semanal ? a.cuotasAtrasadas.length : 0);
+  const asunto = semanal
+    ? `FG Pólizas · Resumen semanal ${fmtDate(HOY)}: ${a.polizas.length} renovaciones, ${a.cuotasProximas.length} cobranzas, ${a.cuotasAtrasadas.length} cuotas atrasadas`
+    : `FG Pólizas · Alertas ${fmtDate(HOY)}: ${a.polizas.length} pólizas, ${a.cuotasProximas.length} cuotas, ${a.tareas.length} seguimientos`;
+  const intro = semanal
+    ? (total ? 'Este es el resumen semanal de tu cartera: renovaciones del mes, cobranzas de la semana y cuotas atrasadas.' : 'Esta semana no hay renovaciones, cobranzas ni cuotas atrasadas pendientes.')
+    : (total ? 'Estos son los vencimientos y pendientes de tu cartera para los próximos días:' : 'Hoy no hay pólizas, cuotas ni seguimientos que venzan en los próximos 7 días.');
   const html = `<div style="font-family:Arial,sans-serif;color:#101828;max-width:820px;">
 <p>Hola Eduardo,</p>
-<p>${total ? 'Estos son los vencimientos y pendientes de tu cartera para los próximos días:' : 'Hoy no hay pólizas, cuotas ni seguimientos que venzan en los próximos 7 días.'}</p>
+<p>${intro}</p>
 ${partes.join('\n')}
 <p style="margin-top:22px;"><a href="https://asesorespecializado18-gif.github.io/CRM-FG/" style="color:#1F4B41;font-weight:bold;">Abrir FG Pólizas</a></p>
 <p style="color:#667085;font-size:12px;">Correo automático generado desde el CRM FG Pólizas.</p>
@@ -227,7 +241,7 @@ async function enviar({ asunto, html }) {
 
 const alertas = calcularAlertas(await cargarDatos());
 const correo = armarCorreo(alertas);
-console.log(`${HOY} · pólizas ${alertas.polizas.length} · cuotas próximas ${alertas.cuotasProximas.length} · atrasadas ${alertas.cuotasAtrasadas.length} · seguimientos ${alertas.tareas.length} · cumpleaños ${alertas.cumpleanos.length}`);
+console.log(`${HOY}${semanal ? ' (semanal)' : ''} · pólizas ${alertas.polizas.length} · cuotas próximas ${alertas.cuotasProximas.length} · atrasadas ${alertas.cuotasAtrasadas.length} · seguimientos ${alertas.tareas.length} · cumpleaños ${alertas.cumpleanos.length}`);
 if (soloPrueba) {
   fs.writeFileSync('alertas.html', `<meta charset="utf-8"><title>${esc(correo.asunto)}</title>\n${correo.html}`);
   console.log('Modo prueba: el correo se guardó en alertas.html y no se envió.');
