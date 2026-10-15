@@ -292,7 +292,7 @@ async function descargarVentasArchivadas(){
   }
 }
 async function guardarArchivoFirebase(nombre, dataUrl){
-  const id = uid() + Date.now().toString(36);
+  const id = Math.random().toString(36).slice(2,10) + Date.now().toString(36); // uid() vive dentro del bloque principal y aquí no existe
   const ref = fbStorage.ref().child(`archivos/${id}`);
   await ref.putString(dataUrl, 'data_url', { customMetadata: { nombre } });
   return id;
@@ -4540,7 +4540,7 @@ function viewPolizas(){
   const th = (campo, label) => `<th data-orden-pol-campo="${campo}" style="cursor:pointer;user-select:none;" title="Ordenar por ${label}">${label}${flecha(campo)}</th>`;
 
   return `
-    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
+    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
     <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
@@ -4647,6 +4647,7 @@ function viewPolizas(){
 }
 function wirePolizas(){
   const btn = document.getElementById('btnNuevaPoliza'); if(btn) btn.onclick = () => { editing = {type:'venta', id:null}; render(); };
+  const btnPDF = document.getElementById('btnPolizaDesdePDF'); if(btnPDF) btnPDF.onclick = () => elegirPDFYRegistrar(btnPDF);
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; filtroPolPagina=1; render(); };
   const fTexto = document.getElementById('fPolTexto'); if(fTexto) fTexto.oninput = e=>{ filtroPolTexto=e.target.value; filtroPolPagina=1; render(); };
@@ -6620,6 +6621,203 @@ function wireModalSiniestro(){
 }
 function closeModal(){ editing = null; const h = document.getElementById('modalHost'); if(h) h.remove(); }
 
+// ================= LECTURA DE PÓLIZAS EN PDF CON IA =================
+// Sube el PDF de la póliza y Claude devuelve los datos para llenar el formulario de venta.
+// La clave de la API de Anthropic se guarda solo en este navegador (localStorage), nunca en la nube.
+const IA_CLAVE_LS = 'fg_clave_claude';
+const IA_MODELO = 'claude-opus-5-5';
+const IA_SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.130.0/+esm';
+function obtenerClaveIA(forzarNueva){
+  let clave = '';
+  try{ clave = forzarNueva ? '' : (localStorage.getItem(IA_CLAVE_LS)||''); }catch(e){}
+  if(clave) return clave;
+  clave = (prompt('Para leer pólizas con IA, pega tu clave de la API de Anthropic (empieza con "sk-ant-").\n\nSe obtiene en console.anthropic.com → API Keys. Queda guardada solo en este navegador.')||'').trim();
+  if(!clave) return '';
+  if(!clave.startsWith('sk-ant-')){ alert('La clave no parece válida: debe empezar con "sk-ant-".'); return ''; }
+  try{ localStorage.setItem(IA_CLAVE_LS, clave); }catch(e){}
+  return clave;
+}
+function leerArchivoBase64(file){
+  return new Promise((ok, mal)=>{
+    const r = new FileReader();
+    r.onload = () => ok({ dataUrl: r.result, base64: String(r.result).split(',')[1] });
+    r.onerror = () => mal(r.error);
+    r.readAsDataURL(file);
+  });
+}
+function esquemaPolizaIA(){
+  const txt = { type:'string' };
+  return {
+    type:'object', additionalProperties:false,
+    properties:{
+      aseguradora: { type:'string', enum: (state.aseguradoras||[]).concat(['OTRA']) },
+      aseguradoraTexto: txt,
+      numeroPoliza: txt,
+      producto: { type:'string', enum: todosLosProductos().map(p=>p.id) },
+      esRenovacion: { type:'boolean' },
+      contratanteNombre: txt,
+      contratanteTipoDocumento: { type:'string', enum:['DNI','RUC','CE','PASAPORTE',''] },
+      contratanteDocumento: txt,
+      contratanteDireccion: txt,
+      contratanteEmail: txt,
+      contratanteCelular: txt,
+      vigenciaInicio: txt, vigenciaFin: txt, fechaEmision: txt,
+      moneda: { type:'string', enum:['PEN','USD'] },
+      primaNeta: { type:'number' }, primaTotal: { type:'number' }, comisionCorredor: { type:'number' },
+      formaPago: { type:'string', enum:['contado','cupones','debito_automatico'] },
+      cuotas: { type:'array', items:{ type:'object', additionalProperties:false, properties:{ fecha: txt, monto: { type:'number' } }, required:['fecha','monto'] } },
+      vehMarca: txt, vehModelo: txt, vehAnio: txt, vehPlaca: txt, vehMotor: txt, vehSerie: txt, vehColor: txt,
+      vehUso: { type:'string', enum:['particular','comercial','taxi','carga',''] },
+      vehSumaAsegurada: { type:'number' },
+      observaciones: txt,
+    },
+    required:['aseguradora','aseguradoraTexto','numeroPoliza','producto','esRenovacion','contratanteNombre','contratanteTipoDocumento','contratanteDocumento','contratanteDireccion','contratanteEmail','contratanteCelular','vigenciaInicio','vigenciaFin','fechaEmision','moneda','primaNeta','primaTotal','comisionCorredor','formaPago','cuotas','vehMarca','vehModelo','vehAnio','vehPlaca','vehMotor','vehSerie','vehColor','vehUso','vehSumaAsegurada','observaciones'],
+  };
+}
+const IA_INSTRUCCIONES = `Eres asistente de una corredora de seguros en Perú. Lee la póliza (o endoso, certificado o renovación) adjunta y extrae sus datos para registrarla en el CRM.
+- Fechas en formato AAAA-MM-DD. Si un dato no aparece, deja el texto vacío ("") o el número en 0; no inventes.
+- aseguradora: elige el nombre exacto de la lista que corresponda a la compañía emisora (por ejemplo, Rímac Seguros y Reaseguros es "Rímac Seguros"; Quálitas es "Qualitas Perú"). Usa "OTRA" solo si no está; en aseguradoraTexto escribe el nombre tal como figura en el documento.
+- producto: elige el id del ramo (seguros_vehiculares para autos, sctr_salud / sctr_pension, vida_ley, eps, salud, etc.).
+- primaTotal es la prima total con IGV; primaNeta es la prima comercial o neta sin IGV; comisionCorredor es el monto de comisión del corredor si figura.
+- formaPago: "contado" si es un solo pago; "cupones" si hay cuotas o cupones; "debito_automatico" si se carga a tarjeta o cuenta. En cuotas pon cada cuota con su fecha de vencimiento y monto; vacío si es al contado.
+- esRenovacion: true si el documento dice que es una renovación.
+- Datos del vehículo solo si es un seguro vehicular; vehAnio con 4 dígitos.
+- observaciones: una línea con algo importante que el corredor deba revisar (deducibles altos, endosos a favor de un banco, datos ilegibles), o vacío.`;
+async function leerPolizaConIA(file){
+  if(!file) return null;
+  if(file.type && file.type!=='application/pdf'){ alert('Elige un archivo PDF.'); return null; }
+  if(file.size > 30*1024*1024){ alert('El PDF pesa más de 30 MB; la IA no puede leerlo. Prueba con una versión más liviana.'); return null; }
+  const clave = obtenerClaveIA();
+  if(!clave) return null;
+  const { dataUrl, base64 } = await leerArchivoBase64(file);
+  const { default: Anthropic } = await import(IA_SDK_URL);
+  const client = new Anthropic({ apiKey: clave, dangerouslyAllowBrowser: true });
+  let resp;
+  try{
+    resp = await client.beta.messages.create({
+      model: IA_MODELO,
+      max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'low', format: { type:'json_schema', schema: esquemaPolizaIA() } },
+      system: IA_INSTRUCCIONES,
+      messages: [{ role:'user', content: [
+        { type:'document', source:{ type:'base64', media_type:'application/pdf', data: base64 } },
+        { type:'text', text:'Extrae los datos de esta póliza.' },
+      ]}],
+    });
+  }catch(err){
+    console.error('Lectura IA', err);
+    if(err instanceof Anthropic.AuthenticationError){
+      try{ localStorage.removeItem(IA_CLAVE_LS); }catch(e){}
+      alert('La clave de Anthropic no fue aceptada. Vuelve a intentarlo y pega una clave válida.');
+    } else if(err instanceof Anthropic.RateLimitError){
+      alert('La IA está ocupada en este momento. Espera un minuto y vuelve a intentarlo.');
+    } else if(err instanceof Anthropic.BadRequestError){
+      alert('La IA no pudo procesar este PDF: ' + (err.message||''));
+    } else {
+      alert('No se pudo conectar con la IA. Revisa tu internet y vuelve a intentarlo.');
+    }
+    return null;
+  }
+  if(resp.stop_reason==='refusal'){ alert('La IA no pudo leer este documento. Regístralo a mano.'); return null; }
+  if(resp.stop_reason==='max_tokens'){ alert('La póliza es muy extensa y la lectura quedó incompleta. Regístrala a mano.'); return null; }
+  const bloque = resp.content.find(b=>b.type==='text');
+  let datos;
+  try{ datos = JSON.parse(bloque ? bloque.text : ''); }catch(e){ alert('La IA devolvió una respuesta que no se pudo leer. Vuelve a intentarlo.'); return null; }
+  return { datos, archivo: { name: file.name, dataUrl } };
+}
+const fechaISOValida = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s||'')) ? s : '';
+// Convierte lo leído por la IA en un cliente (lo crea si no existe) y en los datos iniciales de la venta.
+function prefillDesdeLecturaIA(d){
+  const norm = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+  const doc = String(d.contratanteDocumento||'').replace(/\D/g,'');
+  let cli = (doc && state.clientes.find(c=> String(c.documento||'').replace(/\D/g,'')===doc))
+         || (d.contratanteNombre && state.clientes.find(c=> norm(c.nombre)===norm(d.contratanteNombre)))
+         // mismo nombre en otro orden (las pólizas ponen nombres y luego apellidos; el CRM suele tener apellidos primero)
+         || (d.contratanteNombre && state.clientes.find(c=> norm(c.nombre).split(' ').sort().join(' ')===norm(d.contratanteNombre).split(' ').sort().join(' ')));
+  let clienteNuevo = false;
+  if(!cli && d.contratanteNombre){
+    cli = { id: uid(), nombre: d.contratanteNombre.trim(), tipoDocumento: d.contratanteTipoDocumento || (doc.length===11?'RUC':'DNI'), documento: doc,
+      direccion: d.contratanteDireccion||'', ciudad:'', email: d.contratanteEmail||'', email2:'', celular1: d.contratanteCelular||'', celular2:'',
+      fechaNacimiento:'', personaContacto:'', datosAdicionales:'', estadoContacto:'cliente', etiquetas:[] };
+    state.clientes.push(cli);
+    registrarAuditoria('crear', 'cliente', cli.id, `Cliente creado desde la lectura de póliza: ${cli.nombre}`);
+    clienteNuevo = true;
+  } else if(cli){
+    // completa solo los datos de contacto que falten
+    if(!cli.documento && doc) cli.documento = doc;
+    if(!cli.direccion && d.contratanteDireccion) cli.direccion = d.contratanteDireccion;
+    if(!cli.email && d.contratanteEmail) cli.email = d.contratanteEmail;
+    if(!cli.celular1 && d.contratanteCelular) cli.celular1 = d.contratanteCelular;
+  }
+  let aseguradora = d.aseguradora!=='OTRA' ? d.aseguradora : (d.aseguradoraTexto||'').trim();
+  if(aseguradora && !(state.aseguradoras||[]).includes(aseguradora)){ state.aseguradoras = (state.aseguradoras||[]).concat([aseguradora]); }
+  const numPol = String(d.numeroPoliza||'').trim();
+  const previa = numPol && state.ventas.find(v=> ventaActiva(v) && v.numeroPoliza && norm(v.numeroPoliza)===norm(numPol));
+  const cuotas = (d.cuotas||[]).filter(q=> fechaISOValida(q.fecha)).map(q=>({ fecha: q.fecha, monto: Number(q.monto)||0, pagada:false }));
+  const formaPago = cuotas.length>1 && d.formaPago==='contado' ? 'cupones' : d.formaPago;
+  const p = {
+    clienteId: cli ? cli.id : '',
+    aseguradora, numeroPoliza: numPol, tipoProducto: d.producto,
+    tipoVenta: (d.esRenovacion || previa) ? 'renovacion' : 'nueva',
+    fechaVenta: fechaISOValida(d.fechaEmision) || todayISO(),
+    vigenciaInicio: fechaISOValida(d.vigenciaInicio) || todayISO(),
+    vigenciaFin: fechaISOValida(d.vigenciaFin) || addYears(fechaISOValida(d.vigenciaInicio) || todayISO(), 1),
+    moneda: d.moneda==='USD' ? 'USD' : 'PEN',
+    formaPago,
+  };
+  if(d.primaTotal>0) p.primaBruta = Math.round(d.primaTotal*100)/100;
+  if(d.primaTotal>0 && d.comisionCorredor>0) p.porcentajeComisionAseguradora = Math.round(d.comisionCorredor / calcPrimaNeta(d.primaTotal) * 10000)/100;
+  if(formaPago!=='contado' && cuotas.length){
+    p.cantidadCuotas = cuotas.length; p.cronogramaCuotas = cuotas;
+    const prox = cuotas.find(q=> q.fecha >= todayISO()); p.proximaCuotaFecha = prox ? prox.fecha : cuotas[cuotas.length-1].fecha;
+  }
+  if(d.producto==='seguros_vehiculares'){
+    // marca y modelo son listas en el formulario: se usa la opción existente o se agrega la nueva
+    let marca = '', modelo = '';
+    if(d.vehMarca){
+      marca = (state.marcasVehiculo||[]).find(m=> norm(m)===norm(d.vehMarca)) || d.vehMarca.trim().toUpperCase();
+      if(!(state.marcasVehiculo||[]).includes(marca)) state.marcasVehiculo = (state.marcasVehiculo||[]).concat([marca]);
+      if(d.vehModelo){
+        const lista = (state.modelosPorMarca||{})[marca] || [];
+        modelo = lista.find(m=> norm(m)===norm(d.vehModelo)) || d.vehModelo.trim();
+        if(!lista.includes(modelo)){ state.modelosPorMarca = state.modelosPorMarca||{}; state.modelosPorMarca[marca] = lista.concat([modelo]); }
+      }
+    }
+    Object.assign(p, { vehMarca: marca, vehModelo: modelo, vehAnio: String(d.vehAnio||'').slice(0,4), vehPlaca: (d.vehPlaca||'').toUpperCase().replace(/[\s-]/g,''),
+      vehMotor: d.vehMotor||'', vehSerie: d.vehSerie||'', vehColor: d.vehColor||'' });
+    if(d.vehUso) p.vehUso = d.vehUso;
+    if(d.vehSumaAsegurada>0) p.vehSumaAsegurada = d.vehSumaAsegurada;
+  }
+  if(d.observaciones) p.notas = `Revisar (lectura IA): ${d.observaciones}`;
+  save(); // guarda el cliente nuevo y las listas de aseguradoras, marcas y modelos que se hayan agregado
+  return { prefill: p, cliente: cli, clienteNuevo, previa };
+}
+// Lee el PDF y abre el formulario de venta ya llenado para revisarlo y guardar.
+async function registrarVentaDesdePDF(file, boton){
+  const textoBoton = boton ? boton.textContent : '';
+  if(boton){ boton.disabled = true; boton.textContent = '⏳ Leyendo la póliza…'; }
+  try{
+    const lectura = await leerPolizaConIA(file);
+    if(!lectura) return;
+    const r = prefillDesdeLecturaIA(lectura.datos);
+    const avisos = [];
+    if(r.clienteNuevo) avisos.push(`Se creó el cliente "${r.cliente.nombre}".`);
+    if(r.previa) avisos.push(`Ya existe la póliza ${r.prefill.numeroPoliza} (${folioV(r.previa.folio)}); se marcó como renovación.`);
+    if(!r.cliente) avisos.push('No se encontró el nombre del contratante; elige el cliente a mano.');
+    editing = { type:'venta', id:null, prefill: r.prefill, pdfLeido: lectura.archivo, avisoIA: avisos.join(' ') };
+    render();
+  } finally {
+    if(boton && document.body.contains(boton)){ boton.disabled = false; boton.textContent = textoBoton; }
+  }
+}
+function elegirPDFYRegistrar(boton){
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'application/pdf';
+  input.onchange = () => { if(input.files[0]) registrarVentaDesdePDF(input.files[0], boton); };
+  input.click();
+}
 function modalVenta(){
   const bitDeModal = bitacoraDeTab();
   const ventaOrigen = (!editing.id && editing.duplicarDesdeId) ? state.ventas.find(x=>x.id===editing.duplicarDesdeId) : null;
@@ -6635,6 +6833,7 @@ function modalVenta(){
     modoComisionAseguradora: (bitDeModal==='asesorias'||bitDeModal==='oncologicos')?'fijo':'porcentaje',
     moneda:'PEN', tipoComisionAsesor: 'porcentaje', valorComisionAsesor:'', estadoComision:'pendiente', estadoVenta:'emitida', notas:''
   };
+  if(!editing.id && editing.prefill) Object.assign(v, editing.prefill);
   const modoSeguro = esSeguro(v.tipoProducto);
   const esAsesoriaModal = bitDeModal==='asesorias';
   const esOncosaludModal = bitDeModal==='oncologicos';
@@ -6645,6 +6844,7 @@ function modalVenta(){
   <div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar venta':ventaOrigen?'Duplicar venta (renovación)':'Registrar venta'}</h2>
     <p class="modal-hint">${editing.id ? folioV(v.folio) : ventaOrigen ? `Copiando los datos de ${folioV(ventaOrigen.folio)} — revisa fechas, prima y comisión antes de guardar. Se asignará un folio nuevo.` : 'Se asignará un folio interno automático al guardar.'}</p>
+    ${editing.prefill ? `<div style="background:var(--primary-soft, #E7F0EC);border:1px solid var(--primary);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">🤖 Datos llenados desde el PDF de la póliza. Revisa cada pestaña antes de guardar.${editing.avisoIA ? ' '+editing.avisoIA : ''}</div>` : ''}
 
     <div id="mValidationError" style="display:none;background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13.5px;font-weight:600;"></div>
 
@@ -6717,6 +6917,7 @@ function modalVenta(){
       <div class="field"><label>Lugar(es) de operaciones</label><input type="text" id="mLugarOperaciones" style="width:100%;" value="${v.lugarOperaciones||''}" placeholder="Dirección(es) donde trabajan los asegurados"></div>
     </div>
     <div class="field"><label>${esAsesoriaModal ? 'Contrato / documento del servicio en PDF (opcional)' : 'Póliza en PDF (opcional)'}</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
+      ${(!editing.id && !esAsesoriaModal) ? `<button type="button" class="btn btn-ghost btn-sm" id="mLeerPDFIA" style="margin-top:6px;" title="La IA lee el PDF y llena el formulario">🤖 Llenar el formulario con este PDF</button>` : ''}
       <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="#" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
       <div class="hint">Máx. 730 KB por archivo. Si pesa más, el sistema intenta comprimirlo automáticamente al seleccionarlo.</div>
     </div>
@@ -7126,6 +7327,17 @@ function wireModal(){
       };
       reader.readAsDataURL(fileFinal);
     };
+    if(editing.pdfLeido && pendingPolizaPDF===undefined){
+      pendingPolizaPDF = editing.pdfLeido;
+      const info = document.getElementById('mPolizaPDFInfo');
+      if(info) info.innerHTML = `📄 ${editing.pdfLeido.name} — se guardará al hacer clic en Guardar. <a href="#" id="mPolizaPDFQuitar">quitar</a>`;
+      wireQuitarPDF();
+    }
+    const btnLeerPDFIA = document.getElementById('mLeerPDFIA');
+    if(btnLeerPDFIA) btnLeerPDFIA.onclick = () => {
+      const file = polizaPDFInput && polizaPDFInput.files[0];
+      if(file) registrarVentaDesdePDF(file, btnLeerPDFIA); else elegirPDFYRegistrar(btnLeerPDFIA);
+    };
     if(polizaPDFInput) polizaPDFInput.onchange = async () => {
       const file = polizaPDFInput.files[0];
       if(!file) return;
@@ -7455,7 +7667,8 @@ function wireModal(){
     });
     // ---- Cronograma de cuotas ----
     const ventaEnEdicion = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
-    cronogramaActual = (ventaEnEdicion && ventaEnEdicion.cronogramaCuotas) ? ventaEnEdicion.cronogramaCuotas.map(c=>({...c})) : [];
+    cronogramaActual = (ventaEnEdicion && ventaEnEdicion.cronogramaCuotas) ? ventaEnEdicion.cronogramaCuotas.map(c=>({...c}))
+      : (!editing.id && editing.prefill && editing.prefill.cronogramaCuotas) ? editing.prefill.cronogramaCuotas.map(c=>({...c})) : [];
     const montoTotalVenta = () => {
       const pb = parseFloat(document.getElementById('mPrimaBruta') ? document.getElementById('mPrimaBruta').value : (document.getElementById('mPrimaBrutaFijo')?document.getElementById('mPrimaBrutaFijo').value:0)) || 0;
       return pb;
