@@ -4540,7 +4540,7 @@ function viewPolizas(){
   const th = (campo, label) => `<th data-orden-pol-campo="${campo}" style="cursor:pointer;user-select:none;" title="Ordenar por ${label}">${label}${flecha(campo)}</th>`;
 
   return `
-    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
+    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-ghost" id="btnClaveIA" title="Ver, cambiar o borrar la clave de Anthropic que usa la lectura con IA">🔑 Clave IA</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
     <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
@@ -4648,6 +4648,7 @@ function viewPolizas(){
 function wirePolizas(){
   const btn = document.getElementById('btnNuevaPoliza'); if(btn) btn.onclick = () => { editing = {type:'venta', id:null}; render(); };
   const btnPDF = document.getElementById('btnPolizaDesdePDF'); if(btnPDF) btnPDF.onclick = () => elegirPDFYRegistrar(btnPDF);
+  const btnClave = document.getElementById('btnClaveIA'); if(btnClave) btnClave.onclick = cambiarClaveIA;
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; filtroPolPagina=1; render(); };
   const fTexto = document.getElementById('fPolTexto'); if(fTexto) fTexto.oninput = e=>{ filtroPolTexto=e.target.value; filtroPolPagina=1; render(); };
@@ -6631,11 +6632,35 @@ function obtenerClaveIA(forzarNueva){
   let clave = '';
   try{ clave = forzarNueva ? '' : (localStorage.getItem(IA_CLAVE_LS)||''); }catch(e){}
   if(clave) return clave;
-  clave = (prompt('Para leer pólizas con IA, pega tu clave de la API de Anthropic (empieza con "sk-ant-").\n\nSe obtiene en console.anthropic.com → API Keys. Queda guardada solo en este navegador.')||'').trim();
+  clave = (prompt('Para leer pólizas con IA, pega tu clave de la API de Anthropic (empieza con "sk-ant-").\n\nCréala en console.anthropic.com → API Keys → "Create Key", en el workspace "Default". Queda guardada solo en este navegador.')||'').trim();
   if(!clave) return '';
   if(!clave.startsWith('sk-ant-')){ alert('La clave no parece válida: debe empezar con "sk-ant-".'); return ''; }
   try{ localStorage.setItem(IA_CLAVE_LS, clave); }catch(e){}
   return clave;
+}
+// Devuelve un mensaje en español si el error es por la clave; si no, ''.
+function motivoErrorClaveIA(Anthropic, err){
+  const msg = String((err && err.message) || '');
+  if(/workspace/i.test(msg))
+    return 'Esta clave de Anthropic no pertenece a un espacio de trabajo (workspace), así que no sirve para el CRM.\n\nCrea una nueva en console.anthropic.com → API Keys → "Create Key", eligiendo el workspace "Default", y pégala aquí.';
+  if(err instanceof Anthropic.AuthenticationError || /invalid x-api-key|api key/i.test(msg))
+    return 'La clave de Anthropic no fue aceptada (puede estar mal copiada o desactivada).\n\nCopia una clave activa desde console.anthropic.com → API Keys.';
+  if(err instanceof Anthropic.PermissionDeniedError)
+    return 'Esta clave de Anthropic no tiene permiso para leer pólizas.\n\nCrea una clave nueva en console.anthropic.com → API Keys, en el workspace "Default".';
+  return '';
+}
+// Botón "Cambiar clave IA": muestra la clave guardada (oculta) y permite reemplazarla o borrarla.
+function cambiarClaveIA(){
+  let actual = '';
+  try{ actual = localStorage.getItem(IA_CLAVE_LS)||''; }catch(e){}
+  const estado = actual ? 'Clave guardada en este navegador: ' + actual.slice(0,10) + '…' + actual.slice(-4) : 'No hay ninguna clave guardada en este navegador.';
+  const nueva = prompt(estado + '\n\nPega la nueva clave de Anthropic (empieza con "sk-ant-"). Créala en console.anthropic.com → API Keys, en el workspace "Default".\n\nDeja vacío y acepta para borrar la clave guardada.');
+  if(nueva===null) return;
+  const clave = nueva.trim();
+  if(!clave){ try{ localStorage.removeItem(IA_CLAVE_LS); }catch(e){} alert('Clave de IA borrada de este navegador.'); return; }
+  if(!clave.startsWith('sk-ant-')){ alert('La clave no parece válida: debe empezar con "sk-ant-".'); return; }
+  try{ localStorage.setItem(IA_CLAVE_LS, clave); }catch(e){}
+  alert('Clave de IA guardada.');
 }
 function leerArchivoBase64(file){
   return new Promise((ok, mal)=>{
@@ -6687,12 +6712,14 @@ async function leerPolizaConIA(file){
   if(!file) return null;
   if(file.type && file.type!=='application/pdf'){ alert('Elige un archivo PDF.'); return null; }
   if(file.size > 30*1024*1024){ alert('El PDF pesa más de 30 MB; la IA no puede leerlo. Prueba con una versión más liviana.'); return null; }
-  const clave = obtenerClaveIA();
-  if(!clave) return null;
   const { dataUrl, base64 } = await leerArchivoBase64(file);
   const { default: Anthropic } = await import(IA_SDK_URL);
-  const client = new Anthropic({ apiKey: clave, dangerouslyAllowBrowser: true });
+  let clave = obtenerClaveIA();
+  if(!clave) return null;
   let resp;
+  // Si la clave falla (no válida, sin permiso o sin espacio de trabajo), se borra y se pide otra una vez.
+  for(let intento=0; ; intento++){
+  const client = new Anthropic({ apiKey: clave, dangerouslyAllowBrowser: true });
   try{
     resp = await client.beta.messages.create({
       model: IA_MODELO,
@@ -6708,9 +6735,13 @@ async function leerPolizaConIA(file){
     });
   }catch(err){
     console.error('Lectura IA', err);
-    if(err instanceof Anthropic.AuthenticationError){
+    const motivo = motivoErrorClaveIA(Anthropic, err);
+    if(motivo){
       try{ localStorage.removeItem(IA_CLAVE_LS); }catch(e){}
-      alert('La clave de Anthropic no fue aceptada. Vuelve a intentarlo y pega una clave válida.');
+      const otra = intento===0 && confirm(motivo + '\n\n¿Quieres pegar otra clave ahora?');
+      if(otra){ clave = obtenerClaveIA(true); if(clave) continue; }
+      else if(intento===0) alert('La clave guardada se borró. La próxima vez que uses "Registrar desde PDF" te pediremos una nueva.');
+      else alert(motivo);
     } else if(err instanceof Anthropic.RateLimitError){
       alert('La IA está ocupada en este momento. Espera un minuto y vuelve a intentarlo.');
     } else if(err instanceof Anthropic.BadRequestError){
@@ -6719,6 +6750,8 @@ async function leerPolizaConIA(file){
       alert('No se pudo conectar con la IA. Revisa tu internet y vuelve a intentarlo.');
     }
     return null;
+  }
+  break;
   }
   if(resp.stop_reason==='refusal'){ alert('La IA no pudo leer este documento. Regístralo a mano.'); return null; }
   if(resp.stop_reason==='max_tokens'){ alert('La póliza es muy extensa y la lectura quedó incompleta. Regístrala a mano.'); return null; }
