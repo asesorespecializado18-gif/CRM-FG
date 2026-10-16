@@ -1,12 +1,14 @@
 name: Alertas diarias FG Pólizas
 
 # Todos los días a las 6:52 a. m. hora de Lima (11:52 UTC) envía el correo de vencimientos,
-# y los lunes a las 7:00 a. m. (12:00 UTC) el resumen semanal de renovaciones, cobranzas y cuotas atrasadas.
+# los lunes a las 7:00 a. m. (12:00 UTC) el resumen semanal de renovaciones, cobranzas y cuotas atrasadas,
+# y el día 1 de cada mes a las 7:10 a. m. (12:10 UTC) el cierre del mes anterior.
 # También se puede lanzar a mano desde la pestaña Actions ("Run workflow").
 on:
   schedule:
     - cron: '52 11 * * *'
     - cron: '0 12 * * 1'
+    - cron: '10 12 1 * *'
   workflow_dispatch:
     inputs:
       prueba:
@@ -15,6 +17,10 @@ on:
         default: false
       semanal:
         description: 'Enviar el resumen semanal en vez de las alertas del día'
+        type: boolean
+        default: false
+      mensual:
+        description: 'Enviar el cierre del mes anterior en vez de las alertas del día'
         type: boolean
         default: false
 
@@ -34,7 +40,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERTAS_PARA: ${{ secrets.ALERTAS_PARA }}
-        run: node scripts/alertas-diarias.mjs ${{ inputs.prueba && '--prueba' || '' }} ${{ (inputs.semanal || github.event.schedule == '0 12 * * 1') && '--semanal' || '' }}
+        run: node scripts/alertas-diarias.mjs ${{ inputs.prueba && '--prueba' || '' }} ${{ (inputs.semanal || github.event.schedule == '0 12 * * 1') && '--semanal' || '' }} ${{ (inputs.mensual || github.event.schedule == '10 12 1 * *') && '--mensual' || '' }}
       - name: Guardar copia del correo (modo prueba)
         if: ${{ inputs.prueba }}
         uses: actions/upload-artifact@v4
