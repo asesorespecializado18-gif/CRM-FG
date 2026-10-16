@@ -6126,7 +6126,7 @@ function viewFichaCliente(id){
         <div class="field" style="flex:1;"><label>Archivo (PDF o imagen)</label><input type="file" id="fichaDocArchivo" accept="application/pdf,image/*" style="width:100%;"></div>
         <div class="field" style="flex:0;"><button class="btn btn-primary btn-sm" id="btnAgregarDocumento">+ Subir</button></div>
       </div>
-      <div class="hint">Máx. 700 KB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
+      <div class="hint">Máx. 25 MB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
       <div style="margin-top:10px;">
         ${(c.documentos||[]).length===0 ? '<div class="hint">Sin documentos guardados todavía.</div>' : (c.documentos||[]).map((d,i)=>{
           const tipoLabel = {dni_ruc:'DNI / RUC', tarjeta_propiedad:'Tarjeta de propiedad', brevete:'Brevete', foto_vehiculo:'Foto del vehículo', otro:'Otro'}[d.tipo] || d.tipo;
@@ -6357,7 +6357,7 @@ function wireClientes(){
       const input = document.getElementById('fichaDocArchivo');
       const file = input.files[0];
       if(!file){ alert('Selecciona un archivo primero.'); return; }
-      if(file.size > 15*1024*1024){ alert('El archivo pesa más de 15 MB. Elige uno más liviano, o comprímelo antes con una herramienta como ilovepdf.com/compress_pdf.'); return; }
+      if(file.size > 25*1024*1024){ alert('El archivo pesa más de 25 MB. Elige uno más liviano, o comprímelo antes con una herramienta como ilovepdf.com/compress_pdf.'); return; }
       const tipo = document.getElementById('fichaDocTipo').value;
       const textoOriginal = btnDoc.textContent;
       const reader = new FileReader();
@@ -6952,7 +6952,7 @@ function modalVenta(){
     <div class="field"><label>${esAsesoriaModal ? 'Contrato / documento del servicio en PDF (opcional)' : 'Póliza en PDF (opcional)'}</label><input type="file" id="mPolizaPDF" accept="application/pdf" style="width:100%;">
       ${(!editing.id && !esAsesoriaModal) ? `<button type="button" class="btn btn-ghost btn-sm" id="mLeerPDFIA" style="margin-top:6px;" title="La IA lee el PDF y llena el formulario">🤖 Llenar el formulario con este PDF</button>` : ''}
       <div id="mPolizaPDFInfo" style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${v.polizaPDFNombre ? `📄 ${v.polizaPDFNombre} — <a href="#" id="mPolizaPDFLink">ver / descargar</a> · <a href="#" id="mPolizaPDFQuitar">quitar</a>` : 'Sin archivo adjunto.'}</div>
-      <div class="hint">Máx. 730 KB por archivo. Si pesa más, el sistema intenta comprimirlo automáticamente al seleccionarlo.</div>
+      <div class="hint">Máx. 25 MB por archivo. Si pesa más, el sistema intenta comprimirlo automáticamente al seleccionarlo.</div>
     </div>
     <div class="field"><label>Detalle del servicio (opcional)</label><input type="text" id="mDetalleServicio" style="width:100%;" value="${v.detalleServicio||''}" placeholder="Ej. Declaración anual + planilla, o descripción específica del servicio"></div>
 
@@ -7374,17 +7374,17 @@ function wireModal(){
     if(polizaPDFInput) polizaPDFInput.onchange = async () => {
       const file = polizaPDFInput.files[0];
       if(!file) return;
-      const LIMITE = 15*1024*1024; // 15 MB — Firebase Storage soporta archivos grandes sin problema
+      const LIMITE = 25*1024*1024; // 25 MB — se guarda en Firebase Storage, no en la base de datos
       if(file.size <= LIMITE){ leerYAdjuntar(file); return; }
       const info = document.getElementById('mPolizaPDFInfo');
-      if(info) info.innerHTML = `⏳ Comprimiendo PDF automáticamente (pesa ${(file.size/1024/1024).toFixed(1)} MB, el máximo es 15 MB)…`;
+      if(info) info.innerHTML = `⏳ Comprimiendo PDF automáticamente (pesa ${(file.size/1024/1024).toFixed(1)} MB, el máximo es 25 MB)…`;
       try{
         const comprimido = await comprimirPDF(file, LIMITE);
         if(comprimido){
           leerYAdjuntar(comprimido);
           if(info) info.innerHTML += ` <span style="color:var(--primary);">— comprimido a ${(comprimido.size/1024/1024).toFixed(1)} MB.</span>`;
         } else {
-          alert('No se pudo comprimir el archivo lo suficiente (sigue pesando más de 15 MB incluso comprimido). Prueba con una herramienta como ilovepdf.com/compress_pdf antes de subirlo.');
+          alert('No se pudo comprimir el archivo lo suficiente (sigue pesando más de 25 MB incluso comprimido). Prueba con una herramienta como ilovepdf.com/compress_pdf antes de subirlo.');
           if(info) info.innerHTML = 'Sin archivo adjunto.';
           polizaPDFInput.value = '';
         }
