@@ -37,7 +37,8 @@ const fmtDate = d => { if (!d) return '—'; const [y, m, day] = d.slice(0, 10).
 
 // ---------------- lectura de Firebase ----------------
 async function iniciarSesion() {
-  const { FG_EMAIL, FG_PASSWORD } = process.env;
+  // los secretos pegados a mano suelen traer espacios o saltos de línea al inicio o al final
+  const FG_EMAIL = (process.env.FG_EMAIL || '').trim(), FG_PASSWORD = (process.env.FG_PASSWORD || '').trim();
   if (!FG_EMAIL || !FG_PASSWORD) throw new Error('Faltan FG_EMAIL y FG_PASSWORD para leer el CRM.');
   const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -230,7 +231,7 @@ ${partes.join('\n')}
 }
 
 async function enviar({ asunto, html }) {
-  const { SMTP_USER, SMTP_PASSWORD } = process.env;
+  const SMTP_USER = (process.env.SMTP_USER || '').trim(), SMTP_PASSWORD = (process.env.SMTP_PASSWORD || '').replace(/\s+/g, ''); // Google muestra la contraseña de aplicación con espacios
   if (!SMTP_USER || !SMTP_PASSWORD) throw new Error('Faltan SMTP_USER y SMTP_PASSWORD para enviar el correo.');
   const { default: nodemailer } = await import('nodemailer');
   const transporte = nodemailer.createTransport({ service: 'gmail', auth: { user: SMTP_USER, pass: SMTP_PASSWORD } });
