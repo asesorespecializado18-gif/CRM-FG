@@ -6126,7 +6126,7 @@ function viewFichaCliente(id){
         <div class="field" style="flex:1;"><label>Archivo (PDF o imagen)</label><input type="file" id="fichaDocArchivo" accept="application/pdf,image/*" style="width:100%;"></div>
         <div class="field" style="flex:0;"><button class="btn btn-primary btn-sm" id="btnAgregarDocumento">+ Subir</button></div>
       </div>
-      <div class="hint">Máx. 700 KB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
+      <div class="hint">Máx. 25 MB por archivo (guardado aparte, en su propio registro en la nube — no afecta el resto de tus datos).</div>
       <div style="margin-top:10px;">
         ${(c.documentos||[]).length===0 ? '<div class="hint">Sin documentos guardados todavía.</div>' : (c.documentos||[]).map((d,i)=>{
           const tipoLabel = {dni_ruc:'DNI / RUC', tarjeta_propiedad:'Tarjeta de propiedad', brevete:'Brevete', foto_vehiculo:'Foto del vehículo', otro:'Otro'}[d.tipo] || d.tipo;
