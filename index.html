@@ -533,6 +533,8 @@ function ordenarHistorial(){
   state.auditoria.sort((a,b)=> String(b.fecha||'').localeCompare(String(a.fecha||'')));
   state.papelera.sort((a,b)=> String(b.eliminadoFecha||'').localeCompare(String(a.eliminadoFecha||'')));
 }
+function descSegAud(s){ const cli = s && s.clienteId && state.clientes.find(c=>c.id===s.clienteId); return s ? `${cli?cli.nombre:(s.clienteNombre||'prospecto')}${s.producto?' ('+prodLabel(s.producto)+')':''}` : ''; }
+function descVentaAud(v){ const cli = v && state.clientes.find(c=>c.id===v.clienteId); return v ? `${folioV(v.folio)} — ${cli?cli.nombre:''}` : ''; }
 function registrarAuditoria(accion, entidad, entidadId, descripcion){
   if(!state.auditoria) state.auditoria = [];
   const sesion = sesionEfectiva();
@@ -2044,11 +2046,12 @@ function verificarResumenSemanalAutomatico(){
   localStorage.setItem('crm-fg-ultimo-resumen-semanal', todayISO());
   mostrarResumenNetpolizas();
 }
-const ETIQUETAS_PAPELERA = { cliente:'Cliente', venta:'Venta', asesor:'Asesor', ejecutiva:'Ejecutiva' };
+const ETIQUETAS_PAPELERA = { cliente:'Cliente', venta:'Venta', asesor:'Asesor', ejecutiva:'Ejecutiva', siniestro:'Siniestro' };
 function nombrePapelera(p){
   if(p.entidad==='cliente') return p.datos.nombre||'—';
   if(p.entidad==='venta'){ const cli = state.clientes.find(c=>c.id===p.datos.clienteId); return `${folioV(p.datos.folio)} — ${cli?cli.nombre:'—'}`; }
   if(p.entidad==='asesor' || p.entidad==='ejecutiva') return p.datos.nombre||'—';
+  if(p.entidad==='siniestro'){ const cli = state.clientes.find(c=>c.id===p.datos.clienteId); return `${p.datos.folio?'SN-'+String(p.datos.folio).padStart(4,'0'):'Siniestro'} — ${cli?cli.nombre:'—'}`; }
   return '—';
 }
 function restaurarDePapelera(item){
@@ -2056,6 +2059,7 @@ function restaurarDePapelera(item){
   else if(item.entidad==='venta') state.ventas.push(item.datos);
   else if(item.entidad==='asesor') state.asesores.push(item.datos);
   else if(item.entidad==='ejecutiva') state.ejecutivas.push(item.datos);
+  else if(item.entidad==='siniestro') state.siniestros.push(item.datos);
   state.papelera = (state.papelera||[]).filter(p=>p.id!==item.id);
   registrarAuditoria('restaurar', item.entidad, item.entidadId, `Restaurado desde la papelera: ${nombrePapelera(item)}`);
   save(); render();
@@ -2074,7 +2078,7 @@ function abrirHistorialAuditoria(){
     host.innerHTML = `
       <div class="modal-backdrop"><div class="modal">
         <h2>📋 Historial de auditoría</h2>
-        <p class="modal-hint">Quién creó, editó o eliminó cada registro, y cuándo. Se conservan los últimos 500 movimientos.</p>
+        <p class="modal-hint">Quién creó, editó o eliminó cada registro, y cuándo. Se conservan los últimos 3000 movimientos.</p>
         <div class="field-row" style="margin-bottom:10px;">
           <div class="field"><label>Autor</label><select id="fAudAutor"><option value="todos">Todos</option>${autores.map(a=>`<option value="${a}" ${filtroAutor===a?'selected':''}>${a}</option>`).join('')}</select></div>
           <div class="field"><label>Acción</label><select id="fAudAccion">
@@ -2218,12 +2222,7 @@ function ingresosPorCategoria(ventasFiltradas){
 
 function alertasPendientes(){
   const ventas = misVentas(state.ventas).filter(ventaSeguroActiva);
-  const cuotasAtrasadas = ventas.filter(v=>{
-    if(!(v.formaPago==='cupones' || v.formaPago==='debito_automatico')) return false;
-    if(v.cuotasAlDia===false) return true;
-    if(v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha) < 0) return true;
-    return false;
-  });
+  const cuotasAtrasadas = ventas.filter(v=> estaAtrasada(v));
   const porVencer = ventas.filter(v=> v.vigenciaFin && daysUntil(v.vigenciaFin)>=0 && daysUntil(v.vigenciaFin)<=30);
   return { cuotasAtrasadas, porVencer };
 }
@@ -3371,6 +3370,7 @@ function wireVentas(){
             state.ventas.push(nuevaVenta);
             creadas++;
           });
+          if(creadas) registrarAuditoria('crear', 'venta', '', `Carga de ventas de años pasados (Excel): ${creadas} venta(s)${clientesCreados?`, ${clientesCreados} cliente(s) nuevo(s)`:''}`);
           save(); render();
           alert(`Carga completada: ${creadas} venta(s) histórica(s) agregada(s)${clientesCreados?`, ${clientesCreados} cliente(s) nuevo(s) creado(s)`:''}${omitidas?`, ${omitidas} fila(s) omitida(s) por falta de cliente o fecha`:''}.\n\nSe ordenan automáticamente por fecha en todas las pantallas.`);
         }catch(err){
@@ -3595,7 +3595,7 @@ function viewCobroComisiones(){
 }
 function setEstadoCobro(id, estado){
   const v = state.ventas.find(v=>v.id===id);
-  if(v){ v.estadoCobroFG = estado; v.fechaCobroFG = estado==='cobrado' ? todayISO() : ''; save(); render(); }
+  if(v){ v.estadoCobroFG = estado; v.fechaCobroFG = estado==='cobrado' ? todayISO() : ''; registrarAuditoria('editar', 'venta', v.id, `Cobro de comisión ${descVentaAud(v)}: ${estado==='cobrado'?'marcado cobrado':'marcado pendiente'}`); save(); render(); }
 }
 function wireCobroComisiones(){
   document.querySelectorAll('[data-calcular-comision]').forEach(b=> b.onclick = () => { editing = {type:'venta', id: b.dataset.calcularComision, calculoComision:true}; render(); });
@@ -4331,7 +4331,7 @@ function wirePagoComisiones(){
 }
 function setEstadoComision(id, estado){
   const v = state.ventas.find(v=>v.id===id);
-  if(v){ v.estadoComision = estado; v.fechaPagoComision = estado==='pagada' ? todayISO() : ''; save(); render(); }
+  if(v){ v.estadoComision = estado; v.fechaPagoComision = estado==='pagada' ? todayISO() : ''; registrarAuditoria('editar', 'venta', v.id, `Comisión del asesor ${descVentaAud(v)}: ${estado==='pagada'?'marcada pagada':'marcada pendiente'}`); save(); render(); }
 }
 
 // ================= FACTURACIÓN (IGV) =================
@@ -4767,6 +4767,7 @@ function wirePolizas(){
               creadas++;
             }
           });
+          if(actualizadas || creadas) registrarAuditoria('editar', 'venta', '', `Carga de comisiones (Excel TPA): ${actualizadas} póliza(s) actualizada(s), ${creadas} nueva(s)`);
           save(); render();
           alert(`Carga de comisiones completada:\n• ${actualizadas} póliza(s) existente(s) actualizada(s) con su comisión\n• ${creadas} póliza(s) nueva(s) creada(s)${clientesCreados?` (${clientesCreados} cliente(s) nuevo(s))`:''}\n${omitidas?`• ${omitidas} fila(s) omitida(s) por falta de N° de póliza o cliente\n`:''}\nLas pólizas nuevas se crearon sin fecha de vigencia — revísalas y complétalas en "Editar".`);
         }catch(err){
@@ -4796,10 +4797,16 @@ function wirePolizas(){
     b.onclick = () => {
       const ventaOrig = state.ventas.find(v=>v.id===b.dataset.renovar);
       if(!ventaOrig) return;
-      const nuevaVenta = Object.assign({}, ventaOrig, { id: uid(), folio: ++state.folioVenta, tipoVenta:'renovacion', fechaVenta: ventaOrig.vigenciaFin, vigenciaInicio: ventaOrig.vigenciaFin, vigenciaFin: addYears(ventaOrig.vigenciaFin,1), estadoComision:'pendiente', fechaPagoComision:'', primaAnteriorRenovacion: Number(ventaOrig.primaBruta)||0, primaAnteriorRenovacionMoneda: ventaOrig.moneda });
-      state.ventas.push(nuevaVenta);
-      save();
-      editing = {type:'venta', id: nuevaVenta.id, calculoComision:true};
+      // Solo abre el formulario ya llenado: nada se guarda hasta pulsar Guardar. No se copian los pagos de
+      // comisión, el cobro ni las cuotas de la póliza anterior: la renovación empieza con todo pendiente.
+      const prefill = Object.assign(datosHeredadosDePoliza(ventaOrig), {
+        tipoVenta:'renovacion', fechaVenta: ventaOrig.vigenciaFin, vigenciaInicio: ventaOrig.vigenciaFin, vigenciaFin: addYears(ventaOrig.vigenciaFin,1),
+        estadoComision:'pendiente', estadoVenta:'emitida', estadoCobroFG:'pendiente', fechaCobroFG:'',
+        primaNeta: ventaOrig.primaNeta, primaBruta: ventaOrig.primaBruta, comisionTotal: ventaOrig.comisionTotal,
+        formaPago: ventaOrig.formaPago, cantidadCuotas: ventaOrig.cantidadCuotas, tieneSoat: ventaOrig.tieneSoat
+      });
+      CAMPOS_VEHICULO.forEach(k=>{ if(ventaOrig[k]!==undefined) prefill[k] = ventaOrig[k]; });
+      editing = { type:'venta', id:null, prefill, calculoComision:true, extra: { renuevaVentaId: ventaOrig.id, primaAnteriorRenovacion: Number(ventaOrig.primaBruta)||0, primaAnteriorRenovacionMoneda: ventaOrig.moneda, oficina: ventaOrig.oficina } };
       render();
     };
   });
@@ -4823,10 +4830,28 @@ function wirePolizas(){
 // ================= COBRANZAS =================
 let filtroCobranzaDias = 'todas', filtroCobranzaTexto = '';
 function ventaConCuota(v){ return v.formaPago==='cupones' || v.formaPago==='debito_automatico'; }
-function diasAtrasoVenta(v){ return v.proximaCuotaFecha ? Math.max(0, -daysUntil(v.proximaCuotaFecha)) : 0; }
+// Cuotas del cronograma que ya vencieron y no están marcadas como pagadas (igual que el correo de alertas).
+// Si la venta no tiene cronograma con cuotas pendientes, se usa "Próxima cuota" como antes.
+function cuotasVencidasCronograma(v){
+  const cron = Array.isArray(v.cronogramaCuotas) ? v.cronogramaCuotas : [];
+  const hoy = todayISO();
+  return cron.filter(q=> q && !q.pagada && q.fecha && q.fecha < hoy).sort((a,b)=> a.fecha.localeCompare(b.fecha));
+}
+function usaCronograma(v){ return Array.isArray(v.cronogramaCuotas) && v.cronogramaCuotas.some(q=> q && !q.pagada && q.fecha); }
+function fechaCuotaAtrasada(v){
+  if(usaCronograma(v)){ const venc = cuotasVencidasCronograma(v); return venc.length ? venc[0].fecha : ''; }
+  return v.proximaCuotaFecha || '';
+}
+function montoCuotasAtrasadas(v){
+  const venc = usaCronograma(v) ? cuotasVencidasCronograma(v) : [];
+  if(venc.length) return venc.reduce((s,q)=> s + (Number(q.monto)||0), 0);
+  return v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0;
+}
+function diasAtrasoVenta(v){ const f = fechaCuotaAtrasada(v); return f ? Math.max(0, -daysUntil(f)) : 0; }
 function estaAtrasada(v){
   if(!ventaConCuota(v)) return false;
   if(v.cuotasAlDia===false) return true;
+  if(usaCronograma(v)) return cuotasVencidasCronograma(v).length > 0;
   if(v.proximaCuotaFecha && daysUntil(v.proximaCuotaFecha) < 0) return true;
   return false;
 }
@@ -4852,8 +4877,8 @@ function viewCobranzas(){
   else if(filtroCobranzaDias==='30') rows = bucket30;
   else if(filtroCobranzaDias==='menos7') rows = bucketMenos7;
   rows = rows.slice().sort((a,b)=> diasAtrasoVenta(b)-diasAtrasoVenta(a));
-  const totalMontoPEN = rows.filter(v=>v.moneda!=='USD').reduce((s,v)=> s + (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0), 0);
-  const totalMontoUSD = rows.filter(v=>v.moneda==='USD').reduce((s,v)=> s + (v.primaBruta ? Number(v.primaBruta)/(v.cantidadCuotas||1) : 0), 0);
+  const totalMontoPEN = rows.filter(v=>v.moneda!=='USD').reduce((s,v)=> s + montoCuotasAtrasadas(v), 0);
+  const totalMontoUSD = rows.filter(v=>v.moneda==='USD').reduce((s,v)=> s + montoCuotasAtrasadas(v), 0);
 
   return `
     <div class="page-head"><div><h1>Cobranzas</h1><p>Cuotas atrasadas de tus clientes, para hacer seguimiento y recuperar cartera.</p></div><div style="display:flex;gap:8px;">${puedeDescargar() ? '<button class="btn" id="btnExportCobranzaPDF">Descargar PDF</button><button class="btn" id="btnExportCobranza">Exportar a Excel</button>' : ''}<button class="btn btn-primary" id="btnEnviarRecordatoriosMasivo">📲 Enviar recordatorios (todos)</button></div></div>
@@ -4900,7 +4925,7 @@ function viewCobranzas(){
               <td>${v.numeroPoliza||'—'}</td>
               <td>${v.aseguradora||'—'}</td>
               <td>${prodLabel(v.tipoProducto)}</td>
-              <td>${v.proximaCuotaFecha?fmtDate(v.proximaCuotaFecha):'—'}</td>
+              <td>${fechaCuotaAtrasada(v)?fmtDate(fechaCuotaAtrasada(v)):'—'}${cuotasVencidasCronograma(v).length>1?` <span class="hint">(${cuotasVencidasCronograma(v).length} cuotas)</span>`:''}</td>
               <td><span class="pill ${colorPill}">${dias} días</span></td>
               <td><button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-cobranza="${v.id}" style="margin-left:6px;">📲 Cobranza</button>`:''}</td>
             </tr>`;
@@ -4940,7 +4965,7 @@ function wireCobranzas(){
     const headers = ['Cliente','Celular','N° póliza','Aseguradora','Producto','Cuota vencida','Días de atraso'];
     const rows = atrasadas.map(v=>{
       const cli = state.clientes.find(c=>c.id===v.clienteId);
-      return [cli?cli.nombre:'', cli?(cli.celular1||cli.telefono||''):'', v.numeroPoliza||'', v.aseguradora||'', prodLabel(v.tipoProducto), v.proximaCuotaFecha||'', diasAtrasoVenta(v)];
+      return [cli?cli.nombre:'', cli?(cli.celular1||cli.telefono||''):'', v.numeroPoliza||'', v.aseguradora||'', prodLabel(v.tipoProducto), fechaCuotaAtrasada(v), diasAtrasoVenta(v)];
     });
     exportExcel('cobranzas-pendientes.xlsx', headers, rows);
   };
@@ -5812,12 +5837,13 @@ function abrirFormSeguimiento(id){
   document.body.appendChild(ov);
   const cerrar = ()=> ov.remove();
   ov.querySelector('#sgCancelar').onclick = cerrar;
-  const b = ov.querySelector('#sgBorrar'); if(b) b.onclick = ()=>{ if(!confirm('¿Eliminar este registro de seguimiento?')) return; state.seguimientos = seguimientosLista().filter(x=>x.id!==s.id); save(); cerrar(); render(); };
+  const b = ov.querySelector('#sgBorrar'); if(b) b.onclick = ()=>{ if(!confirm('¿Eliminar este registro de seguimiento?')) return; state.seguimientos = seguimientosLista().filter(x=>x.id!==s.id); registrarAuditoria('eliminar', 'seguimiento', s.id, `Seguimiento: ${descSegAud(s)}`); save(); cerrar(); render(); };
   ov.querySelector('#sgGuardar').onclick = ()=>{
     const datos = { tipo: ov.querySelector('#sgTipo').value, producto: ov.querySelector('#sgProducto').value, clienteId: ov.querySelector('#sgCliente').value, clienteNombre: ov.querySelector('#sgNombre').value.trim(), aseguradora: ov.querySelector('#sgAseg').value.trim(), prima: parseFloat(ov.querySelector('#sgPrima').value)||0, moneda: ov.querySelector('#sgMoneda').value, fecha: ov.querySelector('#sgFecha').value, proximo: ov.querySelector('#sgProximo').value, detalle: ov.querySelector('#sgDetalle').value.trim() };
     if(!datos.clienteId && !datos.clienteNombre){ alert('Elige un cliente o escribe el nombre del prospecto.'); return; }
     if(s) Object.assign(s, datos);
     else seguimientosLista().push(Object.assign({ id: uid(), estado:'abierto', log:[], creadoPor: nombreSesionActual() }, datos));
+    registrarAuditoria(s?'editar':'crear', 'seguimiento', s?s.id:'', `Seguimiento: ${descSegAud(Object.assign({}, s||{}, datos))}`);
     save(); cerrar(); render();
   };
 }
@@ -5832,10 +5858,10 @@ function wireSeguimiento(){
   document.querySelectorAll('[data-renov-wa]').forEach(a=> a.addEventListener('click', ()=>{ const v = venta(a.dataset.renovWa); if(v && !(v.renov&&v.renov.estado)){ marcarRenovacion(v, 'avisado', 'Aviso por WhatsApp'); save(); setTimeout(render, 300); } }));
   document.querySelectorAll('[data-renov-nota]').forEach(b=> b.onclick = ()=>{ const v = venta(b.dataset.renovNota); if(!v) return; const nota = prompt('Nota de seguimiento de la renovación:', ''); if(!nota) return; marcarRenovacion(v, (v.renov&&v.renov.estado)||'avisado', nota); save(); render(); });
   const seg = id => seguimientosLista().find(s=>s.id===id);
-  document.querySelectorAll('[data-seg-hecho]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segHecho); if(!s) return; const nota = prompt('¿Qué pasó en el seguimiento? (opcional)', ''); if(nota===null) return; s.log = (s.log||[]).concat([{ fecha: todayISO(), texto: nota||'Seguimiento realizado', por: nombreSesionActual() }]); s.proximo = addDaysISO(todayISO(), DIAS_SEGUIMIENTO_DEFECTO); save(); render(); });
-  document.querySelectorAll('[data-seg-ganado]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segGanado); if(!s) return; s.estado = 'ganado'; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Cotización ganada', por: nombreSesionActual() }]); save(); render(); alert('¡Bien! Recuerda registrar la venta en "Venta de Seguros".'); });
-  document.querySelectorAll('[data-seg-perdido]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segPerdido); if(!s) return; const motivo = prompt('¿Por qué se perdió? (precio, otro corredor, no respondió…)', ''); if(motivo===null) return; s.estado = 'perdido'; s.motivo = motivo; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Perdida: '+(motivo||'sin motivo'), por: nombreSesionActual() }]); save(); render(); });
-  document.querySelectorAll('[data-seg-reabrir]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segReabrir); if(!s) return; s.estado = 'abierto'; s.proximo = todayISO(); save(); render(); });
+  document.querySelectorAll('[data-seg-hecho]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segHecho); if(!s) return; const nota = prompt('¿Qué pasó en el seguimiento? (opcional)', ''); if(nota===null) return; s.log = (s.log||[]).concat([{ fecha: todayISO(), texto: nota||'Seguimiento realizado', por: nombreSesionActual() }]); s.proximo = addDaysISO(todayISO(), DIAS_SEGUIMIENTO_DEFECTO); registrarAuditoria('editar', 'seguimiento', s.id, `Seguimiento hecho: ${descSegAud(s)}${nota?' — '+nota:''}`); save(); render(); });
+  document.querySelectorAll('[data-seg-ganado]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segGanado); if(!s) return; s.estado = 'ganado'; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Cotización ganada', por: nombreSesionActual() }]); registrarAuditoria('editar', 'seguimiento', s.id, `Cotización ganada: ${descSegAud(s)}`); save(); render(); alert('¡Bien! Recuerda registrar la venta en "Venta de Seguros".'); });
+  document.querySelectorAll('[data-seg-perdido]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segPerdido); if(!s) return; const motivo = prompt('¿Por qué se perdió? (precio, otro corredor, no respondió…)', ''); if(motivo===null) return; s.estado = 'perdido'; s.motivo = motivo; s.fechaCierre = todayISO(); s.log = (s.log||[]).concat([{ fecha: todayISO(), texto:'Perdida: '+(motivo||'sin motivo'), por: nombreSesionActual() }]); registrarAuditoria('editar', 'seguimiento', s.id, `Cotización perdida: ${descSegAud(s)}${motivo?' — '+motivo:''}`); save(); render(); });
+  document.querySelectorAll('[data-seg-reabrir]').forEach(b=> b.onclick = ()=>{ const s = seg(b.dataset.segReabrir); if(!s) return; s.estado = 'abierto'; s.proximo = todayISO(); registrarAuditoria('editar', 'seguimiento', s.id, `Seguimiento reabierto: ${descSegAud(s)}`); save(); render(); });
   document.querySelectorAll('[data-seg-editar]').forEach(b=> b.onclick = ()=> abrirFormSeguimiento(b.dataset.segEditar));
 }
 // Importa acciones preparadas desde el correo: anulaciones, estados de renovación, siniestros y seguimientos (idempotente)
@@ -6359,6 +6385,7 @@ function wireClientes(){
       if(!c) return;
       c.interacciones = c.interacciones || [];
       c.interacciones.push({ fecha: todayISO(), nota: txt });
+      registrarAuditoria('editar', 'cliente', c.id, `Nota en la ficha de ${c.nombre}: ${txt.slice(0,80)}`);
       save(); render();
     };
     const btnDoc = document.getElementById('btnAgregarDocumento');
@@ -6467,10 +6494,13 @@ function wireClientes(){
     if(esAsesorSesion() || esEjecutivaSesion()) return;
     const total = state.clientes.length;
     if(total===0){ alert('No hay clientes registrados.'); return; }
-    if(!confirm(`Vas a eliminar TODOS los ${total} clientes registrados. Esta acción no se puede deshacer.\n\nRecomendación: haz un respaldo antes de continuar (botón "Guardar respaldo" en el menú lateral).\n\n¿Deseas continuar?`)) return;
+    if(!confirm(`Vas a eliminar TODOS los ${total} clientes registrados. Quedarán 30 días en la Papelera, pero sus documentos adjuntos (PDF) se borran y no se recuperan.\n\nRecomendación: haz un respaldo antes de continuar (botón "Guardar respaldo" en el menú lateral).\n\n¿Deseas continuar?`)) return;
     const texto = prompt(`Para confirmar, escribe la palabra ELIMINAR en mayúsculas:`);
     if(texto !== 'ELIMINAR'){ alert('No se eliminó nada — el texto no coincidió.'); return; }
+    // Cada cliente pasa por la Papelera (30 días para restaurarlo) y queda en el historial
+    state.clientes.forEach(c=> moverAPapelera('cliente', c.id, {...c}));
     state.clientes.forEach(c=> (c.documentos||[]).forEach(d=> d.archivoId && eliminarArchivoFirebase(d.archivoId)));
+    registrarAuditoria('eliminar', 'cliente', '', `Eliminó TODOS los clientes (${total}). Están en la Papelera por 30 días.`);
     state.clientes = [];
     save(); render();
     alert('Se eliminaron todos los clientes. Las ventas registradas se conservan, pero quedarán sin cliente asociado hasta que vuelvas a cargarlos.');
@@ -6541,6 +6571,7 @@ function wireClientes(){
             }
             data.id = uid(); data.estadoContacto='nuevo'; data.etiquetas=[]; state.clientes.push(data); creados++;
           });
+          if(creados || actualizados) registrarAuditoria('crear', 'cliente', '', `Carga masiva de clientes (Excel): ${creados} nuevo(s), ${actualizados} actualizado(s)`);
           save();
           render();
           let msg = `Carga masiva completada:\n• ${creados} clientes nuevos\n• ${actualizados} actualizados (mismo documento)`;
@@ -6608,7 +6639,13 @@ function wireModalSiniestro(){
     });
   }
   const del = document.getElementById('mSinDelete'); if(del) del.onclick = () => {
-    if(!confirm('¿Eliminar este siniestro? Esta acción no se puede deshacer.')) return;
+    if(!confirm('¿Eliminar este siniestro? Quedará 30 días en la Papelera.')) return;
+    const sinDel = state.siniestros.find(x=>x.id===editing.id);
+    if(sinDel){
+      moverAPapelera('siniestro', sinDel.id, {...sinDel});
+      const cliSin = state.clientes.find(c=>c.id===sinDel.clienteId);
+      registrarAuditoria('eliminar', 'siniestro', sinDel.id, `Siniestro${sinDel.folio?' SN-'+String(sinDel.folio).padStart(4,'0'):''} — ${cliSin?cliSin.nombre:''}`);
+    }
     state.siniestros = state.siniestros.filter(x=>x.id!==editing.id);
     save(); closeModal(); render();
   };
