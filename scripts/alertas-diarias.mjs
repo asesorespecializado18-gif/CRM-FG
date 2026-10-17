@@ -121,7 +121,7 @@ function calcularAlertas(datos) {
   const activas = datos.ventas.filter(v => v.estadoVenta !== 'anulada');
   const seguros = activas.filter(v => esSeguro(v.tipoProducto));
   const familia = t => /^sctr/.test(t || '') ? 'sctr' : t;
-  const yaRenovada = v => activas.some(v2 => v2.id !== v.id && v2.clienteId === v.clienteId && familia(v2.tipoProducto) === familia(v.tipoProducto)
+  const yaRenovada = v => activas.some(v2 => v2.id !== v.id && v2.tipoVenta !== 'endoso' && v2.clienteId === v.clienteId && familia(v2.tipoProducto) === familia(v.tipoProducto)
     && (v2.fechaVenta || '') >= addDaysISO(v.vigenciaFin, -120)
     && (() => { const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })());
 
