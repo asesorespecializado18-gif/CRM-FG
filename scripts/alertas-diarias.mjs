@@ -281,7 +281,7 @@ function calcularCierre(datos) {
 
   // Renovaciones: pólizas que vencían en el mes y qué pasó con ellas
   const familia = t => /^sctr/.test(t || '') ? 'sctr' : t;
-  const renovadaPor = v => activas.find(v2 => v2.id !== v.id && v2.clienteId === v.clienteId && familia(v2.tipoProducto) === familia(v.tipoProducto)
+  const renovadaPor = v => activas.find(v2 => v2.id !== v.id && v2.tipoVenta !== 'endoso' && v2.clienteId === v.clienteId && familia(v2.tipoProducto) === familia(v.tipoProducto)
     && (v2.renuevaVentaId === v.id || (() => { const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })()));
   const vencidas = activas.filter(v => v.tipoVenta !== 'endoso' && esSeguro(v.tipoProducto) && enMes(v.vigenciaFin)).sort((a, b) => a.vigenciaFin.localeCompare(b.vigenciaFin))
     .map(v => { const est = (v.renov || {}).estado; const r = renovadaPor(v);
