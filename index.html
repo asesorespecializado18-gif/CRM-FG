@@ -177,6 +177,7 @@
     <div class="nav-group-label">Postventa y Retención</div>
     <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
       <button class="nav-btn" data-tab="seguimiento" style="justify-content:space-between;"><span style="display:flex;align-items:center;gap:10px;"><span class="nav-icon">🔔</span>Seguimiento</span><span id="badgeSeguimiento" class="pill pill-red" style="display:none;font-size:10.5px;padding:1px 7px;">0</span></button>
+    <button class="nav-btn" data-tab="mensajes_grupo"><span class="nav-icon">📲</span>Mensajes por grupo</button>
     <button class="nav-btn" data-tab="cobranzas"><span class="nav-icon">💰</span>Cobranzas</button>
     <button class="nav-btn" data-tab="cartera_recuperacion"><span class="nav-icon">♻</span>Recuperación de Cartera</button>
     <button class="nav-btn" data-tab="siniestros"><span class="nav-icon">⚠</span>Siniestros</button>
@@ -1663,6 +1664,7 @@ function render(){
   else if(tab==='pipeline') el.innerHTML = viewPipeline();
   else if(tab==='siniestros') el.innerHTML = viewSiniestros();
   else if(tab==='cartera_recuperacion') el.innerHTML = viewCarteraRecuperacion();
+  else if(tab==='mensajes_grupo') el.innerHTML = viewMensajesGrupo();
   else if(tab==='asesores') el.innerHTML = viewAsesores();
   else if(tab==='clientes') el.innerHTML = fichaClienteId ? viewFichaCliente(fichaClienteId) : viewClientes();
   wireCommon();
@@ -5448,6 +5450,140 @@ function wireCarteraRecuperacion(){
   });
 }
 
+// ================= MENSAJES POR GRUPO =================
+// Clasifica a los clientes en grupos y arma el mensaje de WhatsApp de cada uno con la plantilla del grupo.
+const GRUPOS_MENSAJE = {
+  vencer:    { label:'Próximos a vencer', color:'#B8823D', texto:'Estimado(a) {contacto}, observamos que su póliza {producto} vence el {vencimiento}. ¿Desea que le preparemos la renovación?' },
+  solo_sctr: { label:'Solo tienen SCTR', color:'#2E5266', texto:'Estimado(a) {contacto}, además de su SCTR podemos cotizar Vida Ley y EPS para complementar la protección de sus trabajadores.' },
+  inactivos: { label:'Clientes inactivos', color:'#7A4B42', texto:'Estimado(a) {contacto}, hace tiempo que no tenemos contacto. Nos gustaría revisar si podemos ayudarle con nuevas alternativas de aseguramiento.' },
+};
+let grupoMensajeActivo = 'vencer', filtroGrupoTexto = '';
+const diasGrupoVencer = () => Number(state.diasGrupoVencer) || 30;
+const plantillaGrupo = g => (state.plantillasGrupos||{})[g] || GRUPOS_MENSAJE[g].texto;
+
+function gruposMensajes(){
+  const hoy = todayISO();
+  const dias = diasGrupoVencer();
+  const familia = t => /^sctr/.test(t||'') ? 'sctr' : t;
+  const porCliente = {};
+  misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && !esEndoso(v) && v.clienteId).forEach(v=> (porCliente[v.clienteId] = porCliente[v.clienteId] || []).push(v));
+  const out = { vencer:[], solo_sctr:[], inactivos:[] };
+  Object.entries(porCliente).forEach(([cid, ventas])=>{
+    const c = state.clientes.find(x=>x.id===cid);
+    if(!c || !clientePerteneceAAsesor(c)) return;
+    const vigentes = ventas.filter(v=> polizaVigente(v, hoy));
+    const productos = vs => Array.from(new Set(vs.map(v=>prodLabel(v.tipoProducto)))).join(' y ');
+    // vence dentro del plazo y todavía no tiene otra póliza del mismo producto que termine después (o sea, aún no se renovó)
+    const porVencer = vigentes.filter(v=> v.vigenciaFin && daysUntil(v.vigenciaFin)<=dias
+      && !ventas.some(o=> o!==v && familia(o.tipoProducto)===familia(v.tipoProducto) && (o.vigenciaFin||'') > v.vigenciaFin))
+      .sort((a,b)=> a.vigenciaFin.localeCompare(b.vigenciaFin));
+    if(porVencer.length) out.vencer.push({ c, producto: productos(porVencer), fecha: porVencer[0].vigenciaFin });
+    if(vigentes.length && vigentes.every(v=> familia(v.tipoProducto)==='sctr')){
+      out.solo_sctr.push({ c, producto: productos(vigentes), fecha: vigentes.map(v=>v.vigenciaFin).filter(Boolean).sort()[0] || '' });
+    }
+    if(!vigentes.length){
+      const ultima = ventas.map(v=> v.vigenciaFin || v.fechaVenta || '').sort().pop() || '';
+      out.inactivos.push({ c, producto: productos(ventas), fecha: ultima });
+    }
+  });
+  out.vencer.sort((a,b)=> a.fecha.localeCompare(b.fecha));
+  out.solo_sctr.sort((a,b)=> (a.c.nombre||'').localeCompare(b.c.nombre||''));
+  out.inactivos.sort((a,b)=> b.fecha.localeCompare(a.fecha));
+  return out;
+}
+function mensajeGrupo(g, item){
+  return plantillaGrupo(g)
+    .replace(/\{contacto\}/g, item.c.personaContacto || item.c.nombre || '')
+    .replace(/\{cliente\}/g, item.c.nombre || '')
+    .replace(/\{producto\}/g, item.producto || '')
+    .replace(/\{vencimiento\}/g, item.fecha ? fmtDate(item.fecha) : '');
+}
+
+function viewMensajesGrupo(){
+  const grupos = gruposMensajes();
+  const g = grupoMensajeActivo;
+  let rows = grupos[g];
+  if(filtroGrupoTexto){
+    const t = filtroGrupoTexto.toLowerCase();
+    rows = rows.filter(it=> (it.c.nombre||'').toLowerCase().includes(t) || (it.producto||'').toLowerCase().includes(t));
+  }
+  const etiquetaFecha = { vencer:'Vence', solo_sctr:'Próximo vencimiento', inactivos:'Última vigencia' }[g];
+  const esc = t => String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  return `
+    <div class="page-head"><div><h1>Mensajes por grupo</h1><p>Sus clientes se clasifican solos. Elija un grupo, revise el mensaje y envíelo por WhatsApp con un clic.</p></div></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px;">
+      ${Object.entries(GRUPOS_MENSAJE).map(([k,def])=>`
+      <button class="card stat-card" data-grupo-msg="${k}" style="background:${def.color};color:#fff;padding:16px;text-align:left;cursor:pointer;border:${k===g?'3px solid var(--text)':'3px solid transparent'};">
+        <div class="label" style="color:rgba(255,255,255,0.85);">${def.label}</div>
+        <div class="value num" style="color:#fff;">${grupos[k].length}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.8);">${k==='vencer' ? `Vencen en los próximos ${diasGrupoVencer()} días` : k==='solo_sctr' ? 'Su única póliza vigente es SCTR' : 'Fueron clientes, sin pólizas vigentes hoy'}</div>
+      </button>`).join('')}
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-top:0;">Mensaje para «${GRUPOS_MENSAJE[g].label}»</div>
+      <textarea id="txtPlantillaGrupo" rows="3" style="width:100%;">${esc(plantillaGrupo(g))}</textarea>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+        <button class="btn btn-primary btn-sm" id="btnGuardarPlantillaGrupo">Guardar mensaje</button>
+        <button class="btn btn-ghost btn-sm" id="btnRestaurarPlantillaGrupo">Volver al texto original</button>
+        <span class="hint">Puede usar {contacto} (la persona de contacto del cliente, o su nombre si no tiene), {cliente}, {producto} y {vencimiento}.</span>
+        ${g==='vencer' ? `<span class="hint" style="margin-left:auto;">Avisar con <input type="number" id="diasGrupoVencer" min="1" max="365" value="${diasGrupoVencer()}" style="width:70px;"> días de anticipación</span>` : ''}
+      </div>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="fGrupoTexto" placeholder="🔎 Buscar cliente o producto" value="${esc(filtroGrupoTexto)}" style="min-width:240px;">
+    </div>
+    <div class="hint" style="margin-bottom:8px;">${rows.length} cliente(s) en este grupo. Al tocar WhatsApp se abre el chat con el mensaje listo y queda anotado como contacto de hoy.</div>
+    <div class="card" style="padding:0;">
+      <table>
+        <thead><tr><th>Cliente</th><th>Celular</th><th>Correo</th><th>Producto</th><th>${etiquetaFecha}</th><th>Último contacto</th><th></th></tr></thead>
+        <tbody>
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="7">No hay clientes en este grupo.</td></tr>` : rows.map(it=>{
+            const tel = it.c.celular1 || it.c.telefono;
+            const ult = ultimoContactoCliente(it.c);
+            const d = it.fecha ? daysUntil(it.fecha) : null;
+            return `<tr>
+              <td>${esc(it.c.nombre)}</td>
+              <td>${esc(tel)||'—'}</td>
+              <td>${esc(it.c.email)||'—'}</td>
+              <td>${esc(it.producto)}</td>
+              <td style="white-space:nowrap;">${it.fecha ? fmtDate(it.fecha) : '—'}${g==='vencer' && d!==null ? `<div class="hint">${d===0?'hoy':`en ${d} día(s)`}</div>` : ''}</td>
+              <td style="white-space:nowrap;">${ult ? fmtDate(ult) : '—'}</td>
+              <td style="white-space:nowrap;">
+                ${tel ? `<button class="btn btn-ghost btn-sm" data-wa-grupo="${it.c.id}" title="${esc(mensajeGrupo(g, it)).replace(/"/g,'&quot;')}">📲 WhatsApp</button>` : '<span class="hint">sin teléfono</span>'}
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+function wireMensajesGrupo(){
+  document.querySelectorAll('[data-grupo-msg]').forEach(b=> b.onclick = () => { grupoMensajeActivo = b.dataset.grupoMsg; render(); });
+  const fTexto = document.getElementById('fGrupoTexto'); if(fTexto) fTexto.oninput = e=>{ filtroGrupoTexto = e.target.value; render(); const el = document.getElementById('fGrupoTexto'); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } };
+  const bGuardar = document.getElementById('btnGuardarPlantillaGrupo'); if(bGuardar) bGuardar.onclick = () => {
+    const txt = document.getElementById('txtPlantillaGrupo').value.trim();
+    if(!txt) return;
+    state.plantillasGrupos = Object.assign({}, state.plantillasGrupos, { [grupoMensajeActivo]: txt });
+    save(); render();
+  };
+  const bRestaurar = document.getElementById('btnRestaurarPlantillaGrupo'); if(bRestaurar) bRestaurar.onclick = () => {
+    const p = Object.assign({}, state.plantillasGrupos); delete p[grupoMensajeActivo];
+    state.plantillasGrupos = p; save(); render();
+  };
+  const iDias = document.getElementById('diasGrupoVencer'); if(iDias) iDias.onchange = e=>{ const n = parseInt(e.target.value,10); if(n>0){ state.diasGrupoVencer = n; save(); render(); } };
+  document.querySelectorAll('[data-wa-grupo]').forEach(b=> b.onclick = () => {
+    const it = gruposMensajes()[grupoMensajeActivo].find(x=> x.c.id===b.dataset.waGrupo);
+    if(!it) return;
+    const tel = it.c.celular1 || it.c.telefono;
+    if(!tel) return;
+    window.open(linkWhatsApp(tel, mensajeGrupo(grupoMensajeActivo, it)), '_blank');
+    it.c.interacciones = it.c.interacciones || [];
+    it.c.interacciones.push({ fecha: todayISO(), nota: `WhatsApp enviado (${GRUPOS_MENSAJE[grupoMensajeActivo].label})` });
+    save(); render();
+  });
+}
+
 // ================= SINIESTROS =================
 let filtroSiniestroEstado = 'todas';
 function viewSiniestros(){
@@ -8155,6 +8291,7 @@ render = function(){
   if(tab==='pipeline') wirePipeline();
   if(tab==='siniestros') wireSiniestros();
   if(tab==='cartera_recuperacion') wireCarteraRecuperacion();
+  if(tab==='mensajes_grupo') wireMensajesGrupo();
   if(tab==='asesores') wireAsesores();
   if(tab==='clientes') wireClientes();
 };
