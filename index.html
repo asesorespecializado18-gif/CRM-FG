@@ -450,11 +450,17 @@ const TIPOS_BENEFICIO = [
   { id:'cuota_gratis', label:'Cuota Gratis' },
   { id:'otro', label:'Otro beneficio' },
 ];
+// Mismos estados y orden que el Reporte de siniestros FG. "liquidado" (estado antiguo) se lee como "pagado".
 const ESTADOS_SINIESTRO = [
-  { id:'reportado', label:'Reportado', clase:'pill-gray' },
   { id:'en_evaluacion', label:'En evaluación', clase:'pill-gold' },
-  { id:'liquidado', label:'Liquidado', clase:'pill-green' },
+  { id:'en_reparacion', label:'En reparación', clase:'pill-gold' },
+  { id:'reportado', label:'Reportado', clase:'pill-gray' },
+  { id:'observado', label:'Observado', clase:'pill-red' },
+  { id:'aprobado', label:'Aprobado', clase:'pill-green' },
+  { id:'pagado', label:'Pagado', clase:'pill-green' },
+  { id:'atendido', label:'Atendido', clase:'pill-green' },
   { id:'rechazado', label:'Rechazado', clase:'pill-red' },
+  { id:'cerrado_sin_atencion', label:'Cerrado sin atención', clase:'pill-gray' },
 ];
 const TIPOS_SEGURO_CLIENTE = [
   { id:'vehicular', label:'Vehicular' },
@@ -5585,37 +5591,95 @@ function wireMensajesGrupo(){
 }
 
 // ================= SINIESTROS =================
-let filtroSiniestroEstado = 'todas';
+// Bitácora de siniestros con el formato del "Reporte de siniestros FG": un caso por fila, estado según la última gestión,
+// días sin movimiento y semáforo (ROJO = rechazado o más de 30 días sin movimiento · ÁMBAR = 8 a 30 · VERDE = hasta 7).
+const SIN_ESTADOS_CERRADOS = ['pagado','liquidado','atendido','rechazado','cerrado_sin_atencion'];
+const RAMOS_SINIESTRO = ['Vehicular','SCTR Salud','SCTR Pensión','Vida Ley','Desgravamen','Salud / EPS','Transporte (robo de mercadería)','Carta fianza (fiel cumplimiento)','Multirriesgo / Patrimonial','Responsabilidad civil','CAR / TREC','Otro','Por confirmar'];
+const RAMO_SIN_POR_PRODUCTO = { seguros_vehiculares:'Vehicular', soat:'Vehicular', sctr_salud:'SCTR Salud', sctr_pension:'SCTR Pensión', vida_ley:'Vida Ley', desgravamen:'Desgravamen', salud:'Salud / EPS', eps:'Salud / EPS', seguro_oncologico:'Salud / EPS', seguro_oncologico_plus:'Salud / EPS', seguro_carga:'Transporte (robo de mercadería)', seguro_transporte:'Transporte (robo de mercadería)', cartas_fianza:'Carta fianza (fiel cumplimiento)', cauciones:'Carta fianza (fiel cumplimiento)', multiriesgo:'Multirriesgo / Patrimonial', seguro_domicilio:'Multirriesgo / Patrimonial', responsabilidad_civil:'Responsabilidad civil', car:'CAR / TREC', trec:'CAR / TREC' };
+// "Liquidado" era el estado antiguo de cierre con pago: se muestra como "Pagado".
+const estadoSin = s => ESTADOS_SINIESTRO.find(e=>e.id===(s.estado==='liquidado'?'pagado':s.estado)) || ESTADOS_SINIESTRO[0];
+const siniestroAbierto = s => !SIN_ESTADOS_CERRADOS.includes(s.estado);
+const sinVenta = s => s.ventaId ? state.ventas.find(v=>v.id===s.ventaId) : null;
+const sinUltimoMov = s => s.ultimoMovimiento || s.fechaAviso || s.fechaEvento || '';
+function sinDiasSinMov(s){ const d = sinUltimoMov(s); return d ? Math.max(0, -daysUntil(d)) : null; }
+function sinSemaforo(s){
+  const dias = sinDiasSinMov(s);
+  if(s.estado==='rechazado' || (dias!==null && dias>30)) return 'ROJO';
+  return dias!==null && dias>7 ? 'ÁMBAR' : 'VERDE';
+}
+// Casos en curso: abiertos, más los rechazados con gestión reciente (todavía hay que atender al cliente)
+const sinEnCurso = s => siniestroAbierto(s) || (s.estado==='rechazado' && (sinDiasSinMov(s)??0) <= 30);
+function sinClienteTexto(s){
+  const cli = state.clientes.find(c=>c.id===s.clienteId);
+  const nombre = cli ? cli.nombre : (s.clienteNombre || 'No identificado');
+  return s.asegurado ? `${nombre} (${s.asegurado})` : nombre;
+}
+function sinPoliza(s){ const v = sinVenta(s); return (v && v.numeroPoliza) || s.poliza || ''; }
+function sinRamo(s){ if(s.ramo) return s.ramo; const v = sinVenta(s); return (v && RAMO_SIN_POR_PRODUCTO[v.tipoProducto]) || 'Por confirmar'; }
+function sinBien(s){
+  if(s.bienAsegurado) return s.bienAsegurado;
+  const v = sinVenta(s); if(!v || !v.vehPlaca) return '';
+  return [v.vehPlaca, v.vehMarca, v.vehModelo].filter(Boolean).join(' ');
+}
+const aseguradoraCorta = a => String(a||'').replace(/(\s+(Seguros|Perú|Peru|Vida|EPS))+(?=\s|$)/g,'').trim();
+function misSiniestrosLista(){ return state.siniestros.filter(s=>{ const cli = state.clientes.find(c=>c.id===s.clienteId); return cli ? clientePerteneceAAsesor(cli) : !esAsesorSesion(); }); }
+
+let filtroSiniestroEstado = 'todas', filtroSiniestroSituacion = 'abiertos', filtroSiniestroAseg = 'todas', filtroSiniestroTexto = '';
 function viewSiniestros(){
-  const misSiniestros = state.siniestros.filter(s=>{ const cli = state.clientes.find(c=>c.id===s.clienteId); return cli ? clientePerteneceAAsesor(cli) : !esAsesorSesion(); });
+  const misSiniestros = misSiniestrosLista();
   let rows = misSiniestros.slice();
-  if(filtroSiniestroEstado!=='todas') rows = rows.filter(s=>s.estado===filtroSiniestroEstado);
-  rows.sort((a,b)=> (b.fechaEvento||'').localeCompare(a.fechaEvento||''));
-  const abiertos = misSiniestros.filter(s=>s.estado==='reportado'||s.estado==='en_evaluacion').length;
+  if(filtroSiniestroSituacion==='abiertos') rows = rows.filter(siniestroAbierto);
+  else if(filtroSiniestroSituacion==='cerrados') rows = rows.filter(s=>!siniestroAbierto(s));
+  if(filtroSiniestroEstado!=='todas') rows = rows.filter(s=>estadoSin(s).id===filtroSiniestroEstado);
+  if(filtroSiniestroAseg!=='todas') rows = rows.filter(s=>aseguradoraCorta(s.aseguradora)===filtroSiniestroAseg);
+  const q = filtroSiniestroTexto.trim().toLowerCase();
+  if(q) rows = rows.filter(s=>[sinClienteTexto(s), s.numeroSiniestro, sinPoliza(s), sinBien(s), s.notas, s.proximoPaso].join(' ').toLowerCase().includes(q));
+  // Abiertos primero (los más atrasados arriba); luego cerrados por fecha
+  rows.sort((a,b)=> (siniestroAbierto(b)-siniestroAbierto(a)) || (siniestroAbierto(a) ? (sinDiasSinMov(b)??0)-(sinDiasSinMov(a)??0) : (sinUltimoMov(b)).localeCompare(sinUltimoMov(a))));
+  const abiertos = misSiniestros.filter(siniestroAbierto);
+  const cerrados = misSiniestros.length - abiertos.length;
+  const rechazados = misSiniestros.filter(s=>s.estado==='rechazado').length;
+  const atrasados = abiertos.filter(s=>(sinDiasSinMov(s)??0)>30).length;
+  const aseguradoras = Array.from(new Set(misSiniestros.map(s=>aseguradoraCorta(s.aseguradora)).filter(Boolean))).sort();
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const colorSem = { 'ROJO':'var(--danger)', 'ÁMBAR':'#B8823D', 'VERDE':'#3D6B52' };
+  const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:16px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
   return `
-    <div class="page-head"><div><h1>Siniestros</h1><p>Acompañamiento a tus clientes cuando ocurre un evento — el seguimiento que más fideliza.</p></div><button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
-      <div class="card stat-card" style="background:#B8823D;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">Siniestros abiertos</div>
-        <div class="value num" style="color:#fff;">${abiertos}</div>
-        <div class="hint" style="color:rgba(255,255,255,0.75);">reportados o en evaluación</div>
-      </div>
-      <div class="card stat-card" style="background:#3D6B52;color:#fff;padding:16px;">
-        <div class="label" style="color:rgba(255,255,255,0.85);">Total registrados</div>
-        <div class="value num" style="color:#fff;">${misSiniestros.length}</div>
-      </div>
+    <div class="page-head"><div><h1>Siniestros</h1><p>Bitácora de siniestros: un caso por fila, con su estado, la última gestión y el próximo paso.</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnReporteSiniestros" title="Descarga el Reporte de siniestros FG (Resumen, Casos en curso, Detalle, Casos críticos, Ideas de mejora y Notas)">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:16px;">
+      ${tarjeta('#3D6B52','Siniestros gestionados', misSiniestros.length, 'casos registrados')}
+      ${tarjeta('#B8823D','Casos abiertos', abiertos.length, 'aún sin cierre')}
+      ${tarjeta('#8C3B3B','Rechazados', rechazados, cerrados ? `${Math.round(rechazados*100/cerrados)}% de los casos cerrados` : 'por la aseguradora')}
+      ${tarjeta('#5A4E7C','Abiertos sin movimiento +30 días', atrasados, 'requieren seguimiento')}
     </div>
-    <div class="toolbar">
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <select id="fSiniestroSituacion"><option value="abiertos" ${filtroSiniestroSituacion==='abiertos'?'selected':''}>Casos abiertos</option><option value="cerrados" ${filtroSiniestroSituacion==='cerrados'?'selected':''}>Casos cerrados</option><option value="todas" ${filtroSiniestroSituacion==='todas'?'selected':''}>Todos los casos</option></select>
       <select id="fSiniestroEstado"><option value="todas">Todos los estados</option>${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${filtroSiniestroEstado===e.id?'selected':''}>${e.label}</option>`).join('')}</select>
+      <select id="fSiniestroAseg"><option value="todas">Todas las aseguradoras</option>${aseguradoras.map(a=>`<option value="${esc(a)}" ${filtroSiniestroAseg===a?'selected':''}>${esc(a)}</option>`).join('')}</select>
+      <input type="text" id="fSiniestroTexto" placeholder="Buscar cliente, placa, N° de siniestro…" value="${esc(filtroSiniestroTexto)}" style="min-width:220px;">
     </div>
-    <div class="card" style="padding:0;">
+    <div class="card" style="padding:0;overflow-x:auto;">
       <table>
-        <thead><tr><th>Folio</th><th>Cliente</th><th>Aseguradora</th><th>Fecha del evento</th><th>Estado</th><th>Documentos pendientes</th><th></th></tr></thead>
+        <thead><tr><th></th><th>N° siniestro</th><th>Cliente / asegurado</th><th>Aseguradora · Póliza</th><th>Ramo · Bien asegurado</th><th>Ocurrencia</th><th>Estado</th><th>Último mov.</th><th>Próximo paso</th><th></th></tr></thead>
         <tbody>
-          ${rows.length===0 ? `<tr class="empty-row"><td colspan="7">No hay siniestros registrados.</td></tr>` : rows.map(s=>{
-            const cli = state.clientes.find(c=>c.id===s.clienteId);
-            const est = ESTADOS_SINIESTRO.find(e=>e.id===s.estado) || ESTADOS_SINIESTRO[0];
-            return `<tr><td class="folio">SN-${String(s.folio).padStart(4,'0')}</td><td>${cli?cli.nombre:'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.fechaEvento)}</td><td><span class="pill ${est.clase}">${est.label}</span></td><td>${s.documentosPendientes||'—'}</td><td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
+          ${rows.length===0 ? `<tr class="empty-row"><td colspan="10">No hay siniestros con estos filtros.</td></tr>` : rows.map(s=>{
+            const est = estadoSin(s);
+            const dias = sinDiasSinMov(s);
+            const sem = siniestroAbierto(s) || s.estado==='rechazado' ? sinSemaforo(s) : '';
+            const punto = sem ? `<span title="${sem}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorSem[sem]};"></span>` : '';
+            const proximo = s.proximoPaso || s.notas || s.documentosPendientes || '—';
+            return `<tr>
+              <td>${punto}</td>
+              <td class="folio">${esc(s.numeroSiniestro||'—')}<div style="font-size:11px;color:var(--ink-faint);">SN-${String(s.folio).padStart(4,'0')}</div></td>
+              <td>${esc(sinClienteTexto(s))}</td>
+              <td>${esc(aseguradoraCorta(s.aseguradora)||'—')}<div style="font-size:12px;color:var(--ink-faint);">${esc(sinPoliza(s)||'—')}</div></td>
+              <td>${esc(sinRamo(s))}<div style="font-size:12px;color:var(--ink-faint);">${esc(sinBien(s)||'—')}</div></td>
+              <td>${fmtDate(s.fechaEvento)}</td>
+              <td><span class="pill ${est.clase}">${est.label}</span></td>
+              <td>${fmtDate(sinUltimoMov(s))}${siniestroAbierto(s) && dias!==null ? `<div style="font-size:12px;color:${dias>30?'var(--danger)':'var(--ink-faint)'};">${dias} día${dias===1?'':'s'}</div>` : ''}</td>
+              <td style="max-width:280px;font-size:13px;">${esc(proximo)}</td>
+              <td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -5623,22 +5687,54 @@ function viewSiniestros(){
   `;
 }
 function modalSiniestro(){
-  const s = editing.id ? state.siniestros.find(x=>x.id===editing.id) : { clienteId:'', ventaId:'', aseguradora:'', fechaEvento: todayISO(), estado:'reportado', documentosPendientes:'', notas:'' };
-  return `<div class="modal-backdrop"><div class="modal">
+  const s = editing.id ? state.siniestros.find(x=>x.id===editing.id) : { clienteId:'', ventaId:'', aseguradora:'', fechaEvento: todayISO(), fechaAviso: todayISO(), ultimoMovimiento: todayISO(), estado:'reportado', documentosPendientes:'', notas:'' };
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const estId = estadoSin(s).id;
+  return `<div class="modal-backdrop"><div class="modal" style="max-width:760px;">
     <h2>${editing.id?'Editar siniestro':'Registrar siniestro'}</h2>
-    <div class="field" style="position:relative;">
-      <label>Cliente</label>
-      <input type="text" id="mSinClienteBuscar" style="width:100%;" placeholder="Escribe el nombre del cliente…" autocomplete="off" value="${s.clienteId ? (state.clientes.find(c=>c.id===s.clienteId)||{}).nombre||'' : ''}">
-      <input type="hidden" id="mSinCliente" value="${s.clienteId||''}">
-      <div id="mSinClienteResultados" style="display:none;position:absolute;z-index:9999;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.12);"></div>
+    <div class="field-row">
+      <div class="field" style="position:relative;flex:2;">
+        <label>Cliente</label>
+        <input type="text" id="mSinClienteBuscar" style="width:100%;" placeholder="Escribe el nombre del cliente…" autocomplete="off" value="${esc(s.clienteId ? (state.clientes.find(c=>c.id===s.clienteId)||{}).nombre||'' : (s.clienteNombre||''))}">
+        <input type="hidden" id="mSinCliente" value="${s.clienteId||''}">
+        <div id="mSinClienteResultados" style="display:none;position:absolute;z-index:9999;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.12);"></div>
+      </div>
+      <div class="field" style="flex:1;"><label>Asegurado / afectado (opcional)</label><input type="text" id="mSinAsegurado" style="width:100%;" value="${esc(s.asegurado)}" placeholder="Ej. trabajador, asociado"></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>Aseguradora</label><select id="mSinAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${a}" ${s.aseguradora===a?'selected':''}>${a}</option>`).join('')}</select></div>
-      <div class="field"><label>Fecha del evento</label><input type="date" id="mSinFecha" style="width:100%;" value="${s.fechaEvento||''}"></div>
+      <div class="field"><label>Póliza</label><select id="mSinVenta" style="width:100%;"></select></div>
+      <div class="field" id="mSinPolizaTextoWrap"><label>N° de póliza (si no está en el CRM)</label><input type="text" id="mSinPolizaTexto" style="width:100%;" value="${esc(s.poliza)}"></div>
     </div>
-    <div class="field"><label>Estado del trámite</label><select id="mSinEstado" style="width:100%;">${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${s.estado===e.id?'selected':''}>${e.label}</option>`).join('')}</select></div>
-    <div class="field"><label>Documentos pendientes</label><input type="text" id="mSinDocs" style="width:100%;" value="${s.documentosPendientes||''}" placeholder="Ej. Fotos del daño, denuncia policial"></div>
-    <div class="field"><label>Notas de seguimiento</label><textarea id="mSinNotas" style="width:100%;min-height:70px;">${s.notas||''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>N° siniestro / reporte</label><input type="text" id="mSinNumero" style="width:100%;" value="${esc(s.numeroSiniestro)}" placeholder="Ej. 1057732"></div>
+      <div class="field"><label>Ramo</label><select id="mSinRamo" style="width:100%;"><option value="">Según la póliza</option>${RAMOS_SINIESTRO.map(r=>`<option value="${r}" ${s.ramo===r?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="field"><label>Aseguradora</label><select id="mSinAseguradora" style="width:100%;"><option value="">Seleccionar…</option>${(state.aseguradoras||[]).map(a=>`<option value="${esc(a)}" ${s.aseguradora===a?'selected':''}>${esc(a)}</option>`).join('')}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Bien asegurado</label><input type="text" id="mSinBien" style="width:100%;" value="${esc(s.bienAsegurado)}" placeholder="Ej. CMH172 Ford Territory"></div>
+      <div class="field"><label>Causa</label><input type="text" id="mSinCausa" style="width:100%;" value="${esc(s.causa)}" placeholder="Ej. Choque en circulación" list="mSinCausas"><datalist id="mSinCausas"><option>Choque en circulación</option><option>Robo total</option><option>Robo parcial</option><option>Asistencia vial</option><option>Accidente de trabajo</option><option>Fallecimiento</option><option>Robo de mercadería</option><option>Ejecución de fianza</option></datalist></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Fecha de ocurrencia</label><input type="date" id="mSinFecha" style="width:100%;" value="${s.fechaEvento||''}"></div>
+      <div class="field"><label>Fecha de aviso</label><input type="date" id="mSinAviso" style="width:100%;" value="${s.fechaAviso||''}"></div>
+      <div class="field"><label>Último movimiento</label><input type="date" id="mSinUltMov" style="width:100%;" value="${s.ultimoMovimiento||''}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Estado del trámite</label><select id="mSinEstado" style="width:100%;">${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${estId===e.id?'selected':''}>${e.label}</option>`).join('')}</select></div>
+      <div class="field"><label>Monto pagado (S/)</label><input type="number" min="0" step="0.01" id="mSinMonto" style="width:100%;" value="${s.montoPagado??''}"></div>
+    </div>
+    <div class="field"><label>Observación (qué pasó en la última gestión)</label><textarea id="mSinNotas" style="width:100%;min-height:60px;">${esc(s.notas)}</textarea></div>
+    <div class="field"><label>Documentos pendientes</label><input type="text" id="mSinDocs" style="width:100%;" value="${esc(s.documentosPendientes)}" placeholder="Ej. Fotos del daño, denuncia policial"></div>
+    <div class="field-row">
+      <div class="field" style="flex:2;"><label>Próximo paso</label><input type="text" id="mSinProximo" style="width:100%;" value="${esc(s.proximoPaso)}"></div>
+      <div class="field"><label>Responsable</label><input type="text" id="mSinResponsable" style="width:100%;" value="${esc(s.responsable||'Asesora de cuentas')}"></div>
+      <div class="field"><label>Fecha compromiso</label><input type="date" id="mSinCompromiso" style="width:100%;" value="${s.fechaCompromiso||''}"></div>
+    </div>
+    <div class="field"><label>Comentario de la gestión</label><input type="text" id="mSinComentario" style="width:100%;" value="${esc(s.comentarioGestion)}"></div>
+    <div class="field-row" id="mSinRechazoWrap" style="${estId==='rechazado'?'':'display:none;'}">
+      <div class="field"><label>¿Rechazo evitable?</label><select id="mSinEvitable" style="width:100%;"><option value=""></option>${['Sí','Parcial','No'].map(o=>`<option ${s.rechazoEvitable===o?'selected':''}>${o}</option>`).join('')}</select></div>
+      <div class="field" style="flex:3;"><label>Cómo prevenirlo</label><input type="text" id="mSinPrevencion" style="width:100%;" value="${esc(s.rechazoPrevencion)}"></div>
+    </div>
     <div class="modal-actions">
       ${editing.id ? `<button class="btn btn-danger-ghost" id="mSinDelete">Eliminar</button>` : ''}
       <button class="btn" id="mSinCancel">Cancelar</button>
@@ -5649,7 +5745,223 @@ function modalSiniestro(){
 function wireSiniestros(){
   const btn = document.getElementById('btnNuevoSiniestro'); if(btn) btn.onclick = () => { editing={type:'siniestro', id:null}; render(); };
   document.querySelectorAll('[data-edit-siniestro]').forEach(b=> b.onclick = () => { editing={type:'siniestro', id:b.dataset.editSiniestro}; render(); });
-  const fe = document.getElementById('fSiniestroEstado'); if(fe) fe.onchange = e=>{ filtroSiniestroEstado=e.target.value; render(); };
+  const fe = document.getElementById('fSiniestroEstado'); if(fe) fe.onchange = e=>{ filtroSiniestroEstado=e.target.value; if(e.target.value!=='todas') filtroSiniestroSituacion='todas'; render(); };
+  const fs = document.getElementById('fSiniestroSituacion'); if(fs) fs.onchange = e=>{ filtroSiniestroSituacion=e.target.value; render(); };
+  const fa = document.getElementById('fSiniestroAseg'); if(fa) fa.onchange = e=>{ filtroSiniestroAseg=e.target.value; render(); };
+  const ft = document.getElementById('fSiniestroTexto');
+  if(ft) ft.oninput = ()=>{ filtroSiniestroTexto = ft.value; clearTimeout(wireSiniestros._t); wireSiniestros._t = setTimeout(()=>{ render(); const f2 = document.getElementById('fSiniestroTexto'); if(f2){ f2.focus(); f2.setSelectionRange(f2.value.length, f2.value.length); } }, 250); };
+  const rep = document.getElementById('btnReporteSiniestros'); if(rep) rep.onclick = () => descargarReporteSiniestros(misSiniestrosLista());
+}
+
+// ---------------- Reporte de siniestros en Excel ----------------
+// Usa la plantilla plantillas/reporte-siniestros-fg.xlsx (mismo formato, gráficos y fórmulas del reporte de gerencia)
+// y reemplaza solo los datos. Los indicadores del Resumen son fórmulas sobre la tabla tblSiniestros: Excel los recalcula al abrir.
+const URL_PLANTILLA_SINIESTROS = 'plantillas/reporte-siniestros-fg.xlsx';
+let cargaJSZip = null;
+function cargarJSZip(){
+  if(window.JSZip) return Promise.resolve(window.JSZip);
+  if(!cargaJSZip) cargaJSZip = new Promise((ok, fallo)=>{
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    sc.onload = ()=> ok(window.JSZip); sc.onerror = ()=>{ cargaJSZip = null; fallo(new Error('No se pudo cargar JSZip')); };
+    document.head.appendChild(sc);
+  });
+  return cargaJSZip;
+}
+const XLSX_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const serialExcel = iso => { if(!iso) return null; const [y,m,d] = iso.split('-').map(Number); return (Date.UTC(y,m-1,d) - Date.UTC(1899,11,30)) / 86400000; };
+const colLetra = n => { let s=''; n++; while(n>0){ const r=(n-1)%26; s=String.fromCharCode(65+r)+s; n=Math.floor((n-1)/26); } return s; };
+// Hoja de cálculo editable: crea filas y celdas con el estilo (s) de la plantilla
+function hojaXlsx(xml){
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  const data = doc.getElementsByTagNameNS(XLSX_NS, 'sheetData')[0];
+  const el = (tag, attrs) => { const e = doc.createElementNS(XLSX_NS, tag); Object.entries(attrs||{}).forEach(([k,v])=>e.setAttribute(k, v)); return e; };
+  const filas = () => Array.from(data.getElementsByTagNameNS(XLSX_NS, 'row'));
+  const api = {
+    doc,
+    borrarDesde(n){ filas().forEach(r=>{ if(Number(r.getAttribute('r'))>=n) data.removeChild(r); }); },
+    // celdas: [{ v, s, tipo:'t'|'n'|'d'|'f'|'fs' }]  (fs = fórmula con resultado de texto)
+    fila(n, celdas, alto){
+      const r = el('row', { r:String(n) });
+      if(alto){ r.setAttribute('ht', String(alto)); r.setAttribute('customHeight','1'); }
+      celdas.forEach((c, i)=>{
+        if(!c) return;
+        const ref = colLetra(i) + n;
+        const ce = el('c', { r:ref, s:String(c.s) });
+        const v = c.v;
+        if(c.tipo==='f' || c.tipo==='fs'){ if(c.tipo==='fs') ce.setAttribute('t','str'); const f = el('f'); f.textContent = v; ce.appendChild(f); }
+        else if(v===null || v===undefined || v===''){ /* celda vacía con estilo */ }
+        else if(c.tipo==='n' || c.tipo==='d'){ const val = c.tipo==='d' ? serialExcel(v) : Number(v); if(val!==null && !isNaN(val)){ const ve = el('v'); ve.textContent = String(val); ce.appendChild(ve); } }
+        else { ce.setAttribute('t','inlineStr'); const is = el('is'), t = el('t'); t.setAttribute('xml:space','preserve'); t.textContent = String(v); is.appendChild(t); ce.appendChild(is); }
+        r.appendChild(ce);
+      });
+      data.appendChild(r);
+    },
+    // Cambia el valor de una celda que ya existe en la plantilla (conserva su estilo)
+    poner(ref, v, tipo){
+      const ce = Array.from(doc.getElementsByTagNameNS(XLSX_NS, 'c')).find(c=>c.getAttribute('r')===ref);
+      if(!ce) return;
+      while(ce.firstChild) ce.removeChild(ce.firstChild);
+      ce.removeAttribute('t');
+      if(tipo==='d' || tipo==='n'){ const val = tipo==='d' ? serialExcel(v) : Number(v); const ve = el('v'); ve.textContent = String(val); ce.appendChild(ve); }
+      else { ce.setAttribute('t','inlineStr'); const is = el('is'), t = el('t'); t.setAttribute('xml:space','preserve'); t.textContent = String(v??''); is.appendChild(t); ce.appendChild(is); }
+    },
+    rango(selector, attr, valor){ Array.from(doc.getElementsByTagNameNS(XLSX_NS, selector)).forEach(e=>{ if(e.hasAttribute(attr)) e.setAttribute(attr, valor(e.getAttribute(attr))); }); },
+    xml(){ return new XMLSerializer().serializeToString(doc); },
+  };
+  return api;
+}
+// Alto aproximado de fila para textos con ajuste de línea (anchos de columna de la plantilla)
+function altoFila(textos, anchos){
+  let lineas = 1;
+  textos.forEach((t, i)=>{ if(!t || !anchos[i]) return; lineas = Math.max(lineas, String(t).split('\n').reduce((n, p)=> n + Math.max(1, Math.ceil(p.length / (anchos[i]*1.15))), 0)); });
+  return lineas>1 ? Math.min(409, lineas*14.4) : null;
+}
+async function descargarReporteSiniestros(lista){
+  if(esEjecutivaSesion()){ alert('Tu perfil no tiene permiso para descargar archivos.'); return; }
+  const btn = document.getElementById('btnReporteSiniestros'); if(btn){ btn.disabled = true; btn.textContent = 'Preparando…'; }
+  try{
+    const JSZip = await cargarJSZip();
+    const resp = await fetch(URL_PLANTILLA_SINIESTROS, { cache:'no-cache' });
+    if(!resp.ok) throw new Error('No se encontró la plantilla del reporte');
+    const zip = await JSZip.loadAsync(await resp.arrayBuffer());
+    const blob = await armarReporteSiniestros(zip, lista, todayISO());
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `Reporte_Siniestros_FG_${todayISO()}.xlsx`;
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }catch(e){ console.error('No se pudo generar el reporte de siniestros', e); alert('No se pudo generar el reporte de siniestros: ' + e.message); }
+  finally{ const b = document.getElementById('btnReporteSiniestros'); if(b){ b.disabled = false; b.textContent = '⬇ Descargar reporte Excel'; } }
+}
+async function armarReporteSiniestros(zip, lista, corte){
+  const diasA = (desde) => desde ? Math.round(serialExcel(corte) - serialExcel(desde)) : null;
+  const diasSinMov = s => diasA(sinUltimoMov(s));
+  const fechaTxt = iso => fmtDate(iso);
+  const filas = lista.map(s=>({ s, numero: s.numeroSiniestro || `SN-${String(s.folio).padStart(4,'0')}`, ramo: sinRamo(s), aseg: aseguradoraCorta(s.aseguradora), cliente: sinClienteTexto(s), poliza: sinPoliza(s), bien: sinBien(s), estado: estadoSin(s).label, dias: diasSinMov(s) }))
+    .sort((a,b)=> (a.s.fechaAviso||a.s.fechaEvento||'').localeCompare(b.s.fechaAviso||b.s.fechaEvento||''));
+  const leer = async p => zip.file(p).async('string');
+
+  // --- Detalle (tabla tblSiniestros) ---
+  const det = hojaXlsx(await leer('xl/worksheets/sheet3.xml'));
+  det.borrarDesde(5);
+  const anchosDet = [5,14,16,12,34,14,22,20,11,11,15,12,12,10,9,10,60];
+  (filas.length ? filas : [null]).forEach((f, i)=>{
+    const r = 5 + i;
+    if(!f){ det.fila(r, [7,8,8,8,9,8,8,8,10,10,7,10,11,7,12,12,13].map(s=>({ s, v:'' }))); return; }
+    const s = f.s;
+    det.fila(r, [
+      { s:7, v:i+1, tipo:'n' }, { s:8, v:f.numero }, { s:8, v:f.ramo }, { s:8, v:f.aseg }, { s:9, v:f.cliente }, { s:8, v:f.poliza },
+      { s:8, v:f.bien }, { s:8, v:s.causa||'' }, { s:10, v:s.fechaEvento||'', tipo:'d' }, { s:10, v:s.fechaAviso||'', tipo:'d' }, { s:7, v:f.estado },
+      { s:10, v:sinUltimoMov(s), tipo:'d' }, { s:11, v:s.montoPagado, tipo:'n' },
+      { s:7, v:`IF(OR(K${r}="Pagado",K${r}="Atendido",K${r}="Rechazado",K${r}="Cerrado sin atención"),"Cerrado","Abierto")`, tipo:'fs' },
+      { s:12, v:`IF(OR(N${r}="Cerrado",J${r}=""),"",FechaCorte-J${r})`, tipo:'f' },
+      { s:12, v:`IF(N${r}="Cerrado","",FechaCorte-L${r})`, tipo:'f' },
+      { s:13, v:[s.notas, s.documentosPendientes ? `Pendiente: ${s.documentosPendientes}` : ''].filter(Boolean).join(' ') },
+    ], altoFila([null,null,null,null,f.cliente,null,f.bien,null,null,null,null,null,null,null,null,null,s.notas], anchosDet));
+  });
+  const ultDet = 4 + Math.max(1, filas.length);
+  det.rango('dimension', 'ref', ()=>`A1:Q${ultDet}`);
+  det.rango('conditionalFormatting', 'sqref', v=> v.replace(/^([A-Z])5:[A-Z]\d+$/, (m, c)=>`${c}5:${c}${ultDet}`));
+  zip.file('xl/worksheets/sheet3.xml', det.xml());
+  let tabla = await leer('xl/tables/table1.xml');
+  tabla = tabla.replace(/ref="A4:Q\d+"/g, `ref="A4:Q${ultDet}"`);
+  zip.file('xl/tables/table1.xml', tabla);
+
+  // --- Casos en curso ---
+  const cur = hojaXlsx(await leer('xl/worksheets/sheet2.xml'));
+  cur.borrarDesde(6);
+  const enCurso = filas.filter(f=> siniestroAbierto(f.s) || (f.s.estado==='rechazado' && (f.dias??0) <= 30))
+    .sort((a,b)=> (a.dias??9999)-(b.dias??9999));
+  const semDe = f => (f.s.estado==='rechazado' || (f.dias??0)>30) ? 'ROJO' : (f.dias??0)>7 ? 'ÁMBAR' : 'VERDE';
+  const estiloSem = { 'VERDE':44, 'ÁMBAR':48, 'ROJO':49 };
+  const anchosCur = [11,14,30,12,14,20,11,15,10,48,16,12,36];
+  enCurso.forEach((f, i)=>{
+    const r = 6 + i, s = f.s, sem = semDe(f), destacado = i<4 && sem!=='ROJO';
+    const ult = sinUltimoMov(s);
+    const [y,m,d] = (ult||corte).split('-').map(Number);
+    const proximo = s.proximoPaso || s.documentosPendientes || '';
+    cur.fila(r, [
+      { s:estiloSem[sem], v:sem }, { s:destacado?45:33, v:f.numero }, { s:destacado?45:33, v:f.cliente }, { s:33, v:f.aseg }, { s:33, v:f.poliza || 'Sin dato' },
+      { s:33, v:f.bien || 'Sin dato' }, s.fechaEvento ? { s:34, v:s.fechaEvento, tipo:'d' } : { s:36, v:'Sin dato' }, { s:36, v:f.estado },
+      { s:50, v:`FechaCorte-DATE(${y},${m},${d})`, tipo:'f' }, { s:36, v:proximo }, { s:36, v:s.responsable || 'Asesora de cuentas' },
+      { s:46, v:s.fechaCompromiso||'', tipo:'d' }, { s:47, v:s.comentarioGestion||'' },
+    ], altoFila([null,null,f.cliente,null,null,f.bien,null,null,null,proximo,null,null,s.comentarioGestion], anchosCur));
+  });
+  const ultCur = 5 + Math.max(1, enCurso.length);
+  cur.rango('conditionalFormatting', 'sqref', ()=>`I6:I${ultCur}`);
+  cur.rango('dataValidation', 'sqref', ()=>`L6:L${ultCur}`);
+  cur.rango('dimension', 'ref', ()=>`A1:M${ultCur}`);
+  cur.poner('A2', `Para la asesora de cuentas. Corte ${fechaTxt(corte)}. Llenar las columnas amarillas en cada gestión.`);
+  cur.poner('A4', enCurso.length ? 'Ordenados del más reciente al más atrasado. Los ROJOS requieren gestión inmediata.' : 'No hay casos en curso a la fecha de corte.');
+  zip.file('xl/worksheets/sheet2.xml', cur.xml());
+
+  // --- Casos críticos ---
+  const cri = hojaXlsx(await leer('xl/worksheets/sheet4.xml'));
+  cri.borrarDesde(6);
+  const criticos = filas.filter(f=> siniestroAbierto(f.s) && (f.dias??0)>30).sort((a,b)=>(b.dias??0)-(a.dias??0));
+  const anchosCri = [18,12,34,16,40,12,11,60];
+  let r = 6;
+  criticos.forEach(f=>{
+    const accion = f.s.proximoPaso || f.s.notas || '';
+    cri.fila(r++, [ { s:33, v:f.numero }, { s:33, v:f.aseg }, { s:33, v:f.cliente }, { s:33, v:f.ramo }, { s:33, v:f.estado },
+      { s:34, v:sinUltimoMov(f.s), tipo:'d' }, { s:f.dias>90?35:37, v:f.dias, tipo:'n' }, { s:36, v:accion } ], altoFila([null,null,f.cliente,null,null,null,null,accion], anchosCri));
+  });
+  if(!criticos.length) cri.fila(r++, [{ s:33, v:'Sin casos abiertos con más de 30 días sin movimiento.' }]);
+  const vacia = Array(8).fill({ s:13, v:'' });
+  cri.fila(r++, vacia); cri.fila(r++, vacia);
+  cri.fila(r++, [{ s:38, v:'B. Rechazos del periodo y lección aprendida' }, ...Array(7).fill({ s:13, v:'' })], 46.8);
+  cri.fila(r++, ['N° siniestro','Aseguradora','Cliente / asegurado','Ramo','Motivo del rechazo','Fecha','¿Evitable?','Cómo prevenirlo'].map(v=>({ s:39, v })));
+  const rechazos = filas.filter(f=>f.s.estado==='rechazado').sort((a,b)=>sinUltimoMov(a.s).localeCompare(sinUltimoMov(b.s)));
+  rechazos.forEach(f=>{
+    cri.fila(r++, [ { s:40, v:f.numero }, { s:40, v:f.aseg }, { s:40, v:f.cliente }, { s:40, v:f.ramo }, { s:40, v:f.s.notas||'' },
+      { s:41, v:sinUltimoMov(f.s), tipo:'d' }, { s:42, v:f.s.rechazoEvitable||'' }, { s:42, v:f.s.rechazoPrevencion||'' } ], altoFila([null,null,f.cliente,null,f.s.notas,null,null,f.s.rechazoPrevencion], anchosCri));
+  });
+  if(!rechazos.length) cri.fila(r++, [{ s:40, v:'Sin rechazos en el periodo.' }]);
+  cri.fila(r, vacia);
+  cri.rango('dimension', 'ref', ()=>`A1:H${r}`);
+  cri.poner('A2', `Abiertos con más de 30 días sin movimiento y rechazos del periodo (corte ${fechaTxt(corte)})`);
+  zip.file('xl/worksheets/sheet4.xml', cri.xml());
+
+  // --- Resumen ---
+  const res = hojaXlsx(await leer('xl/worksheets/sheet1.xml'));
+  res.poner('C4', corte, 'd');
+  const fechas = filas.map(f=>f.s.fechaAviso||f.s.fechaEvento).filter(Boolean).sort();
+  const MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  const mesTxt = iso => { const [y,m] = iso.split('-'); return `${MESES[Number(m)-1]}-${y}`; };
+  res.poner('A2', `FG Seguros · Gestión de siniestros${fechas.length ? ` ${mesTxt(fechas[0])} a ${mesTxt(corte)}` : ''} · Fuente: bitácora de siniestros del CRM FG`);
+  const top = (clave, n) => { const c = {}; filas.forEach(f=>{ const k = f[clave]; if(k) c[k] = (c[k]||0)+1; }); return Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,n).map(e=>e[0]); };
+  const asegs = top('aseg', 5), ramos = top('ramo', 6);
+  for(let i=0;i<5;i++) res.poner(`F${12+i}`, asegs[i]||'');
+  for(let i=0;i<6;i++) res.poner(`F${21+i}`, ramos[i]||'');
+  // Mensajes clave calculados con los datos del CRM
+  const abiertos = filas.filter(f=>siniestroAbierto(f.s));
+  const atrasados = abiertos.filter(f=>(f.dias??0)>30);
+  const conMonto = filas.filter(f=>Number(f.s.montoPagado)>0);
+  const porCliente = {}; filas.forEach(f=>{ if(f.s.clienteId) (porCliente[f.s.clienteId] = porCliente[f.s.clienteId]||[]).push(f); });
+  const repetidos = Object.values(porCliente).filter(l=>l.length>1);
+  const pct = (a, b) => b ? Math.round(a*100/b) : 0;
+  const mensajes = [
+    filas.length ? `1. ${ramos[0]||'—'} concentra ${pct(filas.filter(f=>f.ramo===ramos[0]).length, filas.length)}% de los casos; ${asegs[0]||'—'} es la aseguradora con más siniestros (${filas.filter(f=>f.aseg===asegs[0]).length}).` : '1. Aún no hay siniestros registrados en el CRM.',
+    `2. Hay ${rechazos.length} rechazo${rechazos.length===1?'':'s'} en el periodo${rechazos.filter(f=>f.s.rechazoEvitable==='Sí').length ? `; ${rechazos.filter(f=>f.s.rechazoEvitable==='Sí').length} se podía${rechazos.filter(f=>f.s.rechazoEvitable==='Sí').length===1?'':'n'} prevenir` : ''}. Revisar la hoja Casos críticos.`,
+    `3. ${atrasados.length} de ${abiertos.length} casos abiertos llevan más de 30 días sin movimiento${atrasados.length ? `; el más atrasado suma ${Math.max(...atrasados.map(f=>f.dias))} días` : ''}.`,
+    `4. ${conMonto.length} caso${conMonto.length===1?' tiene':'s tienen'} monto pagado registrado${conMonto.length ? ` (S/ ${conMonto.reduce((t,f)=>t+Number(f.s.montoPagado),0).toLocaleString('es-PE',{maximumFractionDigits:2})})` : ''}. Registrar los montos permite medir la siniestralidad por póliza.`,
+    repetidos.length ? `5. ${repetidos.length} cliente${repetidos.length===1?' tiene':'s tienen'} más de un siniestro (${repetidos.slice(0,3).map(l=>l[0].cliente).join('; ')}). Revisarlos en la renovación.` : '5. Ningún cliente tiene más de un siniestro en el periodo.',
+  ];
+  mensajes.forEach((t, i)=> res.poner(`B${30+i}`, t));
+  zip.file('xl/worksheets/sheet1.xml', res.xml());
+
+  // --- Notas ---
+  const notas = hojaXlsx(await leer('xl/worksheets/sheet6.xml'));
+  [
+    `• Fuente: bitácora de siniestros del CRM FG (${filas.length} casos), descargada el ${fechaTxt(corte)}.`,
+    '• El estado de cada caso es el registrado en el CRM. Si no hay gestión de cierre, el caso figura como abierto.',
+    '• Cerrados: Pagado, Atendido, Rechazado y Cerrado sin atención. Los demás estados se cuentan como abiertos.',
+    '• Los días sin movimiento se miden desde el último movimiento registrado (o la fecha de aviso) hasta la fecha de corte.',
+    '• Para actualizar el reporte, cambia la fecha en Resumen!C4 o agrega o edita filas en la hoja Detalle. Los indicadores se recalculan solos.',
+    '• Semáforo: ROJO = rechazado o más de 30 días sin movimiento · ÁMBAR = de 8 a 30 días · VERDE = hasta 7 días.',
+  ].forEach((t, i)=> notas.poner(`A${4+i}`, t));
+  zip.file('xl/worksheets/sheet6.xml', notas.xml());
+
+  return zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', compression:'DEFLATE' });
 }
 
 // ================= ASESORES =================
@@ -5976,14 +6288,18 @@ function wireSeguimiento(){
 }
 // Importa acciones preparadas desde el correo: anulaciones, estados de renovación, siniestros y seguimientos (idempotente)
 function importarAccionesCorreo(data){
-  const r = { anuladas:0, renov:0, siniestros:0, seguimientos:0, omitidos:0 };
+  const r = { anuladas:0, renov:0, siniestros:0, siniestrosAct:0, seguimientos:0, omitidos:0 };
   (data.anular||[]).forEach(a=>{ const v = state.ventas.find(x=>x.id===a.ventaId); if(!v || v.estadoVenta==='anulada'){ r.omitidos++; return; } v.estadoVenta = 'anulada'; v.motivoAnulacion = a.motivo||''; v.fechaAnulacion = a.fecha||todayISO(); registrarAuditoria('editar','venta',v.id,`Venta ${folioV(v.folio)} anulada: ${a.motivo||''}`); r.anuladas++; });
   (data.renov||[]).forEach(a=>{ const v = state.ventas.find(x=>x.id===a.ventaId); if(!v){ r.omitidos++; return; } if(v.renov && v.renov.estado===a.estado && v.renov.nota===a.nota){ r.omitidos++; return; } marcarRenovacion(v, a.estado, a.nota); if(a.fecha) v.renov.fecha = a.fecha; r.renov++; });
-  (data.siniestros||[]).forEach(a=>{ if(state.siniestros.some(x=>x.ref && x.ref===a.ref)){ r.omitidos++; return; } const sn = Object.assign({ id: uid(), folio: ++state.folioSiniestro }, a); state.siniestros.push(sn); const cli = state.clientes.find(c=>c.id===a.clienteId); registrarAuditoria('crear','siniestro',sn.id,`Siniestro SN-${String(sn.folio).padStart(4,'0')} — ${cli?cli.nombre:''}`); r.siniestros++; });
+  (data.siniestros||[]).forEach(a=>{
+    const ya = state.siniestros.find(x=>x.ref && x.ref===a.ref);
+    // Ya existe: solo completa los campos vacíos (no pisa lo que se editó a mano en el CRM)
+    if(ya){ const vacios = Object.keys(a).filter(k=> k!=='ref' && (ya[k]===undefined || ya[k]===null || ya[k]==='') && a[k]!==undefined && a[k]!==null && a[k]!==''); if(!vacios.length){ r.omitidos++; return; } vacios.forEach(k=> ya[k] = a[k]); registrarAuditoria('editar','siniestro',ya.id,`Siniestro SN-${String(ya.folio).padStart(4,'0')} completado desde el correo (${vacios.length} campo(s))`); r.siniestrosAct++; return; }
+    const sn = Object.assign({ id: uid(), folio: ++state.folioSiniestro }, a); state.siniestros.push(sn); const cli = state.clientes.find(c=>c.id===a.clienteId); registrarAuditoria('crear','siniestro',sn.id,`Siniestro SN-${String(sn.folio).padStart(4,'0')} — ${cli?cli.nombre:''}`); r.siniestros++; });
   (data.seguimientos||[]).forEach(a=>{ const lista = seguimientosLista(); if(lista.some(x=>x.id===a.id)){ r.omitidos++; return; } lista.push(Object.assign({ estado:'abierto', log:[], creadoPor:'Importado del correo' }, a)); r.seguimientos++; });
   save(); render();
   window.__ultimoImportAcciones = r;
-  alert(`Acciones importadas: ${r.anuladas} venta(s) anulada(s), ${r.renov} estado(s) de renovación, ${r.siniestros} siniestro(s), ${r.seguimientos} seguimiento(s).${r.omitidos?` ${r.omitidos} ya estaban.`:''}`);
+  alert(`Acciones importadas: ${r.anuladas} venta(s) anulada(s), ${r.renov} estado(s) de renovación, ${r.siniestros} siniestro(s)${r.siniestrosAct?` nuevo(s) y ${r.siniestrosAct} completado(s)`:''}, ${r.seguimientos} seguimiento(s).${r.omitidos?` ${r.omitidos} ya estaban.`:''}`);
 }
 
 // ================= CLIENTES DE ALTO VALOR =================
@@ -6180,7 +6496,7 @@ function reporteCalidadDatos(){
   const sinCelular = state.clientes.filter(c=> !(c.celular1||c.telefono));
   const sinDocumento = state.clientes.filter(c=> !c.documento);
   const sinCiudad = state.clientes.filter(c=> !c.ciudad);
-  const siniestrosSinActualizar = state.siniestros.filter(s=> s.estado==='reportado' && daysUntil(s.fechaEvento) < -30);
+  const siniestrosSinActualizar = state.siniestros.filter(s=> siniestroAbierto(s) && (sinDiasSinMov(s)??0) > 30);
   const polizasSinNumero = state.ventas.filter(v=> ventaSeguroActiva(v) && !v.numeroPoliza);
   // ---- Posibles duplicados: solo compara dentro del mismo "cubo" (primeras 3 letras normalizadas) para no trabar el navegador ----
   const buckets = {};
@@ -6376,7 +6692,7 @@ function viewCalidadDatos(){
       <table>
         <thead><tr><th>Cliente</th><th>Fecha del evento</th><th>Estado</th><th></th></tr></thead>
         <tbody>
-          ${siniestrosSinActualizar.length===0 ? `<tr class="empty-row"><td colspan="4">No hay siniestros estancados.</td></tr>` : siniestrosSinActualizar.slice(0,300).map(s=>{ const cli = state.clientes.find(c=>c.id===s.clienteId); return `<tr><td>${cli?cli.nombre:'—'}</td><td>${fmtDate(s.fechaEvento)}</td><td>Reportado</td><td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`; }).join('')}
+          ${siniestrosSinActualizar.length===0 ? `<tr class="empty-row"><td colspan="4">No hay siniestros estancados.</td></tr>` : siniestrosSinActualizar.slice(0,300).map(s=>{ const cli = state.clientes.find(c=>c.id===s.clienteId); return `<tr><td>${cli?cli.nombre:'—'}</td><td>${fmtDate(s.fechaEvento)}</td><td>${estadoSin(s).label} · ${sinDiasSinMov(s)} días sin movimiento</td><td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`; }).join('')}
         </tbody>
       </table>
     </div>
@@ -6729,6 +7045,7 @@ function wireModalSiniestro(){
         sinClienteHidden.value = c.id;
         sinClienteBuscarInput.value = c.nombre;
         sinClienteResultados.style.display = 'none';
+        llenarPolizasSiniestro('');
       });
     };
     sinClienteBuscarInput.oninput = () => {
@@ -6748,16 +7065,56 @@ function wireModalSiniestro(){
     state.siniestros = state.siniestros.filter(x=>x.id!==editing.id);
     save(); closeModal(); render();
   };
+  // Pólizas del cliente elegido; al escoger una se completan aseguradora, ramo y bien asegurado
+  const original = editing.id ? (state.siniestros.find(x=>x.id===editing.id)||{}) : {};
+  const selVenta = document.getElementById('mSinVenta'), polTxtWrap = document.getElementById('mSinPolizaTextoWrap');
+  function llenarPolizasSiniestro(ventaId){
+    const cliId = document.getElementById('mSinCliente').value;
+    const ventas = state.ventas.filter(v=>v.clienteId===cliId && v.numeroPoliza).sort((a,b)=>(b.vigenciaInicio||'').localeCompare(a.vigenciaInicio||''));
+    selVenta.innerHTML = `<option value="">${ventas.length ? 'Otra / no está en el CRM' : 'Sin pólizas en el CRM'}</option>` + ventas.map(v=>`<option value="${v.id}" ${v.id===ventaId?'selected':''}>${v.numeroPoliza} · ${v.aseguradora||''}${v.vehPlaca?' · '+v.vehPlaca:''} (${fmtDate(v.vigenciaInicio)} – ${fmtDate(v.vigenciaFin)})</option>`).join('');
+    polTxtWrap.style.display = selVenta.value ? 'none' : '';
+  }
+  llenarPolizasSiniestro(original.ventaId||'');
+  selVenta.onchange = () => {
+    polTxtWrap.style.display = selVenta.value ? 'none' : '';
+    const v = state.ventas.find(x=>x.id===selVenta.value); if(!v) return;
+    const aseg = document.getElementById('mSinAseguradora'); if(!aseg.value && v.aseguradora) aseg.value = v.aseguradora;
+    const ramo = document.getElementById('mSinRamo'); if(!ramo.value && RAMO_SIN_POR_PRODUCTO[v.tipoProducto]) ramo.value = RAMO_SIN_POR_PRODUCTO[v.tipoProducto];
+    const bien = document.getElementById('mSinBien'); if(!bien.value && v.vehPlaca) bien.value = [v.vehPlaca, v.vehMarca, v.vehModelo].filter(Boolean).join(' ');
+  };
+  document.getElementById('mSinEstado').onchange = e => { document.getElementById('mSinRechazoWrap').style.display = e.target.value==='rechazado' ? '' : 'none'; };
   document.getElementById('mSinSave').onclick = () => {
+    const val = id => document.getElementById(id).value.trim();
+    const monto = val('mSinMonto');
     const data = {
-      clienteId: document.getElementById('mSinCliente').value,
-      aseguradora: document.getElementById('mSinAseguradora').value,
-      fechaEvento: document.getElementById('mSinFecha').value,
-      estado: document.getElementById('mSinEstado').value,
-      documentosPendientes: document.getElementById('mSinDocs').value.trim(),
-      notas: document.getElementById('mSinNotas').value.trim(),
+      clienteId: val('mSinCliente'),
+      ventaId: selVenta.value,
+      poliza: selVenta.value ? '' : val('mSinPolizaTexto'),
+      asegurado: val('mSinAsegurado'),
+      numeroSiniestro: val('mSinNumero'),
+      ramo: val('mSinRamo'),
+      aseguradora: val('mSinAseguradora'),
+      bienAsegurado: val('mSinBien'),
+      causa: val('mSinCausa'),
+      fechaEvento: val('mSinFecha'),
+      fechaAviso: val('mSinAviso'),
+      ultimoMovimiento: val('mSinUltMov'),
+      estado: val('mSinEstado'),
+      montoPagado: monto==='' ? null : Number(monto),
+      documentosPendientes: val('mSinDocs'),
+      notas: val('mSinNotas'),
+      proximoPaso: val('mSinProximo'),
+      responsable: val('mSinResponsable'),
+      fechaCompromiso: val('mSinCompromiso'),
+      comentarioGestion: val('mSinComentario'),
+      rechazoEvitable: val('mSinEvitable'),
+      rechazoPrevencion: val('mSinPrevencion'),
     };
     if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
+    // Si cambió la gestión y no se tocó la fecha de último movimiento, se toma hoy
+    const gestionCambio = ['estado','notas','documentosPendientes','proximoPaso','comentarioGestion','montoPagado'].some(k=> String(data[k]??'') !== String((k==='estado' && original.estado==='liquidado' ? 'pagado' : original[k])??''));
+    if(editing.id && gestionCambio && data.ultimoMovimiento===(original.ultimoMovimiento||'')) data.ultimoMovimiento = todayISO();
+    if(!data.ultimoMovimiento) data.ultimoMovimiento = todayISO();
     if(editing.id){ Object.assign(state.siniestros.find(x=>x.id===editing.id), data); }
     else{ data.id = uid(); data.folio = ++state.folioSiniestro; state.siniestros.push(data); }
     const cliAudSin = state.clientes.find(c=>c.id===data.clienteId);
