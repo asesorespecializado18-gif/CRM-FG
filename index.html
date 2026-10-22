@@ -5599,6 +5599,8 @@ const RAMO_SIN_POR_PRODUCTO = { seguros_vehiculares:'Vehicular', soat:'Vehicular
 // "Liquidado" era el estado antiguo de cierre con pago: se muestra como "Pagado".
 const estadoSin = s => ESTADOS_SINIESTRO.find(e=>e.id===(s.estado==='liquidado'?'pagado':s.estado)) || ESTADOS_SINIESTRO[0];
 const siniestroAbierto = s => !SIN_ESTADOS_CERRADOS.includes(s.estado);
+// Enlace al hilo de Gmail del caso: solo direcciones https (evita enlaces javascript:)
+const sinCorreoUrl = s => /^https:\/\/[^\s"<>]+$/.test(s.correoUrl||'') ? s.correoUrl : '';
 const sinVenta = s => s.ventaId ? state.ventas.find(v=>v.id===s.ventaId) : null;
 const sinUltimoMov = s => s.ultimoMovimiento || s.fechaAviso || s.fechaEvento || '';
 function sinDiasSinMov(s){ const d = sinUltimoMov(s); return d ? Math.max(0, -daysUntil(d)) : null; }
@@ -5679,7 +5681,7 @@ function viewSiniestros(){
               <td><span class="pill ${est.clase}">${est.label}</span></td>
               <td>${fmtDate(sinUltimoMov(s))}${siniestroAbierto(s) && dias!==null ? `<div style="font-size:12px;color:${dias>30?'var(--danger)':'var(--ink-faint)'};">${dias} día${dias===1?'':'s'}</div>` : ''}</td>
               <td style="max-width:280px;font-size:13px;">${esc(proximo)}</td>
-              <td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
+              <td style="white-space:nowrap;">${sinCorreoUrl(s) ? `<a class="btn btn-ghost btn-sm" href="${esc(sinCorreoUrl(s))}" target="_blank" rel="noopener" title="Abrir el hilo del caso en Gmail">✉ Correo</a> ` : ''}<button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -5731,6 +5733,7 @@ function modalSiniestro(){
       <div class="field"><label>Fecha compromiso</label><input type="date" id="mSinCompromiso" style="width:100%;" value="${s.fechaCompromiso||''}"></div>
     </div>
     <div class="field"><label>Comentario de la gestión</label><input type="text" id="mSinComentario" style="width:100%;" value="${esc(s.comentarioGestion)}"></div>
+    <div class="field"><label>Enlace del correo (Gmail)${sinCorreoUrl(s) ? ` · <a href="${esc(sinCorreoUrl(s))}" target="_blank" rel="noopener">abrir ✉</a>` : ''}</label><input type="url" id="mSinCorreo" style="width:100%;" value="${esc(s.correoUrl)}" placeholder="Pega aquí el enlace del hilo (en Gmail: abre el correo y copia la dirección de la barra)"></div>
     <div class="field-row" id="mSinRechazoWrap" style="${estId==='rechazado'?'':'display:none;'}">
       <div class="field"><label>¿Rechazo evitable?</label><select id="mSinEvitable" style="width:100%;"><option value=""></option>${['Sí','Parcial','No'].map(o=>`<option ${s.rechazoEvitable===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="field" style="flex:3;"><label>Cómo prevenirlo</label><input type="text" id="mSinPrevencion" style="width:100%;" value="${esc(s.rechazoPrevencion)}"></div>
@@ -7107,10 +7110,12 @@ function wireModalSiniestro(){
       responsable: val('mSinResponsable'),
       fechaCompromiso: val('mSinCompromiso'),
       comentarioGestion: val('mSinComentario'),
+      correoUrl: val('mSinCorreo'),
       rechazoEvitable: val('mSinEvitable'),
       rechazoPrevencion: val('mSinPrevencion'),
     };
     if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
+    if(data.correoUrl && !/^https:\/\//.test(data.correoUrl)){ alert('El enlace del correo debe empezar con https:// (cópialo de la barra de direcciones de Gmail).'); return; }
     // Si cambió la gestión y no se tocó la fecha de último movimiento, se toma hoy
     const gestionCambio = ['estado','notas','documentosPendientes','proximoPaso','comentarioGestion','montoPagado'].some(k=> String(data[k]??'') !== String((k==='estado' && original.estado==='liquidado' ? 'pagado' : original[k])??''));
     if(editing.id && gestionCambio && data.ultimoMovimiento===(original.ultimoMovimiento||'')) data.ultimoMovimiento = todayISO();
