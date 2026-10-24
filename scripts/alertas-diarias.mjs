@@ -6,12 +6,14 @@
 //   node scripts/alertas-diarias.mjs --prueba              → lee Firebase y solo guarda el correo en alertas.html
 //   node scripts/alertas-diarias.mjs --respaldo r.json     → usa un respaldo del CRM en vez de Firebase (implica --prueba)
 //   node scripts/alertas-diarias.mjs --semanal             → resumen de los lunes: renovaciones de 30 días, cobranzas de la semana y todas las cuotas atrasadas
+//   node scripts/alertas-diarias.mjs --mensual             → cierre del mes anterior: producción, comisiones, cobranza, renovaciones y lo que vence el mes siguiente
 //
 // Variables de entorno (secretos del repositorio en GitHub):
 //   FG_EMAIL, FG_PASSWORD        usuario administrador del CRM (para leer Firebase)
 //   SMTP_USER, SMTP_PASSWORD     cuenta de Gmail que envía y su contraseña de aplicación
 //   ALERTAS_PARA                 destinatario(s), separados por coma (por defecto eflores@altacorredores.com)
 //   FECHA_HOY                    opcional, AAAA-MM-DD, para simular otro día
+//   MES_CIERRE                   opcional, AAAA-MM, mes que cierra el --mensual (por defecto el mes anterior)
 
 import fs from 'node:fs';
 
@@ -23,6 +25,7 @@ const args = process.argv.slice(2);
 const rutaRespaldo = args.includes('--respaldo') ? args[args.indexOf('--respaldo') + 1] : null;
 const soloPrueba = args.includes('--prueba') || !!rutaRespaldo;
 const semanal = args.includes('--semanal');
+const mensual = args.includes('--mensual');
 // Ventanas en días: el diario mira 7 días; el semanal mira las renovaciones de todo el mes y todo lo atrasado del último año.
 const DIAS_POLIZAS = semanal ? 30 : 7;
 const DIAS_CUOTAS = 7;
@@ -33,6 +36,10 @@ const hoyLima = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima
 const HOY = process.env.FECHA_HOY || hoyLima();
 const addDaysISO = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const diasHasta = iso => Math.round((new Date(iso.slice(0, 10) + 'T00:00:00Z') - new Date(HOY + 'T00:00:00Z')) / 86400000);
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const nombreMes = ym => `${MESES[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+const mesSiguiente = ym => { const [y, m] = ym.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
+const MES = process.env.MES_CIERRE || addDaysISO(HOY.slice(0, 8) + '01', -1).slice(0, 7);
 const fmtDate = d => { if (!d) return '—'; const [y, m, day] = d.slice(0, 10).split('-'); return `${day}/${m}/${y}`; };
 
 // ---------------- lectura de Firebase ----------------
@@ -87,13 +94,13 @@ async function leerFirestore(token, ruta) {
 async function cargarDatos() {
   if (rutaRespaldo) {
     const d = JSON.parse(fs.readFileSync(rutaRespaldo, 'utf8'));
-    return { clientes: d.clientes || [], ventas: d.ventas || [], seguimientos: d.seguimientos || [], productosPersonalizados: d.productosPersonalizados || [] };
+    return { clientes: d.clientes || [], ventas: d.ventas || [], seguimientos: d.seguimientos || [], productosPersonalizados: d.productosPersonalizados || [], asesores: d.asesores || [] };
   }
   const token = await iniciarSesion();
   const main = await leerFirestore(token, 'crm/main');
   const core = main.core || {};
   const [clientes, ventas] = await Promise.all([leerFirestore(token, 'crm_clientes'), leerFirestore(token, 'crm_ventas')]);
-  return { clientes, ventas, seguimientos: core.seguimientos || [], productosPersonalizados: core.productosPersonalizados || [] };
+  return { clientes, ventas, seguimientos: core.seguimientos || [], productosPersonalizados: core.productosPersonalizados || [], asesores: core.asesores || [] };
 }
 
 // ---------------- reglas (las mismas del CRM) ----------------
@@ -230,6 +237,122 @@ ${partes.join('\n')}
   return { asunto, html };
 }
 
+// ---------------- cierre de mes ----------------
+function calcularCierre(datos) {
+  const personalizados = Object.fromEntries((datos.productosPersonalizados || []).map(p => [p.id, p]));
+  const prodLabel = id => PRODUCTOS[id] || (personalizados[id] && personalizados[id].label) || id || '—';
+  const esSeguro = id => !NO_SEGURO.has(id) && (!personalizados[id] || personalizados[id].categoria !== 'servicio');
+  const clientePorId = Object.fromEntries(datos.clientes.map(c => [c.id, c]));
+  const asesorPorId = Object.fromEntries((datos.asesores || []).map(a => [a.id, a]));
+  const enMes = (f, ym = MES) => (f || '').slice(0, 7) === ym;
+  const mon = v => v.moneda === 'USD' ? 'US$' : 'S/';
+  const nombre = v => (clientePorId[v.clienteId] || {}).nombre || '—';
+  const poliza = v => v.numeroPoliza || (v.folio ? 'V-' + String(v.folio).padStart(4, '0') : '—');
+  const tipo = v => v.tipoVenta === 'endoso' ? 'Endoso' : v.tipoVenta === 'renovacion' ? 'Renovación' : 'Nueva';
+  const sumar = (lista, campo) => lista.reduce((acc, x) => { const m = x.moneda; acc[m] = (acc[m] || 0) + (Number(x[campo]) || 0); return acc; }, {});
+  const activas = datos.ventas.filter(v => v.estadoVenta !== 'anulada');
+
+  // Producción: ventas emitidas en el mes
+  const ventas = activas.filter(v => enMes(v.fechaVenta)).sort((a, b) => (a.fechaVenta || '').localeCompare(b.fechaVenta || ''))
+    .map(v => ({ fecha: v.fechaVenta, cliente: nombre(v), poliza: poliza(v), tipo: tipo(v), producto: prodLabel(v.tipoProducto), aseguradora: v.aseguradora || '',
+      asesor: (asesorPorId[v.asesorId] || {}).nombre || 'Sin asesor', moneda: mon(v), primaNeta: Number(v.primaNeta) || 0, comision: Number(v.comisionTotal) || 0 }));
+  const agrupar = clave => Object.values(ventas.reduce((acc, f) => { const k = f[clave];
+    const g = (acc[k] = acc[k] || { nombre: k, cantidad: 0, primaNeta: {}, comision: {} });
+    g.cantidad++; g.primaNeta[f.moneda] = (g.primaNeta[f.moneda] || 0) + f.primaNeta; g.comision[f.moneda] = (g.comision[f.moneda] || 0) + f.comision; return acc; }, {}))
+    .sort((a, b) => b.cantidad - a.cantidad);
+
+  // Anulaciones del mes
+  const anuladas = datos.ventas.filter(v => v.estadoVenta === 'anulada' && enMes(v.fechaAnulacion || v.fechaVenta) && (v.fechaAnulacion ? true : enMes(v.fechaVenta)))
+    .map(v => ({ fecha: v.fechaAnulacion || v.fechaVenta, cliente: nombre(v), poliza: poliza(v), producto: prodLabel(v.tipoProducto), aseguradora: v.aseguradora || '',
+      motivo: v.motivoAnulacion === 'otro' ? (v.otroMotivoAnulacion || 'Otro') : (v.motivoAnulacion || '') }));
+
+  // Comisiones cobradas en el mes y pendientes de cobro
+  const comisionesPagadas = activas.filter(v => v.estadoComision === 'pagada' && enMes(v.fechaPagoComision))
+    .map(v => ({ fecha: v.fechaPagoComision, cliente: nombre(v), poliza: poliza(v), aseguradora: v.aseguradora || '', moneda: mon(v), comision: Number(v.comisionTotal) || 0 }));
+  const comisionesPendientes = activas.filter(v => v.estadoComision !== 'pagada' && (Number(v.comisionTotal) || 0) > 0 && (v.fechaVenta || '') <= MES + '-31')
+    .map(v => ({ moneda: mon(v), comision: Number(v.comisionTotal) || 0 }));
+
+  // Cobranza: cuotas que vencían en el mes
+  const cuotas = [];
+  activas.filter(v => esSeguro(v.tipoProducto) && Array.isArray(v.cronogramaCuotas)).forEach(v => v.cronogramaCuotas.forEach((q, i) => {
+    if (q && enMes(q.fecha)) cuotas.push({ fecha: q.fecha, cliente: nombre(v), poliza: poliza(v), cuota: i + 1, aseguradora: v.aseguradora || '', moneda: mon(v), monto: Number(q.monto) || 0, pagada: !!q.pagada });
+  }));
+  cuotas.sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+  // Renovaciones: pólizas que vencían en el mes y qué pasó con ellas
+  const familia = t => /^sctr/.test(t || '') ? 'sctr' : t;
+  const renovadaPor = v => activas.find(v2 => v2.id !== v.id && v2.tipoVenta !== 'endoso' && v2.clienteId === v.clienteId && familia(v2.tipoProducto) === familia(v.tipoProducto)
+    && (v2.renuevaVentaId === v.id || (() => { const ini = v2.vigenciaInicio || v2.fechaVenta || ''; return ini >= addDaysISO(v.vigenciaFin, -60) && ini <= addDaysISO(v.vigenciaFin, 60); })()));
+  const vencidas = activas.filter(v => v.tipoVenta !== 'endoso' && esSeguro(v.tipoProducto) && enMes(v.vigenciaFin)).sort((a, b) => a.vigenciaFin.localeCompare(b.vigenciaFin))
+    .map(v => { const est = (v.renov || {}).estado; const r = renovadaPor(v);
+      return { fecha: v.vigenciaFin, cliente: nombre(v), poliza: poliza(v), producto: prodLabel(v.tipoProducto), aseguradora: v.aseguradora || '',
+        estado: (r || est === 'renovado') ? 'Renovada' : est === 'no_renueva' ? 'No renueva' : 'Pendiente' }; });
+
+  // Lo que viene: pólizas que vencen el mes siguiente
+  const proximoMes = mesSiguiente(MES);
+  const proximas = activas.filter(v => v.tipoVenta !== 'endoso' && esSeguro(v.tipoProducto) && enMes(v.vigenciaFin, proximoMes) && !['renovado', 'no_renueva'].includes((v.renov || {}).estado))
+    .sort((a, b) => a.vigenciaFin.localeCompare(b.vigenciaFin))
+    .map(v => { const c = clientePorId[v.clienteId] || {}; return { fecha: v.vigenciaFin, cliente: c.nombre || '—', celular: c.celular1 || c.telefono || '', poliza: poliza(v),
+      producto: prodLabel(v.tipoProducto), aseguradora: v.aseguradora || '', moneda: mon(v), primaNeta: Number(v.primaNeta) || 0 }; });
+
+  return { ventas, porProducto: agrupar('producto'), porAseguradora: agrupar('aseguradora'), porAsesor: agrupar('asesor'), anuladas,
+    comisionesPagadas, comisionesPendientes, cuotas, vencidas, proximas, proximoMes,
+    totales: { prima: sumar(ventas, 'primaNeta'), comision: sumar(ventas, 'comision'), cobrada: sumar(comisionesPagadas, 'comision'), pendiente: sumar(comisionesPendientes, 'comision'),
+      cuotasPagadas: sumar(cuotas.filter(q => q.pagada), 'monto'), cuotasPendientes: sumar(cuotas.filter(q => !q.pagada), 'monto') } };
+}
+
+function armarCierre(a) {
+  const totalTxt = t => Object.keys(t).length ? Object.entries(t).sort().reverse().map(([m, x]) => monto(x, m)).join(' + ') : monto(0, 'US$');
+  const caja = (titulo, valor, sub) => `<td style="padding:10px 12px;border:1px solid #E4E7EC;vertical-align:top;width:25%;"><div style="font-size:11.5px;color:#667085;">${titulo}</div><div style="font-size:16px;font-weight:bold;color:#1F4B41;margin-top:3px;">${valor}</div>${sub ? `<div style="font-size:11.5px;color:#667085;margin-top:2px;">${sub}</div>` : ''}</td>`;
+  const renov = a.vencidas.reduce((acc, f) => (acc[f.estado] = (acc[f.estado] || 0) + 1, acc), {});
+  const nuevas = a.ventas.filter(f => f.tipo === 'Nueva').length, renovs = a.ventas.filter(f => f.tipo === 'Renovación').length, endosos = a.ventas.filter(f => f.tipo === 'Endoso').length;
+  const pagadas = a.cuotas.filter(q => q.pagada).length;
+  const resumen = `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;margin-top:8px;"><tr>
+${caja('Pólizas emitidas', a.ventas.length, `${nuevas} nuevas · ${renovs} renovaciones · ${endosos} endosos`)}
+${caja('Prima neta', totalTxt(a.totales.prima), '')}
+${caja('Comisión generada', totalTxt(a.totales.comision), '')}
+${caja('Comisión cobrada en el mes', totalTxt(a.totales.cobrada), `Pendiente total: ${totalTxt(a.totales.pendiente)}`)}
+</tr><tr>
+${caja('Cuotas del mes', `${pagadas} de ${a.cuotas.length} pagadas`, `Por cobrar: ${totalTxt(a.totales.cuotasPendientes)}`)}
+${caja('Vencimientos del mes', a.vencidas.length, `${renov['Renovada'] || 0} renovadas · ${renov['No renueva'] || 0} no renuevan · ${renov['Pendiente'] || 0} pendientes`)}
+${caja('Anuladas', a.anuladas.length, '')}
+${caja(`Vencen en ${nombreMes(a.proximoMes)}`, a.proximas.length, 'por renovar')}
+</tr></table>`;
+  const grupo = (titulo, filas) => tabla(titulo, [['', f => esc(f.nombre)], ['Pólizas', f => f.cantidad], ['Prima neta', f => totalTxt(f.primaNeta)], ['Comisión', f => totalTxt(f.comision)]], filas);
+  const partes = [resumen];
+  if (a.ventas.length) {
+    partes.push(grupo('📊 Producción por producto', a.porProducto));
+    partes.push(grupo('🏢 Producción por aseguradora', a.porAseguradora));
+    if (a.porAsesor.length > 1) partes.push(grupo('👤 Producción por asesor', a.porAsesor));
+    partes.push(tabla('📝 Detalle de pólizas emitidas', [['Fecha', f => fmtDate(f.fecha)], ['Cliente', f => esc(f.cliente)], ['Póliza', f => `${esc(f.poliza)}<br><span style="color:#667085">${f.tipo}</span>`],
+      ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Prima neta', f => monto(f.primaNeta, f.moneda)], ['Comisión', f => monto(f.comision, f.moneda)]], a.ventas));
+  }
+  if (a.vencidas.length) partes.push(tabla('🔄 Pólizas que vencían en el mes', [['Venció', f => fmtDate(f.fecha)], ['Cliente', f => esc(f.cliente)], ['Póliza', f => esc(f.poliza)],
+    ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`],
+    ['Estado', f => f.estado === 'Renovada' ? '<b style="color:#067647">Renovada</b>' : f.estado === 'No renueva' ? '<span style="color:#667085">No renueva</span>' : '<b style="color:#B42318">Pendiente</b>']], a.vencidas));
+  const cuotasPend = a.cuotas.filter(q => !q.pagada);
+  if (cuotasPend.length) partes.push(tabla('💰 Cuotas del mes sin pagar', [['Venció', f => fmtDate(f.fecha)], ['Cliente', f => esc(f.cliente)], ['Póliza', f => `${esc(f.poliza)} · cuota ${f.cuota}`],
+    ['Aseguradora', f => esc(f.aseguradora)], ['Importe', f => monto(f.monto, f.moneda)]], cuotasPend));
+  if (a.comisionesPagadas.length) partes.push(tabla('💵 Comisiones cobradas en el mes', [['Fecha', f => fmtDate(f.fecha)], ['Cliente', f => esc(f.cliente)], ['Póliza', f => esc(f.poliza)],
+    ['Aseguradora', f => esc(f.aseguradora)], ['Comisión', f => monto(f.comision, f.moneda)]], a.comisionesPagadas));
+  if (a.anuladas.length) partes.push(tabla('❌ Pólizas anuladas', [['Fecha', f => fmtDate(f.fecha)], ['Cliente', f => esc(f.cliente)], ['Póliza', f => esc(f.poliza)],
+    ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Motivo', f => esc(f.motivo) || '—']], a.anuladas));
+  if (a.proximas.length) partes.push(tabla(`📅 Para preparar: pólizas que vencen en ${nombreMes(a.proximoMes)}`, [['Vence', f => fmtDate(f.fecha)],
+    ['Cliente', f => esc(f.cliente) + (f.celular ? `<br><span style="color:#667085">${esc(f.celular)}</span>` : '')], ['Póliza', f => esc(f.poliza)],
+    ['Producto', f => `${esc(f.producto)}<br><span style="color:#667085">${esc(f.aseguradora)}</span>`], ['Prima neta', f => monto(f.primaNeta, f.moneda)]], a.proximas));
+
+  const asunto = `FG Pólizas · Cierre de ${nombreMes(MES)}: ${a.ventas.length} pólizas, comisión ${totalTxt(a.totales.comision)}`;
+  const html = `<div style="font-family:Arial,sans-serif;color:#101828;max-width:820px;">
+<p>Hola Eduardo,</p>
+<p>Este es el cierre de <b>${nombreMes(MES)}</b> de tu cartera: producción, comisiones, cobranza y renovaciones, y lo que vence el mes que viene.</p>
+${partes.join('\n')}
+<p style="margin-top:22px;"><a href="https://asesorespecializado18-gif.github.io/CRM-FG/" style="color:#1F4B41;font-weight:bold;">Abrir FG Pólizas</a></p>
+<p style="color:#667085;font-size:12px;">Correo automático generado desde el CRM FG Pólizas. Los montos se muestran en la moneda de cada póliza, sin convertir.</p>
+<p style="font-size:13px;line-height:1.5;">Eduardo Flores Chire<br>Jefe de Cuentas Empresas<br>Alta Corredores de Seguros S.A.C.<br>📱 937401941<br>✉ eflores@altacorredores.com</p>
+</div>`;
+  return { asunto, html };
+}
+
 async function enviar({ asunto, html }) {
   const SMTP_USER = (process.env.SMTP_USER || '').trim(), SMTP_PASSWORD = (process.env.SMTP_PASSWORD || '').replace(/\s+/g, ''); // Google muestra la contraseña de aplicación con espacios
   if (!SMTP_USER || !SMTP_PASSWORD) throw new Error('Faltan SMTP_USER y SMTP_PASSWORD para enviar el correo.');
@@ -240,9 +363,17 @@ async function enviar({ asunto, html }) {
   console.log(`Correo enviado a ${para.join(', ')}`);
 }
 
-const alertas = calcularAlertas(await cargarDatos());
-const correo = armarCorreo(alertas);
-console.log(`${HOY}${semanal ? ' (semanal)' : ''} · pólizas ${alertas.polizas.length} · cuotas próximas ${alertas.cuotasProximas.length} · atrasadas ${alertas.cuotasAtrasadas.length} · seguimientos ${alertas.tareas.length} · cumpleaños ${alertas.cumpleanos.length}`);
+const datos = await cargarDatos();
+let correo;
+if (mensual) {
+  const cierre = calcularCierre(datos);
+  correo = armarCierre(cierre);
+  console.log(`Cierre ${MES} · pólizas ${cierre.ventas.length} · anuladas ${cierre.anuladas.length} · cuotas ${cierre.cuotas.length} · vencidas ${cierre.vencidas.length} · vencen el mes siguiente ${cierre.proximas.length}`);
+} else {
+  const alertas = calcularAlertas(datos);
+  correo = armarCorreo(alertas);
+  console.log(`${HOY}${semanal ? ' (semanal)' : ''} · pólizas ${alertas.polizas.length} · cuotas próximas ${alertas.cuotasProximas.length} · atrasadas ${alertas.cuotasAtrasadas.length} · seguimientos ${alertas.tareas.length} · cumpleaños ${alertas.cumpleanos.length}`);
+}
 if (soloPrueba) {
   fs.writeFileSync('alertas.html', `<meta charset="utf-8"><title>${esc(correo.asunto)}</title>\n${correo.html}`);
   console.log('Modo prueba: el correo se guardó en alertas.html y no se envió.');
