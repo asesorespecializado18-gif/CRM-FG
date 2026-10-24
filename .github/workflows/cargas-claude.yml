@@ -1,0 +1,41 @@
+name: Cargas de Claude
+
+# Cuando Claude sube una carga cifrada a la rama "cargas-claude", la deja en el CRM como pendiente.
+# Nada se aplica solo: el administrador la revisa y la aplica en Cobro de Comisiones › 🤖 Cargas de Claude.
+on:
+  push:
+    branches: [cargas-claude]
+    paths: ['cargas-claude/**']
+  workflow_dispatch:
+
+concurrency:
+  group: cargas-claude
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  subir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Dejar las cargas pendientes en el CRM
+        env:
+          CRM_BOT_EMAIL: ${{ secrets.CRM_BOT_EMAIL }}
+          CRM_BOT_PASSWORD: ${{ secrets.CRM_BOT_PASSWORD }}
+          ANTES: ${{ github.event.before }}
+        run: |
+          # en un push, solo las cargas nuevas de ese push; a mano (Run workflow) o en la primera subida de la rama, todas
+          if [ "${{ github.event_name }}" = "push" ] && git cat-file -e "$ANTES^{commit}" 2>/dev/null; then
+            nuevas=$(git diff --name-only --diff-filter=A "$ANTES" HEAD -- cargas-claude/)
+            if [ -z "$nuevas" ]; then echo "Este push no trae cargas nuevas."; exit 0; fi
+            node scripts/subir-cargas-claude.mjs $nuevas
+          else
+            node scripts/subir-cargas-claude.mjs
+          fi
