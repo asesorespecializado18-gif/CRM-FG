@@ -62,4 +62,5 @@ async function main() {
   console.log(`Listo: ${nuevas} carga(s) nueva(s), ${yaEstaban} ya estaban.`);
 }
 
-main().catch(e => { console.error(e.message); process.exit(1); });
+// ::error:: deja el motivo como anotación de la Action (se ve sin abrir el registro); nunca lleva datos de clientes
+main().catch(e => { console.error(e.message); if (process.env.GITHUB_ACTIONS) console.log(`::error::${e.message}`); process.exit(1); });
