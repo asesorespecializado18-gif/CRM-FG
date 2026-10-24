@@ -4975,10 +4975,10 @@ function todosLosSoat(){
   const directos = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='soat' && (v.vigenciaFin || v.vigenciaInicio || v.fechaVenta))
     .map(v=>{
       const fin = v.vigenciaFin || sumarAniosISO(v.vigenciaInicio || v.fechaVenta, 1);
-      return { clienteId:v.clienteId, vigenciaFin:fin, vigenciaInicio: v.vigenciaInicio || (v.vigenciaFin ? sumarAniosISO(v.vigenciaFin,-1) : v.fechaVenta), estimado: !v.vigenciaFin, aseguradora:v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (venta directa)' };
+      return { clienteId:v.clienteId, vigenciaFin:fin, vigenciaInicio: v.vigenciaInicio || (v.vigenciaFin ? sumarAniosISO(v.vigenciaFin,-1) : v.fechaVenta), estimado: !v.vigenciaFin, aseguradora:v.aseguradora, numeroPoliza:v.numeroPoliza, placa:(v.vehPlaca||'').toUpperCase(), ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (venta directa)' };
     });
   const enVehicular = misVentas(state.ventas).filter(v=> ventaActiva(v) && v.tipoProducto==='seguros_vehiculares' && v.tieneSoat && v.soatVigenciaFin)
-    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.soatVigenciaFin, vigenciaInicio: sumarAniosISO(v.soatVigenciaFin,-1), estimado:false, aseguradora:v.soatAseguradora||v.aseguradora, numeroPoliza:v.numeroPoliza, ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (dentro de póliza vehicular)' }));
+    .map(v=> ({ clienteId:v.clienteId, vigenciaFin:v.soatVigenciaFin, vigenciaInicio: sumarAniosISO(v.soatVigenciaFin,-1), estimado:false, aseguradora:v.soatAseguradora||v.aseguradora, numeroPoliza:v.numeroPoliza, placa:(v.vehPlaca||'').toUpperCase(), ventaId:v.id, fechaVenta:v.fechaVenta, origen:'SOAT (dentro de póliza vehicular)' }));
   const lista = [...directos, ...enVehicular];
   // Un SOAT vencido cuenta como renovado si el mismo cliente tiene otro SOAT vigente que empezó cerca de esa fecha (±60 días)
   const vigentes = lista.filter(s=> daysUntil(s.vigenciaFin)>=0);
@@ -4989,7 +4989,10 @@ function todosLosSoat(){
   });
   return lista;
 }
-let filtroSoatVista = 'vencimientos', filtroSoatAnio = 'todos';
+let filtroSoatVista = 'vencimientos', filtroSoatAnio = 'todos', filtroSoatTexto = '';
+// Última lista de SOAT mostrada en pantalla (con filtros aplicados), para la descarga en Excel
+let soatListaActual = [];
+const normSoat = t => String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 function viewSoat(){
   if(!puedeVerFinanzasFG() && filtroSoatVista==='rentabilidad') filtroSoatVista = 'vencimientos';
   const soatTodos = todosLosSoat();
@@ -5068,6 +5071,7 @@ function viewSoat(){
         <option value="beneficios" ${filtroSoatVista==='beneficios'?'selected':''}>Beneficios gratuitos entregados</option>
         ${puedeVerFinanzasFG() ? `<option value="rentabilidad" ${filtroSoatVista==='rentabilidad'?'selected':''}>Rentabilidad del SOAT de regalo</option>` : ''}
       </select>
+      ${(filtroSoatVista!=='beneficios' && filtroSoatVista!=='rentabilidad') ? `<input type="text" id="fSoatTexto" placeholder="Buscar cliente, placa, póliza, celular…" value="${String(filtroSoatTexto).replace(/&/g,'&amp;').replace(/"/g,'&quot;')}" style="min-width:220px;">${puedeDescargar() ? '<button class="btn" id="btnExportSoat">Descargar Excel</button>' : ''}` : ''}
       ${(filtroSoatVista==='beneficios'||(filtroSoatVista==='rentabilidad'&&puedeVerFinanzasFG())) ? `<select id="fSoatAnio"><option value="todos" ${filtroSoatAnio==='todos'?'selected':''}>Todos los años</option>${añosDisponibles.map(a=>`<option value="${a}" ${filtroSoatAnio===a?'selected':''}>Año ${a}</option>`).join('')}</select>` : ''}
     </div>
     ${filtroSoatVista==='rentabilidad' && puedeVerFinanzasFG() ? `
@@ -5096,17 +5100,28 @@ function viewSoat(){
       </table>
     </div>` :
     filtroSoatVista!=='beneficios' ? (() => {
-      const lista = filtroSoatVista==='30' ? en30 : filtroSoatVista==='7' ? en7 : filtroSoatVista==='activos' ? listaVencimientos.filter(s=>daysUntil(s.vigenciaFin)>=0) : filtroSoatVista==='sinrenovar' ? vencidosSinRenovar.slice().sort((a,b)=>b.vigenciaFin.localeCompare(a.vigenciaFin)) : listaVencimientos;
+      let lista = filtroSoatVista==='30' ? en30 : filtroSoatVista==='7' ? en7 : filtroSoatVista==='activos' ? listaVencimientos.filter(s=>daysUntil(s.vigenciaFin)>=0) : filtroSoatVista==='sinrenovar' ? vencidosSinRenovar.slice().sort((a,b)=>b.vigenciaFin.localeCompare(a.vigenciaFin)) : listaVencimientos;
+      const q = normSoat(filtroSoatTexto.trim());
+      if(q){
+        const qPlaca = q.replace(/[\s-]/g,'');
+        lista = lista.filter(s=>{
+          const cli = state.clientes.find(c=>c.id===s.clienteId);
+          return normSoat([cli?cli.nombre:'', cli?(cli.celular1||cli.telefono||''):'', s.numeroPoliza, s.aseguradora, s.placa].join(' ')).includes(q) || (qPlaca && normSoat(s.placa||'').replace(/[\s-]/g,'').includes(qPlaca));
+        });
+      }
+      soatListaActual = lista;
+      const sinPlaca = lista.filter(s=>!s.placa).length;
       return `
+    ${sinPlaca ? `<div class="hint" style="margin:0 0 8px;">${sinPlaca} SOAT de esta lista no tienen placa registrada: complétala con "Editar" (campo Placa) para que salga en la lista, el Excel y el aviso.</div>` : ''}
     <div class="card" style="padding:0;">
       <table>
-        <thead><tr><th>Cliente</th><th>Celular</th><th>Origen</th><th>N° póliza</th><th>Aseguradora</th><th>Vencimiento</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th>Cliente</th><th>Placa</th><th>Celular</th><th>Origen</th><th>N° póliza</th><th>Aseguradora</th><th>Vencimiento</th><th>Estado</th><th></th></tr></thead>
         <tbody>
-          ${lista.length===0 ? `<tr class="empty-row"><td colspan="8">No hay SOAT en este filtro.</td></tr>` : lista.map(s=>{
+          ${lista.length===0 ? `<tr class="empty-row"><td colspan="9">No hay SOAT en este filtro.</td></tr>` : lista.map(s=>{
             const cli = state.clientes.find(c=>c.id===s.clienteId);
             const d = daysUntil(s.vigenciaFin);
             const pill = d<0 ? (s.renovado ? `<span class="pill pill-green" title="El cliente tiene otro SOAT vigente que empezó cerca de esta fecha">Renovado</span>` : `<span class="pill pill-red">Vencido</span>`) : d<=7 ? `<span class="pill pill-red">${d} días</span>` : d<=15 ? `<span class="pill pill-gold">${d} días</span>` : `<span class="pill pill-gray">${d} días</span>`;
-            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td><td class="hint">${s.origen}</td><td>${s.numeroPoliza||'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.vigenciaFin)}${s.estimado?' <span class="hint" title="Sin fecha de fin registrada: se asume 1 año desde la venta">(est.)</span>':''}</td><td>${pill}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${s.ventaId}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-soat="${s.ventaId}" data-soat-fin="${s.vigenciaFin}" style="margin-left:6px;">📲 Avisar</button>`:''}</td></tr>`;
+            return `<tr><td>${cli?cli.nombre:'—'}</td><td>${s.placa?`<b>${s.placa.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</b>`:'<span class="hint">Sin placa</span>'}</td><td>${cli?(cli.celular1||cli.telefono||'—'):'—'}</td><td class="hint">${s.origen}</td><td>${s.numeroPoliza||'—'}</td><td>${s.aseguradora||'—'}</td><td>${fmtDate(s.vigenciaFin)}${s.estimado?' <span class="hint" title="Sin fecha de fin registrada: se asume 1 año desde la venta">(est.)</span>':''}</td><td>${pill}</td><td><button class="btn btn-ghost btn-sm" data-edit-venta="${s.ventaId}">Editar</button>${(cli&&(cli.celular1||cli.telefono))?`<button class="btn btn-sm" data-wa-soat="${s.ventaId}" data-soat-fin="${s.vigenciaFin}" style="margin-left:6px;">📲 Avisar</button>`:''}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -5142,6 +5157,18 @@ function viewSoat(){
 function wireSoat(){
   const fv = document.getElementById('fSoatVista'); if(fv) fv.onchange = e=>{ filtroSoatVista=e.target.value; render(); };
   const fa = document.getElementById('fSoatAnio'); if(fa) fa.onchange = e=>{ filtroSoatAnio=e.target.value; render(); };
+  const ft = document.getElementById('fSoatTexto');
+  if(ft) ft.oninput = ()=>{ filtroSoatTexto = ft.value; clearTimeout(wireSoat._t); wireSoat._t = setTimeout(()=>{ render(); const f2 = document.getElementById('fSoatTexto'); if(f2){ f2.focus(); f2.setSelectionRange(f2.value.length, f2.value.length); } }, 250); };
+  const btnExpSoat = document.getElementById('btnExportSoat'); if(btnExpSoat) btnExpSoat.onclick = () => {
+    const headers = ['Cliente','Placa','Celular','Origen','N° póliza','Aseguradora','Vencimiento','Días','Estado'];
+    const rows = soatListaActual.map(s=>{
+      const cli = state.clientes.find(c=>c.id===s.clienteId);
+      const d = daysUntil(s.vigenciaFin);
+      const estado = d<0 ? (s.renovado ? 'Renovado' : 'Vencido') : `Vence en ${d}d`;
+      return [cli?cli.nombre:'', s.placa||'', cli?(cli.celular1||cli.telefono||''):'', s.origen, s.numeroPoliza||'', s.aseguradora||'', fmtDate(s.vigenciaFin) + (s.estimado?' (est.)':''), d, estado];
+    });
+    exportExcel('soat-vencimientos.xlsx', headers, rows);
+  };
   const inputPresup = document.getElementById('inputPresupuestoBeneficios'); if(inputPresup) inputPresup.onchange = e=>{ state.presupuestoBeneficiosMensual = parseFloat(e.target.value)||0; save(); render(); };
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   document.querySelectorAll('[data-wa-soat]').forEach(b=> b.onclick = () => {
@@ -5150,7 +5177,8 @@ function wireSoat(){
     const cli = state.clientes.find(c=>c.id===v.clienteId);
     const vigenciaFin = b.dataset.soatFin;
     const d = daysUntil(vigenciaFin);
-    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que su SOAT ${d<0?'venció el':'vence el'} ${fmtDate(vigenciaFin)}. Es importante renovarlo a tiempo para evitar multas y mantener su cobertura.\n\nQuedamos atentos para coordinar la renovación.`;
+    const placa = (v.vehPlaca||'').toUpperCase();
+    const mensaje = `Estimado(a) ${cli?cli.nombre:'cliente'},\n\nLe recordamos que el SOAT de su vehículo${placa?' de placa '+placa:''} ${d<0?'venció el':'vence el'} ${fmtDate(vigenciaFin)}. Es importante renovarlo a tiempo para evitar multas y mantener su cobertura.\n\nQuedamos atentos para coordinar la renovación.`;
     window.open(linkWhatsApp(cli?(cli.celular1||cli.telefono||''):'', mensaje), '_blank');
   });
 }
