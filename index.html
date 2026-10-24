@@ -258,6 +258,8 @@ const FB_RESPALDOS_COL = () => fbDb.collection('crm_respaldos_automaticos');
 const FB_AUDITORIA_COL = () => fbDb.collection('crm_auditoria'); // historial de cambios: un registro por acción
 const FB_PAPELERA_COL = () => fbDb.collection('crm_papelera');   // papelera: un registro por elemento eliminado
 const FB_CONTADORES_REF = () => fbDb.collection('crm').doc('contadores'); // folios: contador único compartido por todos los usuarios
+const FB_CARGAS_CLAUDE_COL = () => fbDb.collection('crm_cargas_claude'); // cargas cifradas que Claude deja para que el administrador las apruebe
+const FB_LLAVE_CLAUDE_REF = () => fbDb.collection('crm').doc('llave_claude'); // llave para descifrar esas cargas (el usuario de Claude no puede leerla)
 function chunkArray(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
 async function archivarVentasAntiguas(){
   const hace24Meses = new Date(); hace24Meses.setMonth(hace24Meses.getMonth()-24);
@@ -1990,14 +1992,14 @@ let respaldoAutoIntentado = false;
 // se divide en piezas (subcolección "partes") y el documento principal solo guarda el índice.
 // El documento principal se escribe AL FINAL: si existe, el respaldo está completo.
 const RESPALDO_TAM_PARTE = 300000; // caracteres por parte (holgado aun con tildes/emojis)
-async function guardarRespaldoEnNube(fecha){
+async function guardarRespaldoEnNube(fecha, extra){
   const payload = JSON.stringify(state);
   const ref = FB_RESPALDOS_COL().doc(fecha);
   const total = Math.ceil(payload.length / RESPALDO_TAM_PARTE) || 1;
   for(let i=0; i<total; i++){
     await ref.collection('partes').doc(String(i).padStart(3,'0')).set({ i, datos: payload.slice(i*RESPALDO_TAM_PARTE, (i+1)*RESPALDO_TAM_PARTE) });
   }
-  await ref.set({ fecha, creado: new Date().toISOString(), partes: total, tamano: payload.length, ventas: state.ventas.length, clientes: state.clientes.length, version: 2 });
+  await ref.set({ fecha, creado: new Date().toISOString(), partes: total, tamano: payload.length, ventas: state.ventas.length, clientes: state.clientes.length, version: 2, ...(extra||{}) });
   return { partes: total, tamano: payload.length };
 }
 async function leerRespaldoDeNube(item){
@@ -2039,7 +2041,7 @@ async function verificarRespaldoAutomatico(forzar){
     // Limpieza: conservar solo los respaldos de los últimos ~2 meses
     const limite = new Date(); limite.setDate(limite.getDate()-56);
     const snap = await FB_RESPALDOS_COL().get();
-    for(const doc of snap.docs){ if(new Date(doc.id) < limite) await borrarRespaldoDeNube(doc.ref).catch(()=>{}); }
+    for(const doc of snap.docs){ if(new Date(doc.id.slice(0,10)) < limite) await borrarRespaldoDeNube(doc.ref).catch(()=>{}); } // los previos a una carga de Claude se llaman AAAA-MM-DD-claude-HHMM
   }catch(err){
     respaldoAutoIntentado = false;
     console.error('No se pudo generar el respaldo automático semanal', err);
@@ -2074,7 +2076,7 @@ function restaurarDePapelera(item){
   alert('Registro restaurado correctamente.');
 }
 function abrirHistorialAuditoria(){
-  const ETIQUETAS_ACCION = { crear:'🟢 Creó', editar:'✏️ Editó', eliminar:'🗑 Eliminó', restaurar:'↩ Restauró' };
+  const ETIQUETAS_ACCION = { crear:'🟢 Creó', editar:'✏️ Editó', eliminar:'🗑 Eliminó', restaurar:'↩ Restauró', importar:'🤖 Carga de Claude' };
   const host = document.createElement('div'); host.id = 'auditoriaHost';
   const pintar = () => {
     const filtroAutor = document.getElementById('fAudAutor') ? document.getElementById('fAudAutor').value : 'todos';
@@ -2150,7 +2152,7 @@ function abrirRespaldosAutomaticos(){
           <table>
             <thead><tr><th>Fecha</th><th></th></tr></thead>
             <tbody>
-              ${items.map(it=>`<tr><td>${fmtDate(it.fecha)}${it.ventas!=null?`<div style="font-size:11.5px;color:var(--ink-faint);">${it.ventas} ventas · ${it.clientes} clientes</div>`:''}</td><td><button class="btn btn-sm" data-restaurar-auto="${it.fecha}">Restaurar</button></td></tr>`).join('')}
+              ${items.map(it=>`<tr><td>${fmtDate(it.fecha)}${it.ventas!=null?`<div style="font-size:11.5px;color:var(--ink-faint);">${it.ventas} ventas · ${it.clientes} clientes</div>`:''}${it.motivo?`<div style="font-size:11.5px;color:var(--ink-faint);">${it.motivo}</div>`:''}</td><td><button class="btn btn-sm" data-restaurar-auto="${it.fecha}">Restaurar</button></td></tr>`).join('')}
             </tbody>
           </table>
         </div>`}
@@ -3510,7 +3512,7 @@ function viewCobroComisiones(){
   return `
     <div class="page-head">
       <div><h1>Comisiones</h1><p>Calcula la comisión de cada venta, revisa qué te falta cobrar de las aseguradoras, y su margen para FG.</p></div>
-      <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${sesionUsuario && sesionUsuario.rol==='admin' && !vistaComo ? '<button class="btn" id="btnImportarHistorial" title="Carga un archivo de historial o de correcciones (anulaciones, renovaciones, cuotas pagadas, pagos de comisión). Solo agrega o completa: no reemplaza nada y no duplica si se carga dos veces">📂 Importar historial</button><input type="file" id="inputImportarHistorial" accept=".json,application/json" style="display:none">' : ''}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
+      <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${sesionUsuario && sesionUsuario.rol==='admin' && !vistaComo ? '<button class="btn" id="btnImportarHistorial" title="Carga un archivo de historial o de correcciones (anulaciones, renovaciones, cuotas pagadas, pagos de comisión). Solo agrega o completa: no reemplaza nada y no duplica si se carga dos veces">📂 Importar historial</button><input type="file" id="inputImportarHistorial" accept=".json,application/json" style="display:none"><button class="btn" id="btnCargasClaude" title="Cambios que Claude preparó para el CRM: revísalos y aplícalos con un clic (antes se guarda un respaldo automático)">🤖 Cargas de Claude</button>' : ''}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
     </div>
     ${pendientesCalculo.length>0 ? `
     <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;border:1px solid var(--border);">
@@ -3687,6 +3689,7 @@ function wireCobroComisiones(){
       reader.readAsText(file); e.target.value = '';
     };
   }
+  const btnCargasClaude = document.getElementById('btnCargasClaude'); if(btnCargasClaude) btnCargasClaude.onclick = abrirCargasClaude;
   document.querySelectorAll('[data-pagos-venta]').forEach(b=> b.onclick = ()=> abrirPagosVenta(b.dataset.pagosVenta));
 }
 
@@ -6444,6 +6447,113 @@ const CAMPOS_COMPLETAR_CLIENTE = ['celular1','celular2','email','email2','docume
 function primaEsDeHistorial(v){
   const pn = Number(v.primaNeta)||0, pb = Number(v.primaBruta)||0, com = Number(v.comisionTotal)||0;
   return (pn<=0 && pb<=0) || Math.abs(pn - com) < 0.02;
+}
+
+// ================= CARGAS DE CLAUDE =================
+// Claude prepara archivos de cambios (fg-acciones-v1 o fg-historial-polizas-v1), los cifra con la llave pública
+// de este CRM y los sube al repositorio; una GitHub Action los deja en la colección crm_cargas_claude con un
+// usuario que solo puede crear ahí (no puede leer ni cambiar nada más). El administrador los revisa aquí y los
+// aplica con un clic: antes se guarda un respaldo automático y todo queda en el historial de cambios.
+const b64aBytes = t => Uint8Array.from(atob(t), ch => ch.charCodeAt(0));
+const bytesAb64 = b => { let t = ''; new Uint8Array(b).forEach(x => t += String.fromCharCode(x)); return btoa(t); };
+const pemDeSpki = spki => '-----BEGIN PUBLIC KEY-----\n' + bytesAb64(spki).match(/.{1,64}/g).join('\n') + '\n-----END PUBLIC KEY-----';
+async function generarLlaveClaude(){
+  const par = await crypto.subtle.generateKey({ name:'RSA-OAEP', modulusLength:3072, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256' }, true, ['encrypt','decrypt']);
+  const privada = await crypto.subtle.exportKey('jwk', par.privateKey);
+  const publica = pemDeSpki(await crypto.subtle.exportKey('spki', par.publicKey));
+  const sesion = sesionEfectiva();
+  await FB_LLAVE_CLAUDE_REF().set({ privada: JSON.stringify(privada), publica, creada: new Date().toISOString(), creadaPor: sesion ? (sesion.nombre||sesion.rol) : 'Administrador' });
+  return publica;
+}
+async function descifrarCargaClaude(cifrado, privadaJwk){
+  const llavePriv = await crypto.subtle.importKey('jwk', privadaJwk, { name:'RSA-OAEP', hash:'SHA-256' }, false, ['decrypt']);
+  const llaveAes = await crypto.subtle.decrypt({ name:'RSA-OAEP' }, llavePriv, b64aBytes(cifrado.llave));
+  const aes = await crypto.subtle.importKey('raw', llaveAes, { name:'AES-GCM' }, false, ['decrypt']);
+  const claro = await crypto.subtle.decrypt({ name:'AES-GCM', iv: b64aBytes(cifrado.iv) }, aes, b64aBytes(cifrado.datos));
+  return JSON.parse(new TextDecoder().decode(claro));
+}
+function abrirCargasClaude(){
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const viejo = document.getElementById('cargasClaudeHost'); if(viejo) viejo.remove();
+  const host = document.createElement('div'); host.id = 'cargasClaudeHost';
+  const pintar = html => { host.innerHTML = `<div class="modal-backdrop"><div class="modal" style="max-width:760px;"><h2>🤖 Cargas de Claude</h2>${html}</div></div>`; const c = document.getElementById('cargasClaudeCerrar'); if(c) c.onclick = () => host.remove(); };
+  const cerrar = '<button class="btn" id="cargasClaudeCerrar">Cerrar</button>';
+  pintar(`<p class="modal-hint">Cargando…</p><div class="modal-actions">${cerrar}</div>`);
+  document.getElementById('crm-app').appendChild(host);
+  if(!fbDb){ pintar(`<p class="modal-hint">No hay conexión con la nube en este momento.</p><div class="modal-actions">${cerrar}</div>`); return; }
+  const mostrarLlave = publica => {
+    pintar(`<p class="modal-hint">Esta es la <b>llave pública</b> del CRM. No es secreta: cópiela y péguesela a Claude en el chat. Con ella Claude cifra los cambios; solo este CRM puede abrirlos.</p>
+      <textarea readonly style="width:100%;height:190px;font-family:monospace;font-size:11.5px;">${esc(publica)}</textarea>
+      <div class="modal-actions"><button class="btn btn-primary" id="cargasClaudeCopiar">Copiar llave</button><button class="btn" id="cargasClaudeVolver">Volver</button>${cerrar}</div>`);
+    document.getElementById('cargasClaudeCopiar').onclick = () => { navigator.clipboard.writeText(publica).then(()=>{ document.getElementById('cargasClaudeCopiar').textContent = '✓ Copiada'; }); };
+    document.getElementById('cargasClaudeVolver').onclick = abrirCargasClaude;
+  };
+  FB_LLAVE_CLAUDE_REF().get().then(async llaveSnap=>{
+    if(!llaveSnap.exists){
+      pintar(`<p class="modal-hint">Todavía no se ha activado. Al activarlo se crea una llave para que Claude le envíe cambios cifrados (nadie más puede leerlos, aunque el repositorio sea público). Usted revisa cada carga aquí y decide si se aplica.</p>
+        <div class="modal-actions"><button class="btn btn-primary" id="cargasClaudeActivar">Activar cargas de Claude</button>${cerrar}</div>`);
+      document.getElementById('cargasClaudeActivar').onclick = async () => {
+        const b = document.getElementById('cargasClaudeActivar'); b.disabled = true; b.textContent = 'Generando llave…';
+        try{ mostrarLlave(await generarLlaveClaude()); registrarAuditoria('crear','carga','llave_claude','Activó las cargas de Claude (llave nueva)'); save(); }
+        catch(err){ alert('No se pudo generar la llave: ' + (err.code||err.message)); b.disabled = false; b.textContent = 'Activar cargas de Claude'; }
+      };
+      return;
+    }
+    const llave = llaveSnap.data();
+    const privada = JSON.parse(llave.privada);
+    const snap = await FB_CARGAS_CLAUDE_COL().get();
+    const cargas = [];
+    for(const d of snap.docs){
+      const c = Object.assign({ id: d.id }, d.data());
+      if(c.estado==='pendiente'){
+        try{ c.contenido = await descifrarCargaClaude(c.cifrado, privada); }
+        catch(err){ c.error = 'No se pudo abrir (¿se cifró con otra llave?)'; }
+      }
+      cargas.push(c);
+    }
+    cargas.sort((a,b)=> String(b.creado||'').localeCompare(String(a.creado||'')));
+    const pendientes = cargas.filter(c=>c.estado==='pendiente'), historial = cargas.filter(c=>c.estado!=='pendiente').slice(0,15);
+    const etiquetaEstado = { aplicada:'✅ Aplicada', descartada:'✖ Descartada' };
+    pintar(`<p class="modal-hint">Antes de aplicar una carga se guarda un respaldo automático (lo ve en ☁ Respaldos automáticos). Una carga solo agrega o completa datos: no borra ni reemplaza la base, y si se aplica dos veces no duplica nada.</p>
+      <h3 style="margin:14px 0 6px;">Pendientes de revisar (${pendientes.length})</h3>
+      ${pendientes.length===0 ? '<div class="hint">No hay cargas pendientes.</div>' : `<div class="card" style="padding:0;max-height:300px;overflow-y:auto;"><table><thead><tr><th>Llegó</th><th>Qué trae</th><th></th></tr></thead><tbody>
+        ${pendientes.map(c=>`<tr><td style="white-space:nowrap;">${c.creado?new Date(c.creado).toLocaleString('es-PE',{dateStyle:'short',timeStyle:'short'}):''}</td>
+          <td>${c.error ? `<span style="color:#A8483A;">${c.error}</span>` : `<b>${esc(c.contenido.titulo||c.archivo)}</b>${c.contenido.resumen?`<div style="font-size:12px;color:var(--ink-faint);white-space:pre-line;">${esc(c.contenido.resumen)}</div>`:''}`}</td>
+          <td style="white-space:nowrap;">${c.error?'':`<button class="btn btn-primary btn-sm" data-aplicar-carga="${c.id}">Aplicar</button> `}<button class="btn btn-sm" data-descartar-carga="${c.id}">Descartar</button></td></tr>`).join('')}
+      </tbody></table></div>`}
+      ${historial.length ? `<h3 style="margin:14px 0 6px;">Últimas revisadas</h3><div class="card" style="padding:0;max-height:200px;overflow-y:auto;"><table><tbody>
+        ${historial.map(c=>`<tr><td style="white-space:nowrap;">${c.revisadaFecha?new Date(c.revisadaFecha).toLocaleString('es-PE',{dateStyle:'short',timeStyle:'short'}):''}</td><td>${esc(c.titulo||c.archivo)}</td><td>${etiquetaEstado[c.estado]||esc(c.estado)}${c.revisadaPor?' · '+esc(c.revisadaPor):''}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+      <div class="modal-actions"><button class="btn" id="cargasClaudeVerLlave">Ver llave pública</button>${cerrar}</div>`);
+    document.getElementById('cargasClaudeVerLlave').onclick = () => mostrarLlave(llave.publica);
+    const autor = () => { const s = sesionEfectiva(); return s ? (s.nombre||s.rol) : 'Administrador'; };
+    host.querySelectorAll('[data-descartar-carga]').forEach(b=> b.onclick = async () => {
+      const c = cargas.find(x=>x.id===b.dataset.descartarCarga); if(!c) return;
+      if(!confirm('¿Descartar esta carga? No se aplicará ningún cambio.')) return;
+      const titulo = c.contenido ? c.contenido.titulo : c.archivo;
+      await FB_CARGAS_CLAUDE_COL().doc(c.id).update({ estado:'descartada', titulo: titulo||'', revisadaFecha: new Date().toISOString(), revisadaPor: autor() });
+      registrarAuditoria('importar','carga',c.id,`Carga de Claude «${titulo}» descartada`); save();
+      abrirCargasClaude();
+    });
+    host.querySelectorAll('[data-aplicar-carga]').forEach(b=> b.onclick = async () => {
+      const c = cargas.find(x=>x.id===b.dataset.aplicarCarga); if(!c || !c.contenido) return;
+      const { titulo, carga } = c.contenido;
+      if(!carga || !['fg-acciones-v1','fg-historial-polizas-v1'].includes(carga.formato)){ alert('Esta carga no tiene un formato que el CRM conozca. Descártela y avísele a Claude.'); return; }
+      if(!confirm(`Se aplicará «${titulo}».\n\nAntes se guardará un respaldo automático del CRM. Solo se agregan o completan datos.\n\n¿Continuar?`)) return;
+      b.disabled = true; b.textContent = 'Guardando respaldo…';
+      const ahora = new Date(), hhmm = String(ahora.getHours()).padStart(2,'0') + String(ahora.getMinutes()).padStart(2,'0');
+      const idRespaldo = `${todayISO()}-claude-${hhmm}`;
+      try{ await guardarRespaldoEnNube(idRespaldo, { motivo: `Antes de la carga de Claude «${titulo}»` }); }
+      catch(err){ alert('No se pudo guardar el respaldo previo, así que no se aplicó nada: ' + (err.code||err.message)); b.disabled = false; b.textContent = 'Aplicar'; return; }
+      host.remove();
+      if(carga.formato==='fg-acciones-v1') importarAccionesCorreo(carga); else importarHistorialPolizas(carga);
+      registrarAuditoria('importar','carga',c.id,`Carga de Claude «${titulo}» aplicada (respaldo previo: ${idRespaldo})`); save();
+      FB_CARGAS_CLAUDE_COL().doc(c.id).update({ estado:'aplicada', titulo: titulo||'', revisadaFecha: new Date().toISOString(), revisadaPor: autor(), respaldoPrevio: idRespaldo, ...(carga.formato==='fg-acciones-v1' && window.__ultimoImportAcciones ? { resultado: JSON.stringify(window.__ultimoImportAcciones) } : {}) })
+        .catch(err=> alert('Los cambios se aplicaron, pero no se pudo marcar la carga como aplicada: ' + (err.code||err.message)));
+    });
+  }).catch(err=>{
+    pintar(`<p class="modal-hint">No se pudieron leer las cargas: ${esc(err.code||err.message)}</p><div class="modal-actions">${cerrar}</div>`);
+  });
 }
 
 // ================= CLIENTES DE ALTO VALOR =================
