@@ -6362,10 +6362,14 @@ function agregarNotaVenta(v, nota){
 //   pagos[]         { ventaId, fecha, monto, moneda, reporte, ref }  pagos de comisión de Alta
 //   quitarPagos[]   { ventaId, fecha, monto, reporte, motivo }  quita un pago de comisión copiado por error
 //   notas[]         { ventaId, nota }  agrega una nota a la venta
+//   primas[]        { ventaId, primaBruta, primaNeta, porcentajeComisionAseguradora, vigenciaInicio, vigenciaFin }  prima real (del PDF)
+//                   solo en fichas cargadas desde los reportes de Alta, cuya prima quedó igual a la comisión o en cero
+//   completarClientes[] { clienteId, campos:{ celular1, celular2, email, email2, documento, tipoDocumento, direccion }, corregir:[{ campo, de, a }] }
+//                   campos solo llena lo que está vacío; corregir cambia un valor solo si todavía es el valor equivocado "de"
 //   siniestros[], seguimientos[]
 // Cada acción puede traer numeroPoliza (y folio): si no coincide con la venta, se omite.
 function importarAccionesCorreo(data){
-  const r = { anuladas:0, renov:0, enlaces:0, cuotas:0, pagos:0, pagosQuitados:0, notas:0, siniestros:0, siniestrosAct:0, seguimientos:0, omitidos:0, noEncontrados:[] };
+  const r = { anuladas:0, renov:0, enlaces:0, cuotas:0, pagos:0, pagosQuitados:0, notas:0, primas:0, clientes:0, siniestros:0, siniestrosAct:0, seguimientos:0, omitidos:0, noEncontrados:[] };
   const noEncontrada = a => r.noEncontrados.push(a.numeroPoliza || a.ventaId || '?');
   (data.anular||[]).forEach(a=>{ const v = ventaDeAccion(a); if(!v){ noEncontrada(a); return; } if(v.estadoVenta==='anulada'){ r.omitidos++; return; }
     v.estadoVenta = 'anulada'; v.motivoAnulacion = a.motivoAnulacion || a.motivo || ''; v.fechaAnulacion = a.fecha||todayISO();
@@ -6411,6 +6415,19 @@ function importarAccionesCorreo(data){
     agregarNotaVenta(v, a.motivo ? `Se quitó el pago de ${fmtMonedaVal(p.monto, p.moneda||v.moneda)} del ${fmtDate(p.fecha)}: ${a.motivo}` : '');
     registrarAuditoria('editar','venta',v.id,`Pago de comisión eliminado ${folioV(v.folio)}: ${fmtMonedaVal(p.monto, p.moneda||v.moneda)} del ${fmtDate(p.fecha)} (importado)${a.motivo?' — '+a.motivo:''}`); r.pagosQuitados++; });
   (data.notas||[]).forEach(a=>{ const v = ventaDeAccion(a); if(!v){ noEncontrada(a); return; } if(agregarNotaVenta(v, a.nota)){ registrarAuditoria('editar','venta',v.id,`Nota en ${descVentaAud(v)} (importado)`); r.notas++; } else r.omitidos++; });
+  (data.primas||[]).forEach(a=>{ const v = ventaDeAccion(a); if(!v){ noEncontrada(a); return; }
+    if(!primaEsDeHistorial(v) || !(Number(a.primaBruta)>0)){ r.omitidos++; return; }
+    v.primaBruta = Number(a.primaBruta); v.primaNeta = Number(a.primaNeta) || calcPrimaNeta(v.primaBruta);
+    v.porcentajeComisionAseguradora = Number(a.porcentajeComisionAseguradora)||0; v.modoComisionAseguradora = 'porcentaje';
+    if(a.vigenciaInicio && a.vigenciaFin){ v.vigenciaInicio = a.vigenciaInicio; v.vigenciaFin = a.vigenciaFin; }
+    registrarAuditoria('editar','venta',v.id,`Prima real ${descVentaAud(v)}: ${fmtMonedaVal(v.primaBruta, v.moneda)} (importado del PDF)`); r.primas++; });
+  (data.completarClientes||[]).forEach(a=>{
+    const c = state.clientes.find(x=>x.id===a.clienteId); if(!c){ noEncontrada(a); return; }
+    const hechos = [];
+    Object.keys(a.campos||{}).filter(k=> CAMPOS_COMPLETAR_CLIENTE.includes(k)).forEach(k=>{ const val = String(a.campos[k]||'').trim(); if(val && !String(c[k]||'').trim()){ c[k] = val; hechos.push(k); } });
+    (a.corregir||[]).forEach(x=>{ if(CAMPOS_COMPLETAR_CLIENTE.includes(x.campo) && x.a && String(c[x.campo]||'').trim()===String(x.de||'').trim()){ c[x.campo] = x.a; hechos.push(x.campo); } });
+    if(!hechos.length){ r.omitidos++; return; }
+    registrarAuditoria('editar','cliente',c.id,`Datos de ${c.nombre} completados: ${Array.from(new Set(hechos)).join(', ')} (importado)`); r.clientes++; });
   (data.siniestros||[]).forEach(a=>{
     const ya = state.siniestros.find(x=>x.ref && x.ref===a.ref);
     // Ya existe: solo completa los campos vacíos (no pisa lo que se editó a mano en el CRM)
@@ -6419,8 +6436,14 @@ function importarAccionesCorreo(data){
   (data.seguimientos||[]).forEach(a=>{ const lista = seguimientosLista(); if(lista.some(x=>x.id===a.id)){ r.omitidos++; return; } lista.push(Object.assign({ estado:'abierto', log:[], creadoPor:'Importado del correo' }, a)); r.seguimientos++; });
   save(); render();
   window.__ultimoImportAcciones = r;
-  const partes = [[r.anuladas,'venta(s) anulada(s)'],[r.enlaces,'renovación(es) enlazada(s)'],[r.renov,'estado(s) de renovación'],[r.cuotas,'cuota(s) marcada(s) pagada(s)'],[r.pagos,'pago(s) de comisión'],[r.pagosQuitados,'pago(s) duplicado(s) quitado(s)'],[r.notas,'nota(s)'],[r.siniestros,'siniestro(s) nuevo(s)'],[r.siniestrosAct,'siniestro(s) completado(s)'],[r.seguimientos,'seguimiento(s)']].filter(x=>x[0]).map(x=>`• ${x[0]} ${x[1]}`);
+  const partes = [[r.anuladas,'venta(s) anulada(s)'],[r.enlaces,'renovación(es) enlazada(s)'],[r.renov,'estado(s) de renovación'],[r.cuotas,'cuota(s) marcada(s) pagada(s)'],[r.pagos,'pago(s) de comisión'],[r.pagosQuitados,'pago(s) duplicado(s) quitado(s)'],[r.notas,'nota(s)'],[r.primas,'prima(s) real(es)'],[r.clientes,'cliente(s) con datos completados'],[r.siniestros,'siniestro(s) nuevo(s)'],[r.siniestrosAct,'siniestro(s) completado(s)'],[r.seguimientos,'seguimiento(s)']].filter(x=>x[0]).map(x=>`• ${x[0]} ${x[1]}`);
   alert(`Importación terminada (no se reemplazó nada, solo se aplicaron estos cambios):\n${partes.length?partes.join('\n'):'• Ningún cambio nuevo'}${r.omitidos?`\n\n${r.omitidos} acción(es) ya estaban aplicadas.`:''}${r.noEncontrados.length?`\n\nNo se encontraron ${r.noEncontrados.length} póliza(s) (se omitieron): ${r.noEncontrados.slice(0,10).join(', ')}${r.noEncontrados.length>10?'…':''}`:''}`);
+}
+const CAMPOS_COMPLETAR_CLIENTE = ['celular1','celular2','email','email2','documento','tipoDocumento','direccion'];
+// Ficha cargada desde los reportes de Alta: la prima quedó igual a la comisión (o en cero). Solo esas reciben la prima real al importar.
+function primaEsDeHistorial(v){
+  const pn = Number(v.primaNeta)||0, pb = Number(v.primaBruta)||0, com = Number(v.comisionTotal)||0;
+  return (pn<=0 && pb<=0) || Math.abs(pn - com) < 0.02;
 }
 
 // ================= CLIENTES DE ALTO VALOR =================
