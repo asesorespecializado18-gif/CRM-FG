@@ -6050,7 +6050,7 @@ function b360CasoSeguimiento(s, hoy){
   if(atraso>0) caso.alertas.push({ sem, area: caso.area, alerta:'Cotización o pendiente con seguimiento atrasado', fechaClave: s.proximo, dias: atraso });
   return caso;
 }
-const b360Firma = () => [state.ventas.length, state.siniestros.length, (state.auditoria||[]).length, ((state.auditoria||[])[0]||{}).id, seguimientosLista().length, gestionesLista().length, state.clientes.length, todayISO(), JSON.stringify(sesionEfectiva()||{})].join('|');
+const b360Firma = () => [state.ventas.length, state.siniestros.length, (state.auditoria||[]).length, ((state.auditoria||[])[0]||{}).id, seguimientosLista().length, gestionesLista().length, state.clientes.length, todayISO(), JSON.stringify(sesionEfectiva()||{}), umbralAltoValorUSD()].join('|');
 function b360Datos(){
   const firma = b360Firma();
   if(b360Datos._c && b360Datos._c.firma===firma) return b360Datos._c;
@@ -6174,9 +6174,9 @@ function b360Datos(){
   });
   const vistos = new Set();
   porCliente.forEach((l,k)=>{ const ids = l.map(c=>c.id).sort().join(','); if(l.length>1 && !vistos.has(ids)){ vistos.add(ids); dups.push({ tipo: k[0]==='d' ? 'Cliente duplicado (mismo documento)' : 'Cliente duplicado (mismo nombre)', casos: l.map(c=>'CL-'+c.id).join(', '), cliente: b360Cliente(l[0].nombre), detalle: l.map(c=>`${c.nombre} (${c.tipoDocumento||''} ${c.documento||'s/d'})`).join(' | '), recomendacion:'Fusionar fichas y reasignar pólizas' }); } });
-  // Clientes clave: categoría A y B de «Clientes de alto valor» (últimos 12 meses). Solo el administrador ve esa pestaña.
+  // Clientes clave: todos los de «Clientes de alto valor» (primas vigentes ≥ monto mínimo). Solo el administrador ve esa pestaña.
   const clave = new Map();
-  if(!esAsesorSesion() && !esEjecutivaSesion()){ try{ rankingClientesValor('12m').filas.forEach(f=>{ if(f.cli && f.cli.id && (f.cat==='A' || f.cat==='B')) clave.set(f.cli.id, f.cat); }); }catch(e){ console.error('Clientes clave', e); } }
+  if(!esAsesorSesion() && !esEjecutivaSesion()){ try{ rankingClientesValor('12m').filas.forEach(f=>{ if(f.cli && f.cli.id) clave.set(f.cli.id, f.cat); }); }catch(e){ console.error('Clientes clave', e); } }
   b360Datos._c = { firma, hoy, R, casos, dups, clave };
   return b360Datos._c;
 }
@@ -6244,7 +6244,7 @@ function viewBitacora360(){
   const casos = Array.from(D.casos.values()).filter(c=>c.id!=='ADM');
   const q = b360Texto.trim().toLowerCase();
   const textoCaso = c => [c.id, c.cliente, c.poliza, c.aseguradora, c.tipo, c.estado].join(' ').toLowerCase();
-  const estrella = id => D.clave.has(id) ? ` <span title="Cliente clave (categoría ${D.clave.get(id)} en Clientes de alto valor)">⭐</span>` : '';
+  const estrella = id => D.clave.has(id) ? ` <span title="Cliente de alto valor (primas vigentes ≥ ${fmtUSD(umbralAltoValorUSD())}, categoría ${D.clave.get(id)})">⭐</span>` : '';
   const pasaCaso = (c, conResp=true, conTexto=true, conSem=true) => (!b360SoloClave || D.clave.has(c.clienteId)) && (!conSem || b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (!conResp || b360Resp==='todos' || c.responsable===b360Resp)
     && (!b360ClienteId || c.clienteId===b360ClienteId) && (!conTexto || !q || textoCaso(c).includes(q));
   const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor??'—'}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
@@ -6350,7 +6350,7 @@ function viewBitacora360(){
       <select id="fB360Aseg"><option value="todas">Todas las aseguradoras</option>${aseguradoras.map(a=>opt(a, b360AsegF)).join('')}</select>
       ${b360Vista==='bitacora' ? `<input type="date" id="fB360Desde" value="${b360Desde}" title="Desde"><input type="date" id="fB360Hasta" value="${b360Hasta}" title="Hasta">` : ''}
       <input type="text" id="fB360Texto" placeholder="Buscar cliente, póliza, caso…" value="${esc(b360Texto)}" style="min-width:220px;">
-      ${D.clave.size ? `<button class="btn btn-sm ${b360SoloClave?'btn-primary':'btn-ghost'}" id="btnB360Clave" title="Clientes A y B de «Clientes de alto valor»">⭐ Solo clientes clave (${D.clave.size})</button>` : ''}
+      ${D.clave.size ? `<button class="btn btn-sm ${b360SoloClave?'btn-primary':'btn-ghost'}" id="btnB360Clave" title="Clientes con primas vigentes ≥ ${fmtUSD(umbralAltoValorUSD())} («Clientes de alto valor»)">⭐ Solo clientes clave (${D.clave.size})</button>` : ''}
       ${cliSel ? `<button class="btn btn-sm" id="btnB360QuitarCliente">✕ ${esc(b360Cliente(cliSel.nombre))}</button>` : ''}
     </div>
     ${cuerpo}`;
@@ -7477,10 +7477,18 @@ function polizaVigente(v, hoy){
   if(!v.fechaVenta) return false;
   return daysUntil(v.fechaVenta) > -365; // sin fin de vigencia: se asume anual
 }
+// Umbral de «Clientes de alto valor»: suma de primas vigentes del cliente en US$ (soles al tipo de cambio del CRM). Se cambia en la misma pantalla.
+const UMBRAL_ALTO_VALOR_DEFAULT = 1000;
+function umbralAltoValorUSD(){
+  const u = state.umbralAltoValorUSD;
+  const n = Number(u);
+  return (u===undefined || u===null || u==='' || !isFinite(n) || n<0) ? UMBRAL_ALTO_VALOR_DEFAULT : n;
+}
 function rankingClientesValor(periodo){
   const { desde, hasta } = rangoPeriodoAV(periodo);
   const hoy = todayISO();
   const tc = Number(state.tipoCambio)||3.75;
+  const umbral = umbralAltoValorUSD();
   const porCliente = {};
   misVentas(state.ventas).filter(v=> ventaActiva(v) && v.clienteId).forEach(v=>{
     const a = porCliente[v.clienteId] = porCliente[v.clienteId] || { clienteId: v.clienteId, PEN:0, USD:0, ventas:[], ultimo:'' };
@@ -7512,38 +7520,41 @@ function rankingClientesValor(periodo){
     if(todosProductos.has('vida_ley') && !tieneSCTR) oportunidades.push('SCTR');
     if(todosProductos.has('seguros_vehiculares') && !todosProductos.has('soat')) oportunidades.push('SOAT');
     if((cli.tipoDocumento==='RUC' || String(cli.documento||'').length===11) && todosProductos.has('seguros_vehiculares') && !tieneSCTR) oportunidades.push('SCTR');
-    return { cli, PEN: a.PEN, USD: a.USD, total: a.PEN + a.USD*tc, activas: activas.length, productos, aseguradoras, ultimo: a.ultimo, proximo, alertas, oportunidades: Array.from(new Set(oportunidades)) };
-  }).filter(f=> f.total > 0.005);
-  filas.sort((x,y)=> y.total - x.total);
+    const primaUSD = activas.reduce((s,v)=> s + mesaPrimaUSD(v), 0);
+    return { cli, PEN: a.PEN, USD: a.USD, total: a.PEN + a.USD*tc, primaUSD, activas: activas.length, productos, aseguradoras, ultimo: a.ultimo, proximo, alertas, oportunidades: Array.from(new Set(oportunidades)) };
+  }).filter(f=> f.primaUSD >= umbral && f.primaUSD > 0.005);
+  // Entran solos: cada venta vigente se suma a su cliente, sin cargas manuales. Orden y categoría por primas vigentes.
+  filas.sort((x,y)=> y.primaUSD - x.primaUSD);
+  const totalPrima = filas.reduce((s,f)=>s+f.primaUSD,0);
   const total = filas.reduce((s,f)=>s+f.total,0);
   let acum = 0;
   filas.forEach((f,i)=>{
     const antes = acum;
-    acum += f.total;
-    f.rank = i+1; f.pct = total ? f.total/total : 0; f.pctAcum = total ? acum/total : 0;
-    f.cat = (antes/total) < 0.5 ? 'A' : (antes/total) < 0.8 ? 'B' : 'C';
+    acum += f.primaUSD;
+    f.rank = i+1; f.pct = totalPrima ? f.primaUSD/totalPrima : 0; f.pctAcum = totalPrima ? acum/totalPrima : 0;
+    f.cat = (antes/totalPrima) < 0.5 ? 'A' : (antes/totalPrima) < 0.8 ? 'B' : 'C';
   });
-  return { filas, total, desde, hasta, tc };
+  return { filas, total, totalPrima, umbral, desde, hasta, tc };
 }
 function viewAltoValor(){
-  const { filas, total, tc } = rankingClientesValor(filtroAVPeriodo);
-  const resumenCat = cat=>{ const fs = filas.filter(f=>f.cat===cat); return { n: fs.length, total: fs.reduce((s,f)=>s+f.total,0), PEN: fs.reduce((s,f)=>s+f.PEN,0), USD: fs.reduce((s,f)=>s+f.USD,0) }; };
+  const { filas, totalPrima, umbral, tc } = rankingClientesValor(filtroAVPeriodo);
+  const resumenCat = cat=>{ const fs = filas.filter(f=>f.cat===cat); return { n: fs.length, prima: fs.reduce((s,f)=>s+f.primaUSD,0), PEN: fs.reduce((s,f)=>s+f.PEN,0), USD: fs.reduce((s,f)=>s+f.USD,0) }; };
   const totPEN = filas.reduce((s,f)=>s+f.PEN,0), totUSD = filas.reduce((s,f)=>s+f.USD,0);
   const dual = (PEN, USD)=> `<div class="num">${fmtUSD(USD)}</div><div class="num">${fmtMoney(PEN)}</div>`;
   const A = resumenCat('A'), B = resumenCat('B'), C = resumenCat('C');
   const conAlertas = filas.filter(f=> (f.cat==='A'||f.cat==='B') && f.alertas.length).length;
   const q = filtroAVBusqueda.trim().toUpperCase();
   const visibles = filas.filter(f=> (filtroAVCategoria==='todas' || f.cat===filtroAVCategoria || (filtroAVCategoria==='alertas' && (f.cat==='A'||f.cat==='B') && f.alertas.length)) && (!q || (f.cli.nombre||'').toUpperCase().includes(q)));
-  const pillCat = c=> c==='A' ? '<span class="pill pill-gold" title="Generan el primer 50% de tu comisión">A</span>' : c==='B' ? '<span class="pill pill-green" title="Junto con los A suman el 80% de tu comisión">B</span>' : '<span class="pill pill-gray">C</span>';
+  const pillCat = c=> c==='A' ? '<span class="pill pill-gold" title="Suman el primer 50% de las primas de esta lista">A</span>' : c==='B' ? '<span class="pill pill-green" title="Junto con los A suman el 80% de las primas de esta lista">B</span>' : '<span class="pill pill-gray">C</span>';
   const pct = x=> (x*100).toFixed(1)+'%';
-  const tarjeta = (titulo, r, color, nota)=> `<div class="card" style="border-top:4px solid ${color};"><div class="hint" style="font-weight:600;">${titulo}</div><div style="font-size:24px;font-weight:700;margin:4px 0;">${r.n} <span style="font-size:13px;font-weight:500;">cliente(s)</span></div>${dual(r.PEN, r.USD)}<div class="hint">${total?pct(r.total/total):'0%'} de tu comisión</div><div class="hint" style="margin-top:4px;">${nota}</div></div>`;
+  const tarjeta = (titulo, r, color, nota)=> `<div class="card" style="border-top:4px solid ${color};"><div class="hint" style="font-weight:600;">${titulo}</div><div style="font-size:24px;font-weight:700;margin:4px 0;">${r.n} <span style="font-size:13px;font-weight:500;">cliente(s)</span></div><div class="num">${fmtUSD(r.prima)} en primas vigentes</div><div class="hint">${totalPrima?pct(r.prima/totalPrima):'0%'} de las primas de esta lista</div><div class="hint" style="margin-top:4px;">${nota}</div></div>`;
   return `
-    <div class="page-head"><div><h1>⭐ Clientes de alto valor</h1><p>Tus clientes ordenados por la comisión FG que realmente cobraste (pagos de Alta y cobros registrados). Los montos se muestran en dólares y en soles por separado.</p></div>${puedeDescargar() ? '<button class="btn" id="btnExportAV">Exportar a Excel</button>' : ''}</div>
+    <div class="page-head"><div><h1>⭐ Clientes de alto valor</h1><p>Solo clientes cuyas pólizas vigentes suman <b>${fmtUSD(umbral)} o más de prima</b>. Se actualiza solo: cuando registras una venta y el cliente llega a ese monto, aparece aquí; cuando sus pólizas vencen y baja del monto, sale.</p></div>${puedeDescargar() ? '<button class="btn" id="btnExportAV">Exportar a Excel</button>' : ''}</div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:14px;">
-      ${tarjeta('Categoría A — tus clientes clave', A, '#B8823D', 'Cuídalos: llamada o visita en cada renovación.')}
-      ${tarjeta('Categoría B — clientes importantes', B, '#2E7D5B', 'Con los A suman el 80% de tu comisión.')}
-      ${tarjeta('Categoría C — el resto', C, '#9AA5A0', 'Atiéndelos con mensajes y renovaciones automáticas.')}
-      <div class="card" style="border-top:4px solid #B8483A;"><div class="hint" style="font-weight:600;">Comisión cobrada · ${PERIODOS_AV[filtroAVPeriodo]}</div><div style="font-size:17px;font-weight:700;margin:4px 0;">${dual(totPEN, totUSD)}</div><div>${filas.length} cliente(s) con comisión</div><div class="hint" style="margin-top:4px;">${conAlertas ? `<a href="#" id="avVerAlertas" style="color:#B8483A;font-weight:600;">${conAlertas} cliente(s) A/B con alertas →</a>` : 'Sin alertas en tus clientes A y B.'}</div></div>
+      ${tarjeta('Categoría A — los más grandes', A, '#B8823D', 'Cuídalos: llamada o visita en cada renovación.')}
+      ${tarjeta('Categoría B — muy importantes', B, '#2E7D5B', 'Con los A suman el 80% de las primas.')}
+      ${tarjeta('Categoría C — resto de alto valor', C, '#9AA5A0', 'También pasan el monto mínimo: atiéndelos en cada renovación.')}
+      <div class="card" style="border-top:4px solid #B8483A;"><div class="hint" style="font-weight:600;">Comisión cobrada de estos clientes · ${PERIODOS_AV[filtroAVPeriodo]}</div><div style="font-size:17px;font-weight:700;margin:4px 0;">${dual(totPEN, totUSD)}</div><div>${filas.length} cliente(s) de alto valor · ${fmtUSD(totalPrima)} en primas</div><div class="hint" style="margin-top:4px;">${conAlertas ? `<a href="#" id="avVerAlertas" style="color:#B8483A;font-weight:600;">${conAlertas} cliente(s) A/B con alertas →</a>` : 'Sin alertas en tus clientes A y B.'}</div></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
       ${Object.entries(PERIODOS_AV).map(([k,l])=>`<button class="btn ${filtroAVPeriodo===k?'btn-primary':'btn-ghost'} btn-sm" data-av-periodo="${k}">${l}</button>`).join('')}
@@ -7555,14 +7566,16 @@ function viewAltoValor(){
         <option value="alertas" ${filtroAVCategoria==='alertas'?'selected':''}>A y B con alertas</option>
       </select>
       <input type="text" id="avBuscar" placeholder="Buscar cliente…" value="${filtroAVBusqueda.replace(/"/g,'&quot;')}" style="min-width:200px;">
+      <label class="hint" style="margin-left:auto;display:flex;align-items:center;gap:6px;" title="Suma de primas de las pólizas vigentes del cliente. Las pólizas en soles se pasan a dólares con el tipo de cambio del CRM.">Monto mínimo US$ <input type="number" id="avUmbral" min="0" step="100" value="${umbral}" style="width:100px;"> <button class="btn btn-sm btn-ghost" id="avUmbralGuardar">Guardar</button></label>
     </div>
     <div class="card" style="padding:0;overflow:auto;">
       <table>
-        <thead><tr><th>#</th><th>Cliente</th><th>Cat.</th><th style="text-align:right;">Cobrado US$</th><th style="text-align:right;">Cobrado S/</th><th style="text-align:right;" title="Porcentaje de tu comisión total y, debajo, el acumulado">% del total</th><th title="Pólizas vigentes">Vigentes</th><th>Productos</th><th>Última comisión</th><th>Próx. vencimiento</th><th style="min-width:190px;">Alertas y oportunidades</th></tr></thead>
+        <thead><tr><th>#</th><th>Cliente</th><th>Cat.</th><th style="text-align:right;" title="Suma de primas de sus pólizas vigentes (soles pasados a dólares)">Primas vigentes US$</th><th style="text-align:right;">Comisión cobrada US$</th><th style="text-align:right;">Comisión cobrada S/</th><th style="text-align:right;" title="Porcentaje de las primas de esta lista y, debajo, el acumulado">% de primas</th><th title="Pólizas vigentes">Vigentes</th><th>Productos</th><th>Última comisión</th><th>Próx. vencimiento</th><th style="min-width:190px;">Alertas y oportunidades</th></tr></thead>
         <tbody>${visibles.length ? visibles.map(f=>`<tr>
           <td class="num">${f.rank}</td>
           <td style="min-width:220px;">${f.cli.id?`<a href="#" data-ficha-cliente="${f.cli.id}" style="color:var(--primary);font-weight:600;">${f.cli.nombre}</a>`:f.cli.nombre}<div class="hint">${[f.cli.celular1||f.cli.telefono||'', f.aseguradoras.join(', ')].filter(Boolean).join(' · ')}</div></td>
           <td>${pillCat(f.cat)}</td>
+          <td class="num" style="text-align:right;font-weight:700;">${fmtUSD(f.primaUSD)}</td>
           <td class="num" style="text-align:right;font-weight:600;">${f.USD>0.005?fmtUSD(f.USD):'—'}</td>
           <td class="num" style="text-align:right;font-weight:600;">${f.PEN>0.005?fmtMoney(f.PEN):'—'}</td>
           <td class="num" style="text-align:right;">${pct(f.pct)}<div class="hint">acum. ${pct(f.pctAcum)}</div></td>
@@ -7571,14 +7584,19 @@ function viewAltoValor(){
           <td>${f.ultimo?fmtDate(f.ultimo):'—'}</td>
           <td>${f.proximo?fmtDate(f.proximo):'—'}</td>
           <td style="line-height:1.9;">${f.alertas.map(a=>`<span class="pill pill-${a.tipo}" title="${a.tip.replace(/"/g,'&quot;')}">${a.txt}</span>`).join(' ')} ${f.oportunidades.map(o=>`<span class="pill pill-gray" title="No tiene ${o}: oportunidad de venta cruzada">💡 Ofrecer ${o}</span>`).join(' ')}</td>
-        </tr>`).join('') : '<tr class="empty-row"><td colspan="11">No hay clientes con comisión cobrada en este periodo.</td></tr>'}</tbody>
+        </tr>`).join('') : `<tr class="empty-row"><td colspan="12">Ningún cliente suma ${fmtUSD(umbral)} o más en primas vigentes.</td></tr>`}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:8px;">Cómo se clasifica: se ordenan los clientes de mayor a menor comisión cobrada. Para ordenar y calcular el % se juntan soles y dólares al tipo de cambio del CRM (S/ ${tc}), pero los montos se muestran por separado. <b>A</b> son los primeros que juntos suman el 50% de tu comisión; <b>B</b>, los siguientes hasta llegar al 80%; <b>C</b>, el resto. Las alertas avisan renovaciones en los próximos 60 días, pólizas vencidas sin renovar y clientes con pólizas vigentes de los que no llega comisión hace más de 4 meses.</div>`;
+    <div class="hint" style="margin-top:8px;">Quién entra: se suman las primas (prima total o, si falta, prima neta) de las pólizas vigentes de cada cliente; las pólizas en soles se pasan a dólares al tipo de cambio del CRM (S/ ${tc}). Entra quien llega a ${fmtUSD(umbral)}. Las anuladas no cuentan. Se ordena de mayor a menor prima: <b>A</b> son los primeros que juntos suman el 50% de las primas de esta lista; <b>B</b>, los siguientes hasta el 80%; <b>C</b>, el resto. El periodo de arriba solo cambia las columnas de comisión cobrada. Todos ellos llevan ⭐ en la Bitácora 360. Las alertas avisan renovaciones en los próximos 60 días, pólizas vencidas sin renovar y clientes con pólizas vigentes de los que no llega comisión hace más de 4 meses.</div>`;
 }
 function wireAltoValor(){
   document.querySelectorAll('[data-av-periodo]').forEach(b=> b.onclick = ()=>{ filtroAVPeriodo = b.dataset.avPeriodo; render(); });
   const sel = document.getElementById('avCategoria'); if(sel) sel.onchange = ()=>{ filtroAVCategoria = sel.value; render(); };
+  const um = document.getElementById('avUmbral'), umG = document.getElementById('avUmbralGuardar');
+  if(um && umG){
+    const guardarUmbral = ()=>{ const n = Number(um.value); if(um.value==='' || !isFinite(n) || n<0){ alert('Escribe un monto válido en dólares.'); return; } state.umbralAltoValorUSD = n; save(); render(); };
+    umG.onclick = guardarUmbral; um.onkeydown = (e)=>{ if(e.key==='Enter') guardarUmbral(); };
+  }
   const va = document.getElementById('avVerAlertas'); if(va) va.onclick = (e)=>{ e.preventDefault(); filtroAVCategoria = 'alertas'; render(); };
   const bus = document.getElementById('avBuscar');
   if(bus){ bus.oninput = ()=>{ filtroAVBusqueda = bus.value; clearTimeout(wireAltoValor._t); wireAltoValor._t = setTimeout(()=>{ render(); const b2 = document.getElementById('avBuscar'); if(b2){ b2.focus(); b2.setSelectionRange(b2.value.length, b2.value.length); } }, 250); }; }
@@ -7587,8 +7605,8 @@ function wireAltoValor(){
   if(ex) ex.onclick = ()=>{
     const { filas } = rankingClientesValor(filtroAVPeriodo);
     exportExcel(`clientes_alto_valor_${filtroAVPeriodo}_${todayISO()}.xlsx`,
-      ['#','Cliente','Documento','Celular','Categoría','Cobrado US$','Cobrado S/','% del total','% acumulado','Pólizas vigentes','Productos vigentes','Aseguradoras','Última comisión','Próximo vencimiento','Alertas','Oportunidades'],
-      filas.map(f=>[f.rank, f.cli.nombre, f.cli.documento||'', f.cli.celular1||f.cli.telefono||'', f.cat, Math.round(f.USD*100)/100, Math.round(f.PEN*100)/100, Math.round(f.pct*1000)/10, Math.round(f.pctAcum*1000)/10, f.activas, f.productos.map(prodLabel).join(', '), f.aseguradoras.join(', '), f.ultimo||'', f.proximo||'', f.alertas.map(a=>a.txt).join(' | '), f.oportunidades.map(o=>'Ofrecer '+o).join(' | ')]));
+      ['#','Cliente','Documento','Celular','Categoría','Primas vigentes US$','Comisión cobrada US$','Comisión cobrada S/','% de primas','% acumulado','Pólizas vigentes','Productos vigentes','Aseguradoras','Última comisión','Próximo vencimiento','Alertas','Oportunidades'],
+      filas.map(f=>[f.rank, f.cli.nombre, f.cli.documento||'', f.cli.celular1||f.cli.telefono||'', f.cat, Math.round(f.primaUSD*100)/100, Math.round(f.USD*100)/100, Math.round(f.PEN*100)/100, Math.round(f.pct*1000)/10, Math.round(f.pctAcum*1000)/10, f.activas, f.productos.map(prodLabel).join(', '), f.aseguradoras.join(', '), f.ultimo||'', f.proximo||'', f.alertas.map(a=>a.txt).join(' | '), f.oportunidades.map(o=>'Ofrecer '+o).join(' | ')]));
   };
 }
 
