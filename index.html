@@ -6912,9 +6912,10 @@ function importarAccionesCorreo(data){
     const c = state.clientes.find(x=>x.id===a.clienteId); if(!c){ noEncontrada(a); return; }
     const hechos = [];
     Object.keys(a.campos||{}).filter(k=> CAMPOS_COMPLETAR_CLIENTE.includes(k)).forEach(k=>{ const val = String(a.campos[k]||'').trim(); if(val && !String(c[k]||'').trim()){ c[k] = val; hechos.push(k); } });
-    (a.corregir||[]).forEach(x=>{ if(CAMPOS_CORREGIR_CLIENTE.includes(x.campo) && x.a && String(c[x.campo]||'').trim()===String(x.de||'').trim()){ c[x.campo] = x.a; hechos.push(x.campo); } });
+    const antes = []; // el valor anterior queda en la auditoría: no se pierde información
+    (a.corregir||[]).forEach(x=>{ if(CAMPOS_CORREGIR_CLIENTE.includes(x.campo) && x.a && String(c[x.campo]||'').trim()===String(x.de||'').trim()){ antes.push(`${x.campo} antes: «${c[x.campo]}»`); c[x.campo] = x.a; hechos.push(x.campo); } });
     if(!hechos.length){ r.omitidos++; return; }
-    registrarAuditoria('editar','cliente',c.id,`Datos de ${c.nombre} completados: ${Array.from(new Set(hechos)).join(', ')} (importado)`); r.clientes++; });
+    registrarAuditoria('editar','cliente',c.id,`Datos de ${c.nombre} completados: ${Array.from(new Set(hechos)).join(', ')}${antes.length?' — '+antes.join('; '):''} (importado)`); r.clientes++; });
   (data.siniestros||[]).forEach(a=>{
     const ya = state.siniestros.find(x=>x.ref && x.ref===a.ref);
     // Ya existe: solo completa los campos vacíos (no pisa lo que se editó a mano en el CRM)
