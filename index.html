@@ -176,6 +176,7 @@
     <button class="nav-btn" data-tab="ventas_seguros"><span class="nav-icon">①</span>Venta de Seguros</button>
     <div class="nav-group-label">Postventa y Retención</div>
     <button class="nav-btn" data-tab="polizas"><span class="nav-icon">📄</span>Vigencias y Renovaciones</button>
+    <button class="nav-btn" data-tab="mesa_renovaciones"><span class="nav-icon">🔁</span>Mesa de renovaciones</button>
     <button class="nav-btn" data-tab="alto_valor"><span class="nav-icon">⭐</span>Clientes de alto valor</button>
       <button class="nav-btn" data-tab="seguimiento" style="justify-content:space-between;"><span style="display:flex;align-items:center;gap:10px;"><span class="nav-icon">🔔</span>Seguimiento</span><span id="badgeSeguimiento" class="pill pill-red" style="display:none;font-size:10.5px;padding:1px 7px;">0</span></button>
     <button class="nav-btn" data-tab="mensajes_grupo"><span class="nav-icon">📲</span>Mensajes por grupo</button>
@@ -1707,6 +1708,7 @@ function render(){
   else if(tab==='facturacion') el.innerHTML = viewFacturacion();
   else if(tab==='alto_valor') el.innerHTML = viewAltoValor();
   else if(tab==='seguimiento') el.innerHTML = viewSeguimiento();
+  else if(tab==='mesa_renovaciones') el.innerHTML = viewMesaRenovaciones();
   else if(tab==='polizas') el.innerHTML = viewPolizas();
   else if(tab==='cobranzas') el.innerHTML = viewCobranzas();
   else if(tab==='soat') el.innerHTML = viewSoat();
@@ -5964,7 +5966,7 @@ function b360CasoVenta(v, hoy){
     add('critico','Renovaciones','Póliza vencida sin renovación registrada', v.vigenciaFin, -dias,
       `Póliza vencida el ${fmtDate(v.vigenciaFin)} (${-dias} días) sin renovación ni cierre registrado`, 'Confirmar la renovación o registrar «No renueva»', hoy);
   } else if(dias!==null && dias<=60){
-    const est = (ESTADOS_RENOV.find(e=>e.id===(r.estado||''))||{}).label || 'Por avisar';
+    const est = (ESTADOS_RENOV.find(e=>e.id===(r.estado||''))||{}).label || 'Por gestionar';
     caso.estado = `Vigente – vence en ${dias} día${dias===1?'':'s'} (${est})`;
     const sem = dias<=15 && ['','avisado'].includes(r.estado||'') ? 'critico' : dias<=30 ? 'urgente' : 'seguimiento';
     const f30 = addDaysISO(v.vigenciaFin, -30);
@@ -6846,8 +6848,10 @@ function wireAsesores(){
 // 1) Renovaciones: pólizas del CRM que vencen pronto o vencieron sin renovar, con su estado (avisado, confirma, renovado, no renueva).
 // 2) Seguimientos: cotizaciones enviadas y renovaciones/pedidos de clientes que aún no están en el CRM, con fecha de próximo seguimiento.
 const ESTADOS_RENOV = [
-  { id:'',           label:'Por avisar',   clase:'pill-gray' },
+  { id:'',           label:'Por gestionar', clase:'pill-gray' },
   { id:'avisado',    label:'Avisado',      clase:'pill-gold' },
+  { id:'cotizando',  label:'Pedida a la aseguradora', clase:'pill-gold' },
+  { id:'propuesta',  label:'Propuesta enviada', clase:'pill-gold' },
   { id:'confirma',   label:'Confirmó que renueva', clase:'pill-green' },
   { id:'renovado',   label:'Renovado',     clase:'pill-green' },
   { id:'no_renueva', label:'No renueva',   clase:'pill-red' },
@@ -6874,12 +6878,20 @@ function renovacionesParaSeguimiento(){
   }).sort((a,b)=> a.dias - b.dias);
 }
 function seguimientosLista(){ if(!Array.isArray(state.seguimientos)) state.seguimientos = []; return state.seguimientos; }
-function marcarRenovacion(v, estado, nota){
+// extra (opcional, Mesa de renovaciones): motivo, asegPropuesta, primaPropuesta, monedaPropuesta, proximo. Se conservan entre cambios de etapa.
+function marcarRenovacion(v, estado, nota, extra){
   const hoy = todayISO();
-  v.renov = { estado, fecha: hoy, nota: nota||'', por: nombreSesionActual() };
-  v.renovLog = (v.renovLog||[]).concat([{ fecha: hoy, estado, nota: nota||'', por: nombreSesionActual() }]);
+  const ant = v.renov || {};
+  const etiqueta = id => id ? ((ESTADOS_RENOV.find(e=>e.id===id)||{}).label||id) : 'Por gestionar';
+  const datos = Object.assign({ asegPropuesta: ant.asegPropuesta, primaPropuesta: ant.primaPropuesta, monedaPropuesta: ant.monedaPropuesta, proximo: ant.proximo, motivo: ant.motivo }, extra||{});
+  if(estado!=='no_renueva') datos.motivo = '';
+  if(['renovado','no_renueva'].includes(estado)) datos.proximo = '';
+  Object.keys(datos).forEach(k=>{ if(datos[k]===undefined || datos[k]==='' || datos[k]===0) delete datos[k]; });
+  v.renov = Object.assign({ estado, fecha: hoy, nota: nota||'', por: nombreSesionActual() }, datos);
+  v.renovLog = (v.renovLog||[]).concat([Object.assign({ fecha: hoy, estado, nota: nota||'', por: nombreSesionActual() }, datos)]);
   const cli = state.clientes.find(c=>c.id===v.clienteId);
-  registrarAuditoria('editar', 'venta', v.id, `Renovación ${folioV(v.folio)} — ${cli?cli.nombre:''}: ${(ESTADOS_RENOV.find(e=>e.id===estado)||{}).label||estado}${nota?' ('+nota+')':''}`);
+  const antes = (ant.estado||'')!==estado ? ` — antes: ${etiqueta(ant.estado||'')}` : '';
+  registrarAuditoria('editar', 'venta', v.id, `Renovación ${folioV(v.folio)} — ${cli?cli.nombre:''}: ${etiqueta(estado)}${nota?' ('+nota+')':''}${datos.primaPropuesta?` · propuesta ${fmtMonedaVal(datos.primaPropuesta, datos.monedaPropuesta||v.moneda)}`:''}${antes}`);
 }
 function viewSeguimiento(){
   const hoy = todayISO();
@@ -6958,6 +6970,170 @@ function viewSeguimiento(){
       <tbody>${segVisibles.length ? segVisibles.map(filaSeg).join('') : '<tr class="empty-row"><td colspan="8">No hay registros en este filtro. Usa "+ Nueva cotización / pendiente".</td></tr>'}</tbody></table>
     </div>
     <div class="hint" style="margin-top:8px;">Cuando avisas por 📲 la póliza queda como "Avisado"; si pasan ${DIAS_SIN_RESPUESTA} días sin respuesta se marca en rojo. Una póliza pasa sola a "Renovado" si registras la póliza nueva del mismo cliente y producto. Cada cotización se reprograma ${DIAS_SEGUIMIENTO_DEFECTO} días después de cada seguimiento.</div>`;
+}
+// ================= MESA DE RENOVACIONES =================
+// Tablero por etapas de las pólizas que vencen en 90 días o vencieron sin cerrar (hasta 1 año).
+// Hitos de corredora: a 90 días ya se avisó o se pidió la renovación, a 60 la propuesta está enviada y a 30 el cliente aceptó.
+const MESA_ETAPAS = ['', 'avisado', 'cotizando', 'propuesta', 'confirma'];
+const MESA_HITOS = [ { dias:30, rango:4, falta:'A 30 días el cliente ya debería haber aceptado' }, { dias:60, rango:3, falta:'A 60 días la propuesta ya debería estar enviada' }, { dias:90, rango:1, falta:'A 90 días ya se debería haber avisado o pedido la renovación' } ];
+const MOTIVOS_NO_RENUEVA = ['Precio', 'Se fue con otro corredor', 'Se fue a otra aseguradora directo', 'Vendió el vehículo / ya no lo necesita', 'La aseguradora no renueva (siniestralidad)', 'No respondió', 'Problemas de pago', 'Otro'];
+let filtroMesaVentana = 'todas', filtroMesaBusqueda = '', filtroMesaAseg = '';
+function mesaPrimaUSD(v){ const p = Number(v.primaBruta)||Number(v.primaNeta)||0; return v.moneda==='USD' ? p : p / (Number(state.tipoCambio)||3.75); }
+function mesaRenovaciones(){
+  const hoy = todayISO();
+  return misVentas(state.ventas).filter(v=> ventaSeguroActiva(v) && !esEndoso(v) && v.vigenciaFin && v.vigenciaFin >= addDaysISO(hoy, -365) && v.vigenciaFin <= addDaysISO(hoy, 90)).map(v=>{
+    const r = v.renov || {};
+    const renueva = state.ventas.find(x=> x.renuevaVentaId===v.id && ventaActiva(x)) || polizaQueRenueva(v);
+    const estado = renueva && !['renovado','no_renueva'].includes(r.estado) ? 'renovado' : (r.estado || '');
+    const dias = daysUntil(v.vigenciaFin);
+    const cerrada = ['renovado','no_renueva'].includes(estado);
+    const rango = MESA_ETAPAS.indexOf(estado);
+    const hito = !cerrada && (dias < 0 ? { falta:'Venció sin cerrar: confirma si renovó o registra «No renueva»' } : MESA_HITOS.find(h=> dias <= h.dias && rango < h.rango));
+    return { v, r, renueva, estado, dias, cerrada, atrasada: !!hito, falta: hito ? hito.falta : '', proximoVencido: !cerrada && r.proximo && r.proximo <= hoy };
+  }).sort((a,b)=> (a.dias<0) - (b.dias<0) || (a.dias<0 ? b.dias - a.dias : a.dias - b.dias)); // primero lo que aún vence; luego lo vencido más reciente
+}
+function mesaTasaRenovacion(){
+  // Pólizas que vencieron en los últimos 90 días: cuántas se renovaron
+  const hoy = todayISO();
+  const base = mesaRenovaciones().filter(x=> x.v.vigenciaFin < hoy && x.v.vigenciaFin >= addDaysISO(hoy, -90));
+  const ren = base.filter(x=> x.estado==='renovado').length, no = base.filter(x=> x.estado==='no_renueva').length;
+  return { base: base.length, ren, no, pend: base.length - ren - no, pct: base.length ? Math.round(ren / base.length * 100) : null };
+}
+function mesaMensajeWA(x, cli){
+  const v = x.v, nombre = cli ? cli.nombre : '', pol = `${prodLabel(v.tipoProducto)} (${v.aseguradora||''}${v.numeroPoliza?' N° '+v.numeroPoliza:''}${v.vehPlaca?', placa '+v.vehPlaca:''})`;
+  if(x.dias < 0) return `Hola ${nombre}, le saluda Eduardo Flores de Alta Corredores. Su póliza de ${pol} venció el ${fmtDate(v.vigenciaFin)}. ¿Pudo renovarla? Si desea, le ayudo hoy mismo a renovarla o a cotizar otras opciones.`;
+  if(x.estado==='propuesta') return `Hola ${nombre}, le saluda Eduardo Flores de Alta Corredores. Le escribo por la propuesta de renovación de su ${pol}, que vence el ${fmtDate(v.vigenciaFin)}. ¿Pudo revisarla? Quedo atento para emitirla a tiempo.`;
+  return `Hola ${nombre}, le saluda Eduardo Flores de Alta Corredores. Su póliza de ${pol} vence el ${fmtDate(v.vigenciaFin)}. Ya estoy preparando su renovación para que no se quede sin cobertura. ¿Desea mantener las mismas coberturas o quiere que le cotice otras opciones?`;
+}
+function viewMesaRenovaciones(){
+  const todas = mesaRenovaciones();
+  const q = filtroMesaBusqueda.trim().toLowerCase();
+  const cliDe = v => state.clientes.find(c=>c.id===v.clienteId);
+  const enVentana = x => filtroMesaVentana==='todas' ? true : filtroMesaVentana==='vencidas' ? x.dias<0 : filtroMesaVentana==='proximas' ? x.dias>=0 : filtroMesaVentana==='30' ? (x.dias>=0 && x.dias<=30) : filtroMesaVentana==='60' ? (x.dias>30 && x.dias<=60) : filtroMesaVentana==='90' ? (x.dias>60 && x.dias<=90) : filtroMesaVentana==='atrasadas' ? x.atrasada : true;
+  const visibles = todas.filter(x=> enVentana(x) && (!filtroMesaAseg || (x.v.aseguradora||'')===filtroMesaAseg) && (!q || `${(cliDe(x.v)||{}).nombre||''} ${x.v.numeroPoliza||''} ${x.v.vehPlaca||''} ${prodLabel(x.v.tipoProducto)} ${x.v.aseguradora||''}`.toLowerCase().includes(q)));
+  const abiertas = todas.filter(x=> !x.cerrada);
+  const prox90 = abiertas.filter(x=> x.dias>=0), riesgo30 = abiertas.filter(x=> x.dias>=0 && x.dias<=30 && x.estado!=='confirma');
+  const vencidas = abiertas.filter(x=> x.dias<0), atrasadas = abiertas.filter(x=> x.atrasada);
+  const tasa = mesaTasaRenovacion();
+  const sumaUSD = arr => fmtUSD(arr.reduce((s,x)=> s + mesaPrimaUSD(x.v), 0));
+  const motivos = {}; todas.filter(x=> x.estado==='no_renueva' && x.r.motivo).forEach(x=> motivos[x.r.motivo] = (motivos[x.r.motivo]||0) + 1);
+  const topMotivo = Object.entries(motivos).sort((a,b)=> b[1]-a[1])[0];
+  const tarjeta = (titulo, valor, color, nota, ventana)=> `<div class="card stat-card" ${ventana?`data-mesa-ventana="${ventana}" style="cursor:pointer;background:${color};color:#fff;padding:14px;"`:`style="background:${color};color:#fff;padding:14px;"`}><div class="label" style="color:rgba(255,255,255,0.88);">${titulo}</div><div class="value num" style="color:#fff;">${valor}</div>${nota?`<div style="font-size:11.5px;color:rgba(255,255,255,0.85);">${nota}</div>`:''}</div>`;
+  const asegs = Array.from(new Set(todas.map(x=> x.v.aseguradora).filter(Boolean))).sort();
+  const pillDias = d => d<0 ? `<span class="pill pill-red">Venció hace ${-d} d</span>` : d<=15 ? `<span class="pill pill-red">${d} d</span>` : d<=30 ? `<span class="pill pill-gold">${d} d</span>` : `<span class="pill pill-gray">${d} d</span>`;
+  const tarjetaPoliza = x=>{
+    const v = x.v, cli = cliDe(v), tel = cli && (cli.celular1||cli.telefono);
+    const propuesta = x.r.primaPropuesta ? `<div class="hint">Propuesta: <b>${fmtMonedaVal(x.r.primaPropuesta, x.r.monedaPropuesta||v.moneda)}</b>${x.r.asegPropuesta && x.r.asegPropuesta!==v.aseguradora ? ' · '+x.r.asegPropuesta : ''}</div>` : '';
+    const prima = Number(v.primaBruta)||Number(v.primaNeta)||0;
+    return `<div class="card" style="padding:10px 12px;${x.atrasada?'border-left:4px solid var(--danger);':''}">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+        ${cli?`<a href="#" data-ficha-cliente="${cli.id}" style="color:var(--primary);font-weight:600;font-size:13px;">${cli.nombre}</a>`:'<b>—</b>'}
+        ${pillDias(x.dias)}
+      </div>
+      <div class="hint">${prodLabel(v.tipoProducto)} · ${v.aseguradora||''}${v.vehPlaca?' · '+v.vehPlaca:''}</div>
+      <div class="hint">${folioV(v.folio)}${v.numeroPoliza?' · '+v.numeroPoliza:''} · vence ${fmtDate(v.vigenciaFin)}${prima?' · '+fmtMonedaVal(prima, v.moneda):''}</div>
+      ${propuesta}
+      ${x.estado==='no_renueva' && x.r.motivo ? `<div class="hint">Motivo: <b>${x.r.motivo}</b></div>` : ''}
+      ${x.renueva ? `<div class="hint">Renovada con ${folioV(x.renueva.folio)}</div>` : ''}
+      ${x.atrasada ? `<div style="font-size:11.5px;color:var(--danger);margin-top:3px;">⚠ ${x.falta}</div>` : ''}
+      ${x.r.proximo && !x.cerrada ? `<div class="hint" ${x.proximoVencido?'style="color:var(--danger);"':''}>Próximo contacto: ${fmtDate(x.r.proximo)}</div>` : ''}
+      ${x.r.nota ? `<div class="hint" title="${String(x.r.nota).replace(/"/g,'&quot;')}">📝 ${String(x.r.nota).slice(0,60)}</div>` : ''}
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">
+        ${!x.cerrada ? `<button class="btn btn-primary btn-sm" data-mesa-actualizar="${v.id}" title="Cambiar etapa, prima propuesta, próximo contacto o nota">Actualizar</button>` : `<button class="btn btn-ghost btn-sm" data-mesa-actualizar="${v.id}">Editar</button>`}
+        ${tel && !x.cerrada ? `<a class="btn btn-sm" href="${linkWhatsApp(tel, mesaMensajeWA(x, cli))}" target="_blank" rel="noopener" data-mesa-wa="${v.id}" title="Escribir por WhatsApp (si estaba por gestionar pasa a Avisado)">📲</a>` : ''}
+        ${!x.cerrada ? `<button class="btn btn-ghost btn-sm" data-renovar-pdf="${v.id}" title="Sube el PDF de la renovación: la IA crea la póliza nueva y esta pasa a Renovado">🤖 PDF</button>` : ''}
+        <button class="btn btn-ghost btn-sm" data-mesa-gestion="${v.id}" title="Registrar gestión en la Bitácora 360">+ Gestión</button>
+      </div>
+    </div>`;
+  };
+  const columnas = ESTADOS_RENOV.filter(e=> MESA_ETAPAS.includes(e.id)).concat([{ id:'cerradas', label:'Cerradas' }]);
+  return `
+    <div class="page-head"><div><h1>🔁 Mesa de renovaciones</h1><p>Cada póliza avanza por etapas hasta quedar renovada o perdida. Meta: aviso o pedido a la aseguradora a 90 días, propuesta enviada a 60 y cliente confirmado a 30.</p></div>${puedeDescargar()?'<button class="btn" id="btnMesaExcel">⬇ Excel</button>':''}</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:14px;">
+      ${tarjeta('Por renovar en 90 días', prox90.length, '#2E5266', sumaUSD(prox90)+' en prima', 'proximas')}
+      ${tarjeta('En riesgo (30 días)', riesgo30.length, '#B8823D', 'Sin confirmar · '+sumaUSD(riesgo30), '30')}
+      ${tarjeta('Atrasadas según hitos', atrasadas.length, '#B8483A', 'Van detrás del plan 90/60/30', 'atrasadas')}
+      ${tarjeta('Vencidas sin cerrar', vencidas.length, '#7A4B42', 'Último año', 'vencidas')}
+      ${tarjeta('Tasa de renovación', tasa.pct==null?'—':tasa.pct+'%', '#3D6B52', `Últimos 90 d: ${tasa.ren} renovadas · ${tasa.no} perdidas · ${tasa.pend} sin cerrar${topMotivo?` · motivo principal: ${topMotivo[0]}`:''}`)}
+    </div>
+    <div class="toolbar" style="flex-wrap:wrap;gap:6px;">
+      ${[['todas','Todas'],['proximas','Próximas 90 días'],['vencidas','Vencidas'],['30','0–30 días'],['60','31–60 días'],['90','61–90 días'],['atrasadas','Atrasadas']].map(([k,l])=>`<button class="btn ${filtroMesaVentana===k?'btn-primary':'btn-ghost'} btn-sm" data-mesa-ventana="${k}">${l}</button>`).join('')}
+      <select id="mesaAseg" style="font-size:13px;"><option value="">Todas las aseguradoras</option>${asegs.map(a=>`<option ${filtroMesaAseg===a?'selected':''}>${a}</option>`).join('')}</select>
+      <input type="text" id="mesaBuscar" placeholder="Buscar cliente, póliza o placa…" value="${filtroMesaBusqueda.replace(/"/g,'&quot;')}" style="min-width:220px;">
+    </div>
+    <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:10px;align-items:flex-start;">
+      ${columnas.map(col=>{
+        const items = visibles.filter(x=> col.id==='cerradas' ? x.cerrada : (!x.cerrada && x.estado===col.id));
+        const prima = items.reduce((s,x)=> s + mesaPrimaUSD(x.v), 0);
+        return `<div style="min-width:250px;flex:0 0 250px;">
+          <div class="card" style="background:var(--primary-soft);padding:10px 12px;margin-bottom:8px;">
+            <div style="font-weight:600;font-size:13.5px;">${col.id==='' ? 'Por gestionar' : col.label}</div>
+            <div class="hint">${items.length} póliza(s)${prima?' · '+fmtUSD(prima):''}${col.id==='cerradas'?' · renovadas o perdidas':''}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;max-height:70vh;overflow-y:auto;">
+            ${items.length ? items.map(tarjetaPoliza).join('') : '<div class="hint" style="padding:8px;">Vacío</div>'}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="hint" style="margin-top:6px;">Una póliza pasa sola a «Renovado» cuando registras la póliza nueva del mismo cliente y producto (o usas 🤖 PDF). Las etapas son las mismas de la pestaña Seguimiento y todo cambio queda en el Historial de auditoría y en la Bitácora 360. Los montos se muestran en US$ usando el tipo de cambio del CRM.</div>`;
+}
+function abrirMesaActualizar(v){
+  const r = v.renov || {};
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const cli = state.clientes.find(c=>c.id===v.clienteId);
+  const ov = document.createElement('div');
+  ov.className = 'modal-backdrop';
+  ov.innerHTML = `<div class="modal" style="max-width:560px;">
+    <h2>Renovación ${folioV(v.folio)}</h2>
+    <div class="modal-hint">${esc(cli?cli.nombre:'')} · ${esc(prodLabel(v.tipoProducto))} · ${esc(v.aseguradora||'')} ${esc(v.numeroPoliza||'')} · vence ${fmtDate(v.vigenciaFin)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <label style="grid-column:1/-1;"><span class="hint">Etapa</span><select id="mzEstado" style="width:100%;">${ESTADOS_RENOV.map(e=>`<option value="${e.id}" ${(r.estado||'')===e.id?'selected':''}>${e.id===''?'Por gestionar':e.label}</option>`).join('')}</select></label>
+      <label id="mzMotivoBox" style="grid-column:1/-1;"><span class="hint">Motivo por el que no renueva *</span><select id="mzMotivo" style="width:100%;"><option value="">— Elegir —</option>${MOTIVOS_NO_RENUEVA.map(m=>`<option ${r.motivo===m?'selected':''}>${m}</option>`).join('')}</select></label>
+      <label><span class="hint">Aseguradora propuesta</span><input type="text" id="mzAseg" list="mzAsegs" value="${esc(r.asegPropuesta||v.aseguradora||'')}" style="width:100%;"><datalist id="mzAsegs">${(state.aseguradoras||[]).map(a=>`<option value="${esc(a)}">`).join('')}</datalist></label>
+      <label><span class="hint">Prima propuesta</span><div style="display:flex;gap:6px;"><input type="number" step="0.01" min="0" id="mzPrima" value="${r.primaPropuesta||''}" style="flex:1;min-width:0;"><select id="mzMoneda"><option value="USD" ${(r.monedaPropuesta||v.moneda)==='USD'?'selected':''}>US$</option><option value="PEN" ${(r.monedaPropuesta||v.moneda)!=='USD'?'selected':''}>S/</option></select></div></label>
+      <label><span class="hint">Próximo contacto</span><input type="date" id="mzProximo" value="${esc(r.proximo||'')}" style="width:100%;"></label>
+      <label style="grid-column:1/-1;"><span class="hint">Nota</span><textarea id="mzNota" rows="2" style="width:100%;" placeholder="Ej.: Pidió cotizar también con Pacífico"></textarea></label>
+    </div>
+    <div id="mzError" style="color:var(--danger);font-size:13px;margin:6px 0;"></div>
+    <div class="modal-actions"><button class="btn" id="mzCancelar">Cancelar</button><button class="btn btn-primary" id="mzGuardar">Guardar</button></div>
+  </div>`;
+  (document.getElementById('crm-app')||document.body).appendChild(ov);
+  const $ = id => ov.querySelector('#'+id);
+  const verMotivo = () => { $('mzMotivoBox').style.display = $('mzEstado').value==='no_renueva' ? '' : 'none'; };
+  verMotivo(); $('mzEstado').onchange = verMotivo;
+  const cerrar = () => ov.remove();
+  $('mzCancelar').onclick = cerrar;
+  ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
+  $('mzGuardar').onclick = () => {
+    const estado = $('mzEstado').value, motivo = estado==='no_renueva' ? $('mzMotivo').value : '';
+    if(estado==='no_renueva' && !motivo){ $('mzError').textContent = 'Elige el motivo por el que no renueva.'; return; }
+    const prima = parseFloat($('mzPrima').value)||0, asegP = $('mzAseg').value.trim();
+    const extra = { motivo, asegPropuesta: asegP===(v.aseguradora||'') ? '' : asegP, primaPropuesta: prima, monedaPropuesta: prima ? $('mzMoneda').value : '', proximo: $('mzProximo').value };
+    const nota = $('mzNota').value.trim();
+    const igual = (r.estado||'')===estado && !nota && ['motivo','asegPropuesta','primaPropuesta','monedaPropuesta','proximo'].every(k=> String(r[k]||'')===String(extra[k]||''));
+    if(igual){ cerrar(); return; }
+    marcarRenovacion(v, estado, [nota, motivo && 'Motivo: '+motivo].filter(Boolean).join(' · '), extra);
+    save(); cerrar(); render();
+  };
+}
+function wireMesaRenovaciones(){
+  document.querySelectorAll('[data-mesa-ventana]').forEach(b=> b.onclick = ()=>{ filtroMesaVentana = b.dataset.mesaVentana; render(); });
+  const aseg = document.getElementById('mesaAseg'); if(aseg) aseg.onchange = ()=>{ filtroMesaAseg = aseg.value; render(); };
+  const bus = document.getElementById('mesaBuscar');
+  if(bus) bus.oninput = ()=>{ filtroMesaBusqueda = bus.value; clearTimeout(wireMesaRenovaciones._t); wireMesaRenovaciones._t = setTimeout(()=>{ render(); const b2 = document.getElementById('mesaBuscar'); if(b2){ b2.focus(); b2.setSelectionRange(b2.value.length, b2.value.length); } }, 250); };
+  document.querySelectorAll('#main-view [data-ficha-cliente]').forEach(a=> a.onclick = e=>{ e.preventDefault(); fichaClienteId = a.dataset.fichaCliente; tab = 'clientes'; render(); });
+  const venta = id => state.ventas.find(v=>v.id===id);
+  document.querySelectorAll('[data-mesa-actualizar]').forEach(b=> b.onclick = ()=>{ const v = venta(b.dataset.mesaActualizar); if(v) abrirMesaActualizar(v); });
+  document.querySelectorAll('[data-mesa-wa]').forEach(a=> a.addEventListener('click', ()=>{ const v = venta(a.dataset.mesaWa); if(v && !(v.renov&&v.renov.estado)){ marcarRenovacion(v, 'avisado', 'Aviso por WhatsApp'); save(); setTimeout(render, 300); } }));
+  document.querySelectorAll('#main-view [data-renovar-pdf]').forEach(b=> b.onclick = () => elegirPDFYRegistrar(b, { modo:'renovacion', ventaId: b.dataset.renovarPdf }));
+  document.querySelectorAll('[data-mesa-gestion]').forEach(b=> b.onclick = ()=>{ const v = venta(b.dataset.mesaGestion); if(!v) return; abrirFormGestion(null, { clienteId: v.clienteId, ventaId: v.id, aseguradora: v.aseguradora||'', numeroPoliza: v.numeroPoliza||'', tipoSeguro: v.tipoProducto||'', area:'Renovaciones', proximaGestion:'Cerrar la renovación', fechaSeguimiento: (v.renov||{}).proximo||'' }); });
+  const xl = document.getElementById('btnMesaExcel');
+  if(xl) xl.onclick = ()=>{
+    const filas = mesaRenovaciones().map(x=>{ const v = x.v, c = state.clientes.find(k=>k.id===v.clienteId)||{}; const e = ESTADOS_RENOV.find(s=>s.id===x.estado);
+      return [c.nombre||'', c.celular1||c.telefono||'', prodLabel(v.tipoProducto), v.aseguradora||'', v.numeroPoliza||'', v.vehPlaca||'', v.vigenciaFin, x.dias, x.estado===''?'Por gestionar':(e?e.label:x.estado), x.atrasada?x.falta:'', v.moneda||'', Number(v.primaBruta)||Number(v.primaNeta)||0, x.r.asegPropuesta||'', x.r.primaPropuesta||'', x.r.proximo||'', x.r.motivo||'', x.r.nota||'', folioV(v.folio)]; });
+    exportExcel(`Mesa_renovaciones_${todayISO()}.xlsx`, ['Cliente','Celular','Producto','Aseguradora','Póliza','Placa','Vence','Días','Etapa','Atraso','Moneda','Prima actual','Aseguradora propuesta','Prima propuesta','Próximo contacto','Motivo no renueva','Última nota','Folio'], filas);
+  };
 }
 function abrirFormSeguimiento(id){
   const s = id ? seguimientosLista().find(x=>x.id===id) : null;
@@ -9574,6 +9750,7 @@ render = function(){
   if(tab==='facturacion') wireFacturacion();
   if(tab==='alto_valor') wireAltoValor();
   if(tab==='seguimiento') wireSeguimiento();
+  if(tab==='mesa_renovaciones') wireMesaRenovaciones();
   try{ // contador del menú: renovaciones vencidas sin confirmar + avisadas sin respuesta + seguimientos atrasados
     const badge = document.getElementById('badgeSeguimiento');
     if(badge && sesionIniciada){
