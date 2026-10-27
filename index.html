@@ -1661,6 +1661,7 @@ function render(){
   if(esEjecutivaSesion() && TABS_SOLO_ADMIN.includes(tab)) tab = 'inicio_ejecutiva';
   else if(esAsesorSesion() && (TABS_SOLO_ADMIN.includes(tab) || tab==='soat')) tab = 'clientes';
   document.querySelectorAll('#crm-app .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===tab || (b.dataset.tab==='ventas_seguros' && tab==='ventas_oncologicos')));
+  if(tab!=='bitacora360') b360Datos._c = null; // al volver a la pestaña se recalcula con los datos al día
   const el = document.getElementById('main-view');
   if(tab==='dashboard') el.innerHTML = viewDashboard();
   else if(tab==='inicio_ejecutiva') el.innerHTML = viewInicioEjecutiva();
@@ -5837,9 +5838,9 @@ const B360_ASEG = [['qualitas','Qualitas Perú'],['rimac','Rímac Seguros'],['pa
   ['avla','Avla Perú'],['crecer','Crecer Seguros'],['grandia','EPS Grandia'],['interseguro','Interseguro'],['chubb','Chubb Perú'],['hdi','HDI Seguros']];
 function b360Aseg(a){ const k = b360SinTildes(a).toLowerCase(); const m = B360_ASEG.find(([p])=>k.includes(p)); return m ? m[1] : String(a||'').trim(); }
 function b360Persona(n){
-  const ws = String(n||'').replace(/\s+/g,' ').trim().split(' ').filter(Boolean)
-    .map(w=> (w===w.toUpperCase() || w===w.toLowerCase()) ? w.charAt(0).toUpperCase()+w.slice(1).toLowerCase() : w);
-  return ws.map((w,i)=> i && ['de','del','y'].includes(w.toLowerCase()) ? w.toLowerCase() : w).join(' ');
+  const t = String(n||'').replace(/\s+/g,' ').trim();
+  if(t!==t.toUpperCase() && t!==t.toLowerCase()) return t;
+  return t.split(' ').filter(Boolean).map((w,i)=> i && ['de','del','y'].includes(w.toLowerCase()) ? w.toLowerCase() : w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
 }
 // Corrección de redacción frecuente (tildes, siglas y abreviaturas). Solo para mostrar: el original no se toca.
 const B360_ORTO = [['poliza','póliza'],['polizas','pólizas'],['vehiculo','vehículo'],['vehiculos','vehículos'],['renovacion','renovación'],['comision','comisión'],
@@ -6126,8 +6127,9 @@ function viewBitacora360(){
   const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   const casos = Array.from(D.casos.values()).filter(c=>c.id!=='ADM');
   const q = b360Texto.trim().toLowerCase();
-  const pasaCaso = c => (b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (b360Resp==='todos' || c.responsable===b360Resp)
-    && (!b360ClienteId || c.clienteId===b360ClienteId) && (!q || [c.id, c.cliente, c.poliza, c.aseguradora, c.tipo, c.estado].join(' ').toLowerCase().includes(q));
+  const textoCaso = c => [c.id, c.cliente, c.poliza, c.aseguradora, c.tipo, c.estado].join(' ').toLowerCase();
+  const pasaCaso = (c, conResp=true, conTexto=true) => (b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (!conResp || b360Resp==='todos' || c.responsable===b360Resp)
+    && (!b360ClienteId || c.clienteId===b360ClienteId) && (!conTexto || !q || textoCaso(c).includes(q));
   const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor??'—'}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
   const aseguradoras = Array.from(new Set(casos.map(c=>c.aseguradora).filter(Boolean))).sort();
   const responsables = Array.from(new Set(casos.map(c=>c.responsable).concat(D.R.map(r=>r.usuario)).filter(Boolean))).sort();
@@ -6146,9 +6148,10 @@ function viewBitacora360(){
         : '<tr class="empty-row"><td colspan="12">No hay alertas con estos filtros.</td></tr>'}</tbody></table></div>
       ${filas.length>300 ? `<div class="hint" style="margin-top:6px;">Se muestran las primeras 300 de ${filas.length} alertas; descarga el Excel para verlas todas.</div>` : ''}`;
   } else if(b360Vista==='bitacora'){
-    let rows = D.R.filter(r=>{ const c = D.casos.get(r.caso); return c && c.id!=='ADM' && pasaCaso(c) || (c && c.id==='ADM' && !b360ClienteId && b360Sem==='todos' && !q); })
-      .filter(r=> (b360Area==='todas' || r.area===b360Area) && (!b360Desde || r.fecha.slice(0,10)>=b360Desde) && (!b360Hasta || r.fecha.slice(0,10)<=b360Hasta));
-    if(q) rows = rows.filter(r=> [r.accion, r.resultado, r.obs, r.usuario, D.casos.get(r.caso).cliente, r.caso].join(' ').toLowerCase().includes(q) || pasaCaso(D.casos.get(r.caso)));
+    let rows = D.R.filter(r=>{ const c = D.casos.get(r.caso); return c && (c.id!=='ADM' ? pasaCaso(c, false, false) : (!b360ClienteId && b360Sem==='todos' && b360AsegF==='todas')); })
+      .filter(r=> (b360Area==='todas' || r.area===b360Area) && (!b360Desde || r.fecha.slice(0,10)>=b360Desde) && (!b360Hasta || r.fecha.slice(0,10)<=b360Hasta))
+      .filter(r=> b360Resp==='todos' || r.usuario===b360Resp || D.casos.get(r.caso).responsable===b360Resp);
+    if(q) rows = rows.filter(r=> textoCaso(D.casos.get(r.caso)).includes(q) || [r.accion, r.resultado, r.obs, r.usuario].join(' ').toLowerCase().includes(q));
     rows = rows.slice().sort((a,b)=> b360ClienteId ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha));
     const total = rows.length, paginas = Math.max(1, Math.ceil(total/B360_POR_PAGINA)); if(b360Pagina>paginas) b360Pagina = paginas;
     const ini = (b360Pagina-1)*B360_POR_PAGINA;
@@ -6219,7 +6222,8 @@ function viewBitacora360(){
       ${tarjeta('#5A4E7C','Siniestros abiertos', K.siniestrosAbiertos, `aviso promedio: ${K.aviso??'—'} días`)}
       ${tarjeta('#4A5A6A','Tiempo de respuesta', K.sinAtencion!=null ? K.sinAtencion+' d' : '—', `días sin atención (casos abiertos) · comisión: ${K.pagoComision??'—'} d`)}
     </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"><button class="btn btn-sm ${b360Sem==='todos'?'btn-primary':'btn-ghost'}" data-b360-sem="todos">Todos</button>${Object.keys(B360_SEM).map(chip).join('')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;"><button class="btn btn-sm ${b360Sem==='todos'?'btn-primary':'btn-ghost'}" data-b360-sem="todos">Todos</button>${Object.keys(B360_SEM).map(chip).join('')}</div>
+    <div class="hint" style="margin-bottom:10px;">🔴 Vencido, cuotas atrasadas más de 30 días o siniestro sin movimiento más de 30 días · 🟠 Vence en 30 días o menos, o tiene un atraso · 🟡 Vence en 31 a 60 días o falta un dato · 🟢 Al día. Haga clic en un color para filtrar.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">${vistas.map(([k,l])=>`<button class="btn btn-sm ${b360Vista===k?'btn-primary':'btn-ghost'}" data-b360-vista="${k}">${l}</button>`).join('')}</div>
     <div class="toolbar" style="flex-wrap:wrap;">
       <select id="fB360Area"><option value="todas">Todas las áreas</option>${B360_AREAS.map(a=>opt(a, b360Area)).join('')}</select>
