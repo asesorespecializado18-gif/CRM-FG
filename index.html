@@ -1655,7 +1655,29 @@ async function ingresarConFirebase(idTexto, pass, errEl, btn){
   }
 }
 
+// Al redibujar se reconstruyen los campos: se guarda qué buscador tenía el cursor para devolvérselo y poder escribir de corrido.
+function capturarFoco(){
+  const a = document.activeElement;
+  if(!a || !a.id || !(a.tagName==='INPUT' || a.tagName==='TEXTAREA')) return null;
+  let ini = null, fin = null;
+  try{ ini = a.selectionStart; fin = a.selectionEnd; }catch(e){}
+  return { id: a.id, valor: a.value, ini, fin };
+}
+function restaurarFoco(f){
+  if(!f) return;
+  const el = document.getElementById(f.id);
+  if(!el || el===document.activeElement || !(el.tagName==='INPUT' || el.tagName==='TEXTAREA')) return;
+  if(el.value!==f.valor) el.value = f.valor;
+  el.focus({ preventScroll: true });
+  try{ if(f.ini!=null) el.setSelectionRange(f.ini, f.fin!=null ? f.fin : f.ini); }catch(e){}
+}
+function renderDiferido(clave, antes, ms){
+  clearTimeout(renderDiferido[clave]);
+  renderDiferido[clave] = setTimeout(()=>{ if(antes) antes(); render(); }, ms==null ? 250 : ms);
+}
+
 function render(){
+  const focoPrevio = capturarFoco();
   applyTheme();
   const TABS_SOLO_ADMIN = ['dashboard','asesores','cobro_comisiones','pago_comisiones','facturacion','alto_valor'];
   if(esEjecutivaSesion() && TABS_SOLO_ADMIN.includes(tab)) tab = 'inicio_ejecutiva';
@@ -1684,6 +1706,7 @@ function render(){
   wireCommon();
   if(tab==='dashboard') drawDashboardCharts();
   if(editing) openModal();
+  restaurarFoco(focoPrevio);
 }
 function activarAvisosNavegador(){
   if(!('Notification' in window)){ alert('Tu navegador no soporta avisos de escritorio.'); return; }
@@ -3414,7 +3437,7 @@ function wireVentas(){
     }
   });
   document.querySelectorAll('[data-crear-poliza]').forEach(b=> b.onclick = () => { editing = {type:'poliza', id:null, ventaId:b.dataset.crearPoliza}; render(); });
-  const t = document.getElementById('fVTexto'); if(t) t.oninput = e=>{ filtroVTexto = e.target.value; filtroVPagina = 1; render(); };
+  const t = document.getElementById('fVTexto'); if(t) t.oninput = e=>{ filtroVTexto = e.target.value; filtroVPagina = 1; renderDiferido('ventas'); };
   const p = document.getElementById('fVProducto'); if(p) p.onchange = e=>{ filtroVProducto = e.target.value; filtroVPagina = 1; render(); };
   const a = document.getElementById('fVAsesor'); if(a) a.onchange = e=>{ filtroVAsesor = e.target.value; filtroVPagina = 1; render(); };
   const es = document.getElementById('fVEstado'); if(es) es.onchange = e=>{ filtroVEstado = e.target.value; filtroVPagina = 1; render(); };
@@ -4673,7 +4696,7 @@ function wirePolizas(){
   const btnClave = document.getElementById('btnClaveIA'); if(btnClave) btnClave.onclick = cambiarClaveIA;
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   const e1 = document.getElementById('fPolEstado'); if(e1) e1.onchange = e=>{ filtroPolEstado=e.target.value; filtroPolPagina=1; render(); };
-  const fTexto = document.getElementById('fPolTexto'); if(fTexto) fTexto.oninput = e=>{ filtroPolTexto=e.target.value; filtroPolPagina=1; render(); };
+  const fTexto = document.getElementById('fPolTexto'); if(fTexto) fTexto.oninput = e=>{ filtroPolTexto=e.target.value; filtroPolPagina=1; renderDiferido('polizas'); };
   const fAsegCal = document.getElementById('fPolAseguradoraCal'); if(fAsegCal) fAsegCal.onchange = e=>{ filtroPolAseguradora=e.target.value; filtroPolPagina=1; render(); };
   const fProdCal = document.getElementById('fPolProductoCal'); if(fProdCal) fProdCal.onchange = e=>{ filtroPolProducto=e.target.value; filtroPolPagina=1; render(); };
   document.querySelectorAll('[data-orden-pol-campo]').forEach(th=> th.onclick = () => {
@@ -4953,7 +4976,7 @@ function viewCobranzas(){
 function wireCobranzas(){
   document.querySelectorAll('[data-bucket]').forEach(el=> el.onclick = () => { filtroCobranzaDias = el.dataset.bucket; render(); });
   const fd = document.getElementById('fCobranzaDias'); if(fd) fd.onchange = e=>{ filtroCobranzaDias=e.target.value; render(); };
-  const ft = document.getElementById('fCobranzaTexto'); if(ft) ft.oninput = e=>{ filtroCobranzaTexto=e.target.value; render(); };
+  const ft = document.getElementById('fCobranzaTexto'); if(ft) ft.oninput = e=>{ filtroCobranzaTexto=e.target.value; renderDiferido('cobranzas'); };
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
   document.querySelectorAll('[data-wa-cobranza]').forEach(b=> b.onclick = () => {
     const v = state.ventas.find(v=>v.id===b.dataset.waCobranza);
@@ -5348,7 +5371,7 @@ function viewPipeline(){
 function wirePipeline(){
   document.querySelectorAll('[data-ficha-cliente]').forEach(a=> a.onclick = (e)=>{ e.preventDefault(); fichaClienteId=a.dataset.fichaCliente; tab='clientes'; render(); });
   const ft = document.getElementById('fPipelineTelefono'); if(ft) ft.onchange = e=>{ filtroPipelineTelefono=e.target.value; render(); };
-  const fb = document.getElementById('fPipelineBusqueda'); if(fb) fb.oninput = e=>{ filtroPipelineBusqueda=e.target.value; render(); };
+  const fb = document.getElementById('fPipelineBusqueda'); if(fb) fb.oninput = e=>{ filtroPipelineBusqueda=e.target.value; renderDiferido('pipeline'); };
   const btnVerDesc = document.getElementById('btnVerDescartados'); if(btnVerDesc) btnVerDesc.onclick = (e)=>{ e.preventDefault(); pipelineVerDescartados=true; filtroPipelineBusqueda=''; render(); };
   const btnVolver = document.getElementById('btnVolverTablero'); if(btnVolver) btnVolver.onclick = ()=>{ pipelineVerDescartados=false; filtroPipelineBusqueda=''; render(); };
   document.querySelectorAll('[data-reactivar-prospecto]').forEach(b=> b.onclick = () => {
@@ -5502,7 +5525,7 @@ function viewCarteraRecuperacion(){
 }
 function wireCarteraRecuperacion(){
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing={type:'venta', id:b.dataset.editVenta}; render(); });
-  const fTexto = document.getElementById('fCarteraTexto'); if(fTexto) fTexto.oninput = e=>{ filtroCarteraTexto=e.target.value; render(); };
+  const fTexto = document.getElementById('fCarteraTexto'); if(fTexto) fTexto.oninput = e=>{ filtroCarteraTexto=e.target.value; renderDiferido('cartera'); };
   const fEtapa = document.getElementById('fCarteraEtapa'); if(fEtapa) fEtapa.onchange = e=>{ filtroCarteraEtapa=e.target.value; render(); };
   const fMotivo = document.getElementById('fCarteraMotivo'); if(fMotivo) fMotivo.onchange = e=>{ filtroCarteraMotivo=e.target.value; render(); };
   document.querySelectorAll('[data-wa-cartera]').forEach(b=> b.onclick = () => {
@@ -5626,7 +5649,7 @@ function viewMensajesGrupo(){
 }
 function wireMensajesGrupo(){
   document.querySelectorAll('[data-grupo-msg]').forEach(b=> b.onclick = () => { grupoMensajeActivo = b.dataset.grupoMsg; render(); });
-  const fTexto = document.getElementById('fGrupoTexto'); if(fTexto) fTexto.oninput = e=>{ filtroGrupoTexto = e.target.value; render(); const el = document.getElementById('fGrupoTexto'); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } };
+  const fTexto = document.getElementById('fGrupoTexto'); if(fTexto) fTexto.oninput = e=>{ filtroGrupoTexto = e.target.value; renderDiferido('grupo'); };
   const bGuardar = document.getElementById('btnGuardarPlantillaGrupo'); if(bGuardar) bGuardar.onclick = () => {
     const txt = document.getElementById('txtPlantillaGrupo').value.trim();
     if(!txt) return;
@@ -6583,7 +6606,7 @@ function wireAsesores(){
     return (v.fechaVenta||'').slice(0,4)===filtroAsesorPeriodo;
   };
   const fp = document.getElementById('fAsesorPeriodo'); if(fp) fp.onchange = e=>{ filtroAsesorPeriodo=e.target.value; render(); };
-  const fn = document.getElementById('fAsesorNombre'); if(fn) fn.oninput = e=>{ filtroAsesorNombre=e.target.value; render(); };
+  const fn = document.getElementById('fAsesorNombre'); if(fn) fn.oninput = e=>{ filtroAsesorNombre=e.target.value; renderDiferido('asesores'); };
   const btnNuevaEj = document.getElementById('btnNuevaEjecutiva'); if(btnNuevaEj) btnNuevaEj.onclick = () => { editing = {type:'ejecutiva', id:null}; render(); };
   document.querySelectorAll('[data-edit-ejecutiva]').forEach(b=> b.onclick = () => { editing = {type:'ejecutiva', id:b.dataset.editEjecutiva}; render(); });
   const btnEx = document.getElementById('btnExportAsesores'); if(btnEx) btnEx.onclick = () => {
@@ -7550,7 +7573,7 @@ function wireClientes(){
   }
   const btnCalidad = document.getElementById('btnCalidadDatos'); if(btnCalidad) btnCalidad.onclick = () => { modoCalidadDatos=true; render(); };
   document.querySelectorAll('[data-filtro-actividad]').forEach(el=> el.onclick = () => { filtroClienteActividad=el.dataset.filtroActividad; render(); });
-  const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; render(); };
+  const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; renderDiferido('clientes'); };
   if(fichaClienteId){
     const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
     document.querySelectorAll('[data-b360-historial]').forEach(b=> b.onclick = ()=>{ b360ClienteId = b.dataset.b360Historial; b360Vista = 'bitacora'; b360Sem = 'todos'; b360Area = 'todas'; b360Texto = ''; b360Pagina = 1; fichaClienteId = null; tab = 'bitacora360'; render(); });
