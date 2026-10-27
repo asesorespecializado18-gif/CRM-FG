@@ -6851,7 +6851,7 @@ function agregarNotaVenta(v, nota){
 //   notas[]         { ventaId, nota }  agrega una nota a la venta
 //   primas[]        { ventaId, primaBruta, primaNeta, porcentajeComisionAseguradora, vigenciaInicio, vigenciaFin }  prima real (del PDF)
 //                   solo en fichas cargadas desde los reportes de Alta, cuya prima quedó igual a la comisión o en cero
-//   completarClientes[] { clienteId, campos:{ celular1, celular2, email, email2, documento, tipoDocumento, direccion }, corregir:[{ campo, de, a }] }
+//   completarClientes[] { clienteId, campos:{ celular1, celular2, email, email2, documento, tipoDocumento, direccion }, corregir:[{ campo, de, a }] } (corregir también admite «nombre»)
 //                   campos solo llena lo que está vacío; corregir cambia un valor solo si todavía es el valor equivocado "de"
 //   siniestros[], seguimientos[]
 // Cada acción puede traer numeroPoliza (y folio): si no coincide con la venta, se omite.
@@ -6912,7 +6912,7 @@ function importarAccionesCorreo(data){
     const c = state.clientes.find(x=>x.id===a.clienteId); if(!c){ noEncontrada(a); return; }
     const hechos = [];
     Object.keys(a.campos||{}).filter(k=> CAMPOS_COMPLETAR_CLIENTE.includes(k)).forEach(k=>{ const val = String(a.campos[k]||'').trim(); if(val && !String(c[k]||'').trim()){ c[k] = val; hechos.push(k); } });
-    (a.corregir||[]).forEach(x=>{ if(CAMPOS_COMPLETAR_CLIENTE.includes(x.campo) && x.a && String(c[x.campo]||'').trim()===String(x.de||'').trim()){ c[x.campo] = x.a; hechos.push(x.campo); } });
+    (a.corregir||[]).forEach(x=>{ if(CAMPOS_CORREGIR_CLIENTE.includes(x.campo) && x.a && String(c[x.campo]||'').trim()===String(x.de||'').trim()){ c[x.campo] = x.a; hechos.push(x.campo); } });
     if(!hechos.length){ r.omitidos++; return; }
     registrarAuditoria('editar','cliente',c.id,`Datos de ${c.nombre} completados: ${Array.from(new Set(hechos)).join(', ')} (importado)`); r.clientes++; });
   (data.siniestros||[]).forEach(a=>{
@@ -6927,6 +6927,8 @@ function importarAccionesCorreo(data){
   alert(`Importación terminada (no se reemplazó nada, solo se aplicaron estos cambios):\n${partes.length?partes.join('\n'):'• Ningún cambio nuevo'}${r.omitidos?`\n\n${r.omitidos} acción(es) ya estaban aplicadas.`:''}${r.noEncontrados.length?`\n\nNo se encontraron ${r.noEncontrados.length} póliza(s) (se omitieron): ${r.noEncontrados.slice(0,10).join(', ')}${r.noEncontrados.length>10?'…':''}`:''}`);
 }
 const CAMPOS_COMPLETAR_CLIENTE = ['celular1','celular2','email','email2','documento','tipoDocumento','direccion'];
+// corregir[] además acepta el nombre homologado (solo si el nombre actual coincide exactamente con «de»)
+const CAMPOS_CORREGIR_CLIENTE = CAMPOS_COMPLETAR_CLIENTE.concat(['nombre']);
 // Ficha cargada desde los reportes de Alta: la prima quedó igual a la comisión (o en cero). Solo esas reciben la prima real al importar.
 function primaEsDeHistorial(v){
   const pn = Number(v.primaNeta)||0, pb = Number(v.primaBruta)||0, com = Number(v.comisionTotal)||0;
