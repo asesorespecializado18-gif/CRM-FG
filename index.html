@@ -182,6 +182,8 @@
     <button class="nav-btn" data-tab="cartera_recuperacion"><span class="nav-icon">♻</span>Recuperación de Cartera</button>
     <button class="nav-btn" data-tab="siniestros"><span class="nav-icon">⚠</span>Siniestros</button>
     <button class="nav-btn" data-tab="soat"><span class="nav-icon">🚗</span>SOAT y Beneficios</button>
+    <div class="nav-group-label">Control y auditoría</div>
+    <button class="nav-btn" data-tab="bitacora360"><span class="nav-icon">📋</span>Bitácora 360</button>
     <div class="nav-group-label">Comisiones</div>
     <button class="nav-btn" data-tab="cobro_comisiones"><span class="nav-icon">④</span>Comisiones</button>
       <button class="nav-btn" data-tab="alto_valor"><span class="nav-icon">⭐</span>Clientes de alto valor</button>
@@ -1673,6 +1675,7 @@ function render(){
   else if(tab==='soat') el.innerHTML = viewSoat();
   else if(tab==='pipeline') el.innerHTML = viewPipeline();
   else if(tab==='siniestros') el.innerHTML = viewSiniestros();
+  else if(tab==='bitacora360') el.innerHTML = viewBitacora360();
   else if(tab==='cartera_recuperacion') el.innerHTML = viewCarteraRecuperacion();
   else if(tab==='mensajes_grupo') el.innerHTML = viewMensajesGrupo();
   else if(tab==='asesores') el.innerHTML = viewAsesores();
@@ -5809,6 +5812,487 @@ function wireSiniestros(){
   const rep = document.getElementById('btnReporteSiniestros'); if(rep) rep.onclick = () => descargarReporteSiniestros(misSiniestrosLista());
 }
 
+// ================= BITÁCORA 360 =================
+// Vista de solo lectura que une todas las bitácoras (pólizas, pagos de comisión, renovaciones, cobranzas, siniestros,
+// cotizaciones/pendientes, contactos y auditoría) en registros con los 13 campos estándar, área, clasificación 🔴🟠🟡🟢
+// y trazabilidad por caso (V-#### póliza · SN-#### siniestro · SG-xxxx cotización · CL-xxxx cliente).
+// No modifica datos: la redacción corregida y los nombres homologados son solo de presentación; el texto original se conserva.
+const B360_SEM = {
+  critico:     { label:'🔴 Crítico',         color:'#8C3B3B', orden:0 },
+  urgente:     { label:'🟠 Urgente',         color:'#C26A1F', orden:1 },
+  seguimiento: { label:'🟡 En seguimiento',  color:'#B8923D', orden:2 },
+  resuelto:    { label:'🟢 Resuelto',        color:'#3D6B52', orden:3 },
+};
+const B360_AREAS = ['Comercial','Renovaciones','Siniestros','Cobranzas','Comisiones','SOAT','SCTR','Vida Ley','EPS'];
+const b360Peor = (a,b) => B360_SEM[a].orden <= B360_SEM[b].orden ? a : b;
+const b360SinTildes = s => String(s||'').replace(/ñ/g,'\u0001').replace(/Ñ/g,'\u0002').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\u0001/g,'ñ').replace(/\u0002/g,'Ñ');
+// Clientes: MAYÚSCULAS, sin tildes ni comas (se conserva la Ñ) y sufijos societarios estándar
+function b360Cliente(n){
+  return b360SinTildes(n).toUpperCase().replace(/,/g,' ').replace(/\s+/g,' ').trim()
+    .replace(/\bSOCIEDAD ANONIMA CERRADA\b/g,'S.A.C.').replace(/\bS\.?\s?A\.?\s?C\.?(?=\s|$)/g,'S.A.C.')
+    .replace(/\bE\.?\s?I\.?\s?R\.?\s?L\.?(?=\s|$)/g,'E.I.R.L.').replace(/\bS\.?\s?R\.?\s?L\.?(?=\s|$)/g,'S.R.L.');
+}
+const B360_ASEG = [['qualitas','Qualitas Perú'],['rimac','Rímac Seguros'],['pacifico eps','Pacífico EPS'],['pacifico vida','Pacífico Vida'],['pacifico','Pacífico Seguros'],
+  ['positiva vida','La Positiva Vida'],['positiva','La Positiva'],['protecta','Protecta Security'],['sanitas','Sanitas Perú EPS'],['mapfre peru vida','Mapfre Perú Vida'],['mapfre','Mapfre Perú'],
+  ['avla','Avla Perú'],['crecer','Crecer Seguros'],['grandia','EPS Grandia'],['interseguro','Interseguro'],['chubb','Chubb Perú'],['hdi','HDI Seguros']];
+function b360Aseg(a){ const k = b360SinTildes(a).toLowerCase(); const m = B360_ASEG.find(([p])=>k.includes(p)); return m ? m[1] : String(a||'').trim(); }
+function b360Persona(n){
+  const ws = String(n||'').replace(/\s+/g,' ').trim().split(' ').filter(Boolean)
+    .map(w=> (w===w.toUpperCase() || w===w.toLowerCase()) ? w.charAt(0).toUpperCase()+w.slice(1).toLowerCase() : w);
+  return ws.map((w,i)=> i && ['de','del','y'].includes(w.toLowerCase()) ? w.toLowerCase() : w).join(' ');
+}
+// Corrección de redacción frecuente (tildes, siglas y abreviaturas). Solo para mostrar: el original no se toca.
+const B360_ORTO = [['poliza','póliza'],['polizas','pólizas'],['vehiculo','vehículo'],['vehiculos','vehículos'],['renovacion','renovación'],['comision','comisión'],
+  ['emision','emisión'],['anulacion','anulación'],['gestion','gestión'],['numero','número'],['pension','pensión'],['cotizacion','cotización'],['informacion','información'],
+  ['dias','días'],['dia','día'],['tramite','trámite'],['documentacion','documentación'],['evaluacion','evaluación'],['reparacion','reparación'],['telefono','teléfono'],
+  ['camion','camión'],['clinica','clínica'],['q','que'],['xq','porque'],['pq','porque'],['xfa','por favor'],['msj','mensaje'],['wsp','WhatsApp'],['whatsapp','WhatsApp'],
+  ['soat','SOAT'],['sctr','SCTR'],['eps','EPS'],['igv','IGV'],['pdf','PDF'],['ruc','RUC'],['dni','DNI']].map(([w,r])=>[new RegExp(`(^|[^\\wÁÉÍÓÚáéíóúÑñ])(${w})(?![\\wÁÉÍÓÚáéíóúÑñ])`,'gi'), r]);
+function b360Redactar(t){
+  if(!t) return '';
+  let s = String(t).replace(/\s+/g,' ').trim();
+  B360_ORTO.forEach(([re, rep])=>{
+    s = s.replace(re, (m, pre, w)=>{
+      if(w===rep) return m;
+      const sigla = rep===rep.toUpperCase() || rep==='WhatsApp';
+      return pre + (!sigla && w[0]===w[0].toUpperCase() ? rep[0].toUpperCase()+rep.slice(1) : rep);
+    });
+  });
+  s = s.replace(/\s+([,.;])/g,'$1').replace(/([,;])(?=[^\s\d])/g,'$1 ');
+  if(s[0] && s[0]!==s[0].toUpperCase()) s = s[0].toUpperCase()+s.slice(1);
+  if(s && !/[.!?)]$/.test(s)) s += '.';
+  return s;
+}
+function b360AreaProducto(t, aseg){
+  if(t==='soat') return 'SOAT';
+  if(/^sctr/.test(t||'')) return 'SCTR';
+  if(t==='vida_ley') return 'Vida Ley';
+  if(t==='eps' || /EPS/.test(aseg||'')) return 'EPS';
+  return 'Comercial';
+}
+const b360Asesor = id => { const a = (state.asesores||[]).find(x=>x.id===id); return a ? b360Persona(a.nombre) : 'Sin asesor'; };
+// Fecha local 'AAAA-MM-DD' o 'AAAA-MM-DDTHH:MM' (la auditoría guarda la hora en UTC)
+function b360Local(f){
+  if(!f) return '';
+  if(String(f).length<=10) return String(f);
+  const d = new Date(f); if(isNaN(d)) return String(f).slice(0,10);
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+const b360Fmt = f => !f ? '—' : f.length>10 ? `${fmtDate(f.slice(0,10))} ${f.slice(11,16)}` : fmtDate(f);
+const b360Dias = f => f ? Math.max(0, -daysUntil(f.slice(0,10))) : null;
+
+function b360CasoVenta(v, hoy){
+  const cli = state.clientes.find(c=>c.id===v.clienteId);
+  const caso = { id: folioV(v.folio), clienteId: v.clienteId, cliente: b360Cliente(cli ? cli.nombre : ''), aseguradora: b360Aseg(v.aseguradora),
+    poliza: v.numeroPoliza||'', tipo: prodLabel(v.tipoProducto), area: b360AreaProducto(v.tipoProducto, v.aseguradora), responsable: b360Asesor(v.asesorId),
+    sem:'resuelto', estado:'Vigente', pend:[], prox:[], fseg:'', alertas:[], venta: v };
+  const add = (sem, area, alerta, fechaClave, dias, pend, prox, fseg) => {
+    caso.sem = b360Peor(caso.sem, sem);
+    caso.alertas.push({ sem, area, alerta, fechaClave, dias });
+    if(pend) caso.pend.push(pend);
+    if(prox && !caso.prox.includes(prox)) caso.prox.push(prox);
+    if(fseg && (!caso.fseg || fseg < caso.fseg)) caso.fseg = fseg;
+  };
+  if(!ventaActiva(v)){ caso.estado = 'Anulada'; return caso; }
+  const r = v.renov || {};
+  const renueva = state.ventas.find(x=> x.renuevaVentaId===v.id && ventaActiva(x)) || polizaQueRenueva(v);
+  const dias = v.vigenciaFin ? daysUntil(v.vigenciaFin) : null;
+  if(esEndoso(v)) caso.estado = 'Endoso';
+  else if(renueva || r.estado==='renovado') caso.estado = 'Renovada' + (renueva ? ` (${folioV(renueva.folio)})` : '');
+  else if(r.estado==='no_renueva') caso.estado = 'No renueva';
+  else if(dias!==null && dias<0){
+    caso.estado = 'Vencida sin renovación registrada';
+    add('critico','Renovaciones','Póliza vencida sin renovación registrada', v.vigenciaFin, -dias,
+      `Póliza vencida el ${fmtDate(v.vigenciaFin)} (${-dias} días) sin renovación ni cierre registrado`, 'Confirmar la renovación o registrar «No renueva»', hoy);
+  } else if(dias!==null && dias<=60){
+    const est = (ESTADOS_RENOV.find(e=>e.id===(r.estado||''))||{}).label || 'Por avisar';
+    caso.estado = `Vigente – vence en ${dias} día${dias===1?'':'s'} (${est})`;
+    const sem = dias<=15 && ['','avisado'].includes(r.estado||'') ? 'critico' : dias<=30 ? 'urgente' : 'seguimiento';
+    const f30 = addDaysISO(v.vigenciaFin, -30);
+    add(sem,'Renovaciones','Póliza próxima a vencer', v.vigenciaFin, dias, `Renovación por gestionar (vence ${fmtDate(v.vigenciaFin)}; estado: ${est})`,
+      r.estado ? 'Confirmar la emisión de la renovación' : 'Enviar propuesta de renovación', f30 > hoy ? f30 : hoy);
+  }
+  const venc = (v.cronogramaCuotas||[]).filter(c=> !c.pagada && c.fecha && c.fecha < hoy);
+  if(venc.length){
+    const f0 = venc.map(c=>c.fecha).sort()[0], d0 = -daysUntil(f0);
+    const monto = venc.reduce((s,c)=> s+(Number(c.monto)||0), 0);
+    add(d0>30?'critico':'urgente','Cobranzas','Cuotas vencidas sin pago registrado', f0, d0,
+      `${venc.length} cuota(s) vencida(s) desde ${fmtDate(f0)} (${v.moneda||''} ${monto.toFixed(2)})${v.cuotasAlDia?' — figura «al día»: verificar':''}`,
+      'Confirmar el pago de las cuotas con la aseguradora', hoy);
+  }
+  if(!(v.pagosComision||[]).length && v.estadoComision!=='pagada' && v.vigenciaInicio){
+    const d0 = -daysUntil(v.vigenciaInicio);
+    if(d0>45) add(d0>90?'urgente':'seguimiento','Comisiones','Comisión sin pago registrado', v.vigenciaInicio, d0,
+      `Comisión sin pago registrado (${d0} días desde el inicio de vigencia)`, 'Reclamar la comisión en la liquidación de Alta', hoy);
+  }
+  if(!v.numeroPoliza){ caso.pend.push('Falta número de póliza'); caso.sem = b360Peor(caso.sem, 'seguimiento'); }
+  if(/APROXIMADO/.test(v.notas||'')) caso.pend.push('Prima y/o vigencia aproximadas: corregir con la póliza');
+  return caso;
+}
+function b360CasoSiniestro(s, hoy){
+  const dias = sinDiasSinMov(s), abierto = siniestroAbierto(s);
+  const rechazoReciente = s.estado==='rechazado' && (dias??0) <= 30;
+  const sem = rechazoReciente ? 'critico' : !abierto ? 'resuelto' : (dias??0)>30 ? 'critico' : (dias??0)>7 ? 'urgente' : 'seguimiento';
+  const cli = state.clientes.find(c=>c.id===s.clienteId);
+  const ult = sinUltimoMov(s);
+  const caso = { id:`SN-${String(s.folio||0).padStart(4,'0')}`, clienteId: s.clienteId||'', cliente: b360Cliente(cli ? cli.nombre : (s.clienteNombre||'No identificado')),
+    aseguradora: b360Aseg(s.aseguradora), poliza: sinPoliza(s), tipo:`Siniestro ${sinRamo(s)}`, area:'Siniestros', responsable: b360Persona(s.responsable||'Asesora de cuentas'),
+    sem, estado: estadoSin(s).label + (s.numeroSiniestro ? ` · N.° ${s.numeroSiniestro}` : ''), pend: abierto && s.documentosPendientes ? [s.documentosPendientes] : [],
+    prox: abierto && s.proximoPaso ? [s.proximoPaso] : [], fseg: abierto && ult ? (addDaysISO(ult, 7) > hoy ? addDaysISO(ult, 7) : hoy) : '', alertas:[], siniestro: s };
+  if(abierto || rechazoReciente) caso.alertas.push({ sem, area:'Siniestros', alerta: !abierto ? 'Siniestro rechazado: atender al cliente' : (dias??0)>30 ? 'Siniestro sin movimiento hace más de 30 días' : 'Siniestro abierto', fechaClave: ult, dias });
+  return caso;
+}
+function b360CasoSeguimiento(s, hoy){
+  const cli = state.clientes.find(c=>c.id===s.clienteId);
+  const abierto = (s.estado||'abierto')==='abierto';
+  const atraso = abierto && s.proximo && s.proximo < hoy ? -daysUntil(s.proximo) : 0;
+  const sem = !abierto ? 'resuelto' : atraso>7 ? 'critico' : atraso>0 ? 'urgente' : 'seguimiento';
+  const caso = { id:`SG-${s.id}`, clienteId: s.clienteId||'', cliente: b360Cliente(cli ? cli.nombre : (s.clienteNombre||'')), aseguradora: b360Aseg(s.aseguradora),
+    poliza:'', tipo: s.producto ? prodLabel(s.producto) : (TIPOS_SEGUIMIENTO[s.tipo]||'Pendiente'), area: s.tipo==='renovacion' ? 'Renovaciones' : 'Comercial',
+    responsable: b360Persona(s.creadoPor||''), sem, estado: abierto ? `${TIPOS_SEGUIMIENTO[s.tipo]||'Pendiente'} abierta` : (s.estado==='ganado' ? 'Ganada' : 'Perdida'),
+    pend: abierto && s.detalle ? [s.detalle] : [], prox: abierto ? ['Hacer el seguimiento al cliente'] : [], fseg: abierto ? (s.proximo||hoy) : '', alertas:[] };
+  if(atraso>0) caso.alertas.push({ sem, area: caso.area, alerta:'Cotización o pendiente con seguimiento atrasado', fechaClave: s.proximo, dias: atraso });
+  return caso;
+}
+const b360Firma = () => [state.ventas.length, state.siniestros.length, (state.auditoria||[]).length, ((state.auditoria||[])[0]||{}).id, seguimientosLista().length, state.clientes.length, todayISO(), JSON.stringify(sesionEfectiva()||{})].join('|');
+function b360Datos(){
+  const firma = b360Firma();
+  if(b360Datos._c && b360Datos._c.firma===firma) return b360Datos._c;
+  const hoy = todayISO();
+  const ventas = misVentas(state.ventas);
+  const casos = new Map(), R = [];
+  const vPorId = new Map(state.ventas.map(v=>[v.id, v]));
+  ventas.forEach(v=> casos.set(folioV(v.folio), b360CasoVenta(v, hoy)));
+  const sins = misSiniestrosLista(); sins.forEach(s=>{ const c = b360CasoSiniestro(s, hoy); casos.set(c.id, c); });
+  const segs = seguimientosLista().filter(s=>{ const cli = state.clientes.find(c=>c.id===s.clienteId); return cli ? clientePerteneceAAsesor(cli) : !esAsesorSesion(); });
+  segs.forEach(s=>{ const c = b360CasoSeguimiento(s, hoy); casos.set(c.id, c); });
+  const casoCliente = c => { const id = `CL-${c.id}`; if(!casos.has(id)) casos.set(id, { id, clienteId:c.id, cliente: b360Cliente(c.nombre), aseguradora:'', poliza:'', tipo:'Ficha de cliente', area:'Comercial', responsable:'', sem:'resuelto', estado: c.estadoContacto==='cliente' ? 'Cliente activo' : (c.estadoContacto||'Prospecto'), pend:[], prox:[], fseg:'', alertas:[] }); return casos.get(id); };
+  const reg = (fecha, usuario, caso, area, accion, resultado, original, fuente, obs) => R.push({ fecha: b360Local(fecha), usuario: usuario || 'No registrado', caso: caso.id, area, accion, resultado: resultado||'', original: original||'', fuente, obs: obs||'' });
+
+  ventas.forEach(v=>{
+    const c = casos.get(folioV(v.folio));
+    const nueva = v.tipoVenta!=='renovacion';
+    const ant = v.renuevaVentaId && vPorId.get(v.renuevaVentaId);
+    const prima = Number(v.primaBruta||v.primaNeta)||0;
+    reg(v.fechaVenta || v.vigenciaInicio, c.responsable, c, nueva ? c.area : 'Renovaciones',
+      `${esEndoso(v) ? 'Endoso de póliza' : nueva ? 'Emisión de póliza nueva' : 'Renovación de póliza' + (ant ? ` (renueva ${folioV(ant.folio)})` : '')} – ${c.tipo}`,
+      `Póliza emitida con vigencia ${fmtDate(v.vigenciaInicio)} – ${fmtDate(v.vigenciaFin)}${prima ? `; prima ${v.moneda} ${prima.toFixed(2)}` : ''}`,
+      v.notas, 'Póliza', b360Redactar(v.notas));
+    (v.pagosComision||[]).forEach(p=> reg(p.fecha, 'Administración de comisiones', c, 'Comisiones', 'Registro de pago de comisión',
+      `Comisión recibida: ${p.moneda||v.moneda} ${(Number(p.monto)||0).toFixed(2)}${p.reporte ? ` (${p.reporte})` : ''}`, p.nota, 'Pago de comisión', b360Redactar(p.nota)));
+    (v.renovLog||[]).forEach(l=> reg(l.fecha, b360Persona(l.por), c, 'Renovaciones', `Seguimiento de renovación: ${(ESTADOS_RENOV.find(e=>e.id===l.estado)||{}).label||l.estado}`,
+      b360Redactar(l.nota) || 'Estado de renovación actualizado', l.nota, 'Renovación'));
+    (v.cronogramaCuotas||[]).filter(q=>q.pagada && q.fechaPago).forEach(q=> reg(q.fechaPago, c.responsable, c, 'Cobranzas', 'Registro de pago de cuota',
+      `Cuota del ${fmtDate(q.fecha)} pagada (${v.moneda} ${(Number(q.monto)||0).toFixed(2)})`, '', 'Cuota'));
+    if(!ventaActiva(v)) reg(v.fechaAnulacion || v.fechaVenta, c.responsable, c, c.area, 'Anulación de póliza',
+      `Póliza anulada. Motivo: ${b360Redactar([v.motivoAnulacion, v.otroMotivoAnulacion].filter(Boolean).join(' – ')) || 'no indicado'}`, v.motivoAnulacion, 'Anulación');
+  });
+  sins.forEach(s=>{
+    const c = casos.get(`SN-${String(s.folio||0).padStart(4,'0')}`);
+    const av = s.fechaAviso || s.fechaEvento;
+    const lag = s.fechaAviso && s.fechaEvento ? Math.round((new Date(s.fechaAviso) - new Date(s.fechaEvento))/86400000) : null;
+    reg(av, c.responsable, c, 'Siniestros', `Aviso de siniestro a la aseguradora${s.causa ? ' – '+s.causa : ''}`,
+      `Siniestro ${s.numeroSiniestro ? 'N.° '+s.numeroSiniestro+' ' : ''}registrado; ocurrido el ${fmtDate(s.fechaEvento)}${lag!==null ? `, avisado ${lag} día(s) después` : ''}`,
+      s.notas, 'Siniestro', [b360Redactar(s.notas), sinBien(s) ? `Bien asegurado: ${sinBien(s)}.` : ''].filter(Boolean).join(' '));
+    const um = s.ultimoMovimiento;
+    if(um && um!==av) reg(um, c.responsable, c, 'Siniestros', 'Último movimiento del siniestro', `Estado: ${estadoSin(s).label}. ${b360Redactar(s.notas)}`.trim(), s.notas, 'Siniestro');
+  });
+  segs.forEach(s=>{
+    const c = casos.get(`SG-${s.id}`);
+    reg(s.fecha, c.responsable, c, c.area, `${TIPOS_SEGUIMIENTO[s.tipo]||'Pendiente'} registrada`, b360Redactar(s.detalle) || '—', s.detalle, 'Cotización / pendiente');
+    (s.log||[]).forEach(l=> reg(l.fecha, b360Persona(l.por), c, c.area, 'Seguimiento al cliente', b360Redactar(l.texto), l.texto, 'Cotización / pendiente'));
+  });
+  state.clientes.filter(clientePerteneceAAsesor).forEach(cl=> (cl.interacciones||[]).forEach(it=> reg(it.fecha, b360Persona(it.por||''), casoCliente(cl), 'Comercial', 'Contacto con el cliente', b360Redactar(it.nota), it.nota, 'Contacto')));
+  // Auditoría: cada acción de un usuario en el CRM queda como gestión del caso al que pertenece
+  const ACC = { crear:'Registro', editar:'Actualización', eliminar:'Eliminación', restaurar:'Restauración', importar:'Importación' };
+  const ENT = { venta:'póliza', cliente:'ficha de cliente', siniestro:'siniestro', seguimiento:'cotización / pendiente', asesor:'asesor', ejecutiva:'usuario ejecutivo' };
+  const papelera = new Map((state.papelera||[]).map(p=>[p.entidadId, p]));
+  (state.auditoria||[]).forEach(a=>{
+    const desc = a.descripcion || '';
+    let caso = null, area = 'Comercial';
+    if(a.entidad==='venta'){
+      const v = vPorId.get(a.entidadId);
+      if(v) caso = casos.get(folioV(v.folio));
+      else if(!esAsesorSesion()){
+        const pv = ((papelera.get(a.entidadId)||{}).datos) || {};
+        const m = desc.match(/V-\d{4}/);
+        const id = pv.folio ? folioV(pv.folio) : (m ? m[0] : 'V-????');
+        if(!casos.has(id)) casos.set(id, { id, clienteId: pv.clienteId||'', cliente: b360Cliente(((state.clientes.find(c=>c.id===pv.clienteId))||{}).nombre || desc.split('—').pop()), aseguradora: b360Aseg(pv.aseguradora), poliza: pv.numeroPoliza||'', tipo: pv.tipoProducto ? prodLabel(pv.tipoProducto) : '', area: b360AreaProducto(pv.tipoProducto, pv.aseguradora), responsable: b360Asesor(pv.asesorId), sem:'resuelto', estado:'Eliminada del CRM', pend:[], prox:[], fseg:'', alertas:[] });
+        caso = casos.get(id);
+      }
+      if(caso) area = /Renovaci[oó]n/.test(desc) ? 'Renovaciones' : caso.area;
+    } else if(a.entidad==='cliente'){
+      const cl = state.clientes.find(c=>c.id===a.entidadId);
+      if(cl && clientePerteneceAAsesor(cl)) caso = casoCliente(cl);
+      else if(!cl && !esAsesorSesion()) caso = casoCliente({ id:a.entidadId, nombre: desc.replace(/^Cliente:\s*/,''), estadoContacto:'Eliminado' });
+    } else if(a.entidad==='siniestro'){
+      const s = state.siniestros.find(x=>x.id===a.entidadId);
+      caso = s ? casos.get(`SN-${String(s.folio||0).padStart(4,'0')}`) : null; area = 'Siniestros';
+    } else if(a.entidad==='seguimiento'){
+      caso = casos.get(`SG-${a.entidadId}`); if(caso) area = caso.area;
+    } else if(!esAsesorSesion()){
+      if(!casos.has('ADM')) casos.set('ADM', { id:'ADM', clienteId:'', cliente:'—', aseguradora:'', poliza:'', tipo:'Administración del CRM', area:'Comercial', responsable:'', sem:'resuelto', estado:'Administración', pend:[], prox:[], fseg:'', alertas:[] });
+      caso = casos.get('ADM');
+    }
+    if(!caso) return;
+    reg(a.fecha, b360Persona(a.autor), caso, area, `${ACC[a.accion]||a.accion} de ${ENT[a.entidad]||a.entidad} en el CRM`, b360Redactar(desc), desc, `Auditoría (${a.rol||'sin rol'})`);
+  });
+  // Trazabilidad: orden cronológico por caso; pendientes, próxima gestión y fecha de seguimiento van en la última gestión de cada caso
+  R.sort((a,b)=> a.caso.localeCompare(b.caso) || a.fecha.localeCompare(b.fecha));
+  const ultimo = new Map(); R.forEach(r=> ultimo.set(r.caso, r));
+  casos.forEach(c=>{ const u = ultimo.get(c.id); c.ultima = u || null; c.gestiones = 0; c.diasSinAtencion = u ? b360Dias(u.fecha) : null; });
+  R.forEach(r=>{ const c = casos.get(r.caso); c.gestiones++; r.ultima = ultimo.get(r.caso)===r; });
+  // Duplicados: misma acción sobre el mismo caso, del mismo usuario, en menos de 15 minutos
+  const dups = [];
+  const grupos = new Map();
+  R.filter(r=> r.fuente.startsWith('Auditoría') && r.fecha.length>10).forEach(r=>{ const k = [r.caso, r.accion, r.usuario].join('|'); if(!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(r); });
+  grupos.forEach(l=> l.forEach((r,i)=>{ if(i && (new Date(r.fecha) - new Date(l[i-1].fecha)) < 15*60000){ r.duplicado = true; dups.push({ tipo:'Gestión repetida (auditoría)', casos: r.caso, cliente: casos.get(r.caso).cliente, detalle:`${r.accion} por ${r.usuario}: ${b360Fmt(l[i-1].fecha)} y ${r.fecha.slice(11,16)}`, recomendacion:'Se cuenta una sola vez; queda en la auditoría' }); } }));
+  const porNumero = new Map();
+  ventas.filter(v=> ventaActiva(v) && v.numeroPoliza).forEach(v=>{ const k = [String(v.numeroPoliza).replace(/\D/g,''), b360Aseg(v.aseguradora), v.vigenciaInicio].join('|'); if(!porNumero.has(k)) porNumero.set(k, []); porNumero.get(k).push(v); });
+  porNumero.forEach((l,k)=>{ if(l.length>1) dups.push({ tipo:'Póliza duplicada (mismo número y vigencia)', casos: l.map(v=>folioV(v.folio)).join(', '), cliente: casos.get(folioV(l[0].folio)).cliente, detalle:`${k.split('|')[1]} N.° ${l[0].numeroPoliza} desde ${fmtDate(l[0].vigenciaInicio)}`, recomendacion:'Revisar y anular la ficha sobrante' }); });
+  const porPlaca = new Map();
+  ventas.filter(v=> ventaActiva(v) && v.vehPlaca).forEach(v=>{ const k = [v.clienteId, v.tipoProducto, v.vehPlaca.toUpperCase().replace(/\W/g,'')].join('|'); if(!porPlaca.has(k)) porPlaca.set(k, []); porPlaca.get(k).push(v); });
+  porPlaca.forEach((l,k)=>{ l.sort((a,b)=>(a.vigenciaInicio||'').localeCompare(b.vigenciaInicio||'')); l.forEach((b,i)=>{ const a = l[i-1]; if(a && a.vigenciaFin && b.vigenciaInicio && b.vigenciaInicio < addDaysISO(a.vigenciaFin, -20) && b.renuevaVentaId!==a.id) dups.push({ tipo:'Posible duplicado (misma placa con vigencias cruzadas)', casos:`${folioV(a.folio)}, ${folioV(b.folio)}`, cliente: casos.get(folioV(a.folio)).cliente, detalle:`Placa ${k.split('|')[2]}: ${fmtDate(a.vigenciaInicio)}–${fmtDate(a.vigenciaFin)} y desde ${fmtDate(b.vigenciaInicio)}`, recomendacion:'Verificar si es renovación o doble registro' }); }); });
+  const porCliente = new Map();
+  state.clientes.filter(clientePerteneceAAsesor).forEach(c=>{
+    const kN = 'n|' + b360Cliente(c.nombre).replace(/S\.A\.C\.|E\.I\.R\.L\.|S\.R\.L\./g,'').replace(/[^A-ZÑ0-9 ]/g,' ').split(/\s+/).filter(Boolean).sort().join(' ');
+    [kN, c.documento ? 'd|'+String(c.documento).replace(/\D/g,'') : null].filter(k=>k && k.length>2).forEach(k=>{ if(!porCliente.has(k)) porCliente.set(k, []); porCliente.get(k).push(c); });
+  });
+  const vistos = new Set();
+  porCliente.forEach((l,k)=>{ const ids = l.map(c=>c.id).sort().join(','); if(l.length>1 && !vistos.has(ids)){ vistos.add(ids); dups.push({ tipo: k[0]==='d' ? 'Cliente duplicado (mismo documento)' : 'Cliente duplicado (mismo nombre)', casos: l.map(c=>'CL-'+c.id).join(', '), cliente: b360Cliente(l[0].nombre), detalle: l.map(c=>`${c.nombre} (${c.tipoDocumento||''} ${c.documento||'s/d'})`).join(' | '), recomendacion:'Fusionar fichas y reasignar pólizas' }); } });
+  b360Datos._c = { firma, hoy, R, casos, dups };
+  return b360Datos._c;
+}
+// Indicadores ejecutivos, de productividad por asesor y de cumplimiento por aseguradora
+function b360Indicadores(D){
+  const tc = Number(state.tipoCambio)||3.4;
+  const usd = (v, m) => (Number(m)||0) / (v.moneda==='USD' ? 1 : tc);
+  const ventas = misVentas(state.ventas);
+  const casos = Array.from(D.casos.values());
+  const polizas = casos.filter(c=>c.venta);
+  const prom = l => l.length ? Math.round(l.reduce((s,x)=>s+x,0)/l.length*10)/10 : null;
+  const sins = casos.filter(c=>c.siniestro);
+  const avisos = sins.map(c=>c.siniestro).filter(s=>s.fechaAviso && s.fechaEvento).map(s=> Math.round((new Date(s.fechaAviso)-new Date(s.fechaEvento))/86400000)).filter(x=>x>=0);
+  const lagCom = ventas.filter(v=> !v.origenCarga && v.vigenciaInicio && (v.pagosComision||[]).length).map(v=> Math.round((new Date((v.pagosComision.map(p=>p.fecha).filter(Boolean).sort()[0])) - new Date(v.vigenciaInicio))/86400000)).filter(x=>x>=0);
+  const abiertos = casos.filter(c=> c.sem!=='resuelto' && c.diasSinAtencion!==null);
+  const tiene = (c, area, alerta) => c.alertas.some(a=> a.area===area && (!alerta || a.alerta===alerta));
+  const k = {
+    gestiones: D.R.filter(r=>!r.duplicado).length,
+    emitidas: ventas.filter(ventaActiva).length,
+    emitidasAnio: ventas.filter(v=> ventaActiva(v) && (v.fechaVenta||'').slice(0,4)===todayISO().slice(0,4)).length,
+    anuladas: ventas.filter(v=>!ventaActiva(v)).length,
+    renovaciones: ventas.filter(v=> ventaActiva(v) && v.tipoVenta==='renovacion').length,
+    cobranzas: polizas.filter(c=>tiene(c,'Cobranzas')).length,
+    comisiones: polizas.filter(c=>tiene(c,'Comisiones')).length,
+    siniestrosAbiertos: sins.filter(c=> siniestroAbierto(c.siniestro)).length,
+    vencidos: polizas.filter(c=>tiene(c,'Renovaciones','Póliza vencida sin renovación registrada')).length,
+    proximos: polizas.filter(c=>tiene(c,'Renovaciones','Póliza próxima a vencer')).length,
+    aviso: prom(avisos), pagoComision: prom(lagCom), sinAtencion: prom(abiertos.map(c=>c.diasSinAtencion)),
+    sem: Object.fromEntries(Object.keys(B360_SEM).map(s=>[s, casos.filter(c=>c.sem===s && c.id!=='ADM').length])),
+  };
+  // Asesores (cartera asignada)
+  const as = new Map();
+  polizas.forEach(c=>{ const v = c.venta; const n = c.responsable; if(!as.has(n)) as.set(n, { asesor:n, polizas:0, anio:0, nuevas:0, renov:0, prima:0, comision:0, criticos:0, urgentes:0, vencidas:0, casos:0 });
+    const a = as.get(n); a.casos++; a.criticos += c.sem==='critico'; a.urgentes += c.sem==='urgente'; a.vencidas += c.estado.startsWith('Vencida');
+    if(ventaActiva(v)){ a.polizas++; a.anio += (v.fechaVenta||'').slice(0,4)===todayISO().slice(0,4); v.tipoVenta==='renovacion' ? a.renov++ : a.nuevas++; a.prima += usd(v, v.primaBruta||v.primaNeta); a.comision += usd(v, v.comisionTotal); } });
+  const asesores = Array.from(as.values()).map(a=> Object.assign(a, { sinAlertas: a.casos ? 1-(a.criticos+a.urgentes)/a.casos : 0, puntaje: a.polizas + a.anio + 2*a.renov - 1.5*a.criticos - 0.5*a.urgentes })).sort((a,b)=> b.puntaje-a.puntaje);
+  // Usuarios del CRM (auditoría)
+  const us = new Map();
+  D.R.filter(r=> r.fuente.startsWith('Auditoría') && !r.duplicado).forEach(r=>{ if(!us.has(r.usuario)) us.set(r.usuario, { usuario:r.usuario, gestiones:0, registros:0, actualizaciones:0, eliminaciones:0, dias:new Set(), ultima:'' });
+    const u = us.get(r.usuario); u.gestiones++; u.registros += r.accion.startsWith('Registro'); u.actualizaciones += r.accion.startsWith('Actualiz'); u.eliminaciones += r.accion.startsWith('Elimin'); u.dias.add(r.fecha.slice(0,10)); if(r.fecha > u.ultima) u.ultima = r.fecha; });
+  const usuarios = Array.from(us.values()).map(u=> Object.assign(u, { diasActivos: u.dias.size, porDia: Math.round(u.gestiones/Math.max(1,u.dias.size)*10)/10 })).sort((a,b)=> b.gestiones-a.gestiones);
+  // Aseguradoras (cumplimiento): 60% pólizas con comisión pagada + 40% siniestros cerrados
+  const ag = new Map();
+  const g = n => { if(!ag.has(n)) ag.set(n, { aseguradora:n, polizas:0, anuladas:0, prima:0, esperada:0, recibida:0, conPago:0, lag:[], siniestros:0, abiertos:0, sinMov:[], vencidas:0 }); return ag.get(n); };
+  polizas.forEach(c=>{ const v = c.venta, a = g(c.aseguradora);
+    if(!ventaActiva(v)){ a.anuladas++; return; }
+    a.polizas++; a.prima += usd(v, v.primaBruta||v.primaNeta); a.esperada += usd(v, v.comisionTotal); a.vencidas += c.estado.startsWith('Vencida');
+    const pagos = v.pagosComision||[]; a.recibida += pagos.reduce((s,p)=> s + (Number(p.monto)||0)/((p.moneda||v.moneda)==='USD' ? 1 : tc), 0);
+    if(pagos.length){ a.conPago++; const f = pagos.map(p=>p.fecha).filter(Boolean).sort()[0]; if(f && v.vigenciaInicio && !v.origenCarga){ const l = Math.round((new Date(f)-new Date(v.vigenciaInicio))/86400000); if(l>=0) a.lag.push(l); } } });
+  sins.forEach(c=>{ const a = g(c.aseguradora); a.siniestros++; if(siniestroAbierto(c.siniestro)){ a.abiertos++; a.sinMov.push(sinDiasSinMov(c.siniestro)||0); } });
+  const aseguradoras = Array.from(ag.values()).map(a=>{ const pct = a.polizas ? a.conPago/a.polizas : 0; const cerr = a.siniestros ? 1 - a.abiertos/a.siniestros : 1;
+    return Object.assign(a, { pctPagadas: pct, diasPago: prom(a.lag), sinMovProm: prom(a.sinMov), indice: Math.round((0.6*pct + 0.4*cerr)*1000)/1000 }); })
+    .sort((a,b)=> ((b.polizas>=10)-(a.polizas>=10)) || (b.indice-a.indice) || (b.polizas-a.polizas));
+  const porArea = B360_AREAS.map(ar=> ({ area: ar, gestiones: D.R.filter(r=> r.area===ar && !r.duplicado).length, alertas: casos.reduce((s,c)=> s + c.alertas.filter(a=>a.area===ar).length, 0) }));
+  return { k, asesores, usuarios, aseguradoras, porArea };
+}
+
+let b360Vista = 'alertas', b360Area = 'todas', b360Sem = 'todos', b360Resp = 'todos', b360AsegF = 'todas', b360Texto = '', b360Desde = '', b360Hasta = '', b360Pagina = 1, b360ClienteId = '';
+const B360_POR_PAGINA = 100;
+function b360Pill(sem){ const s = B360_SEM[sem]; return `<span class="pill" style="background:${s.color};color:#fff;white-space:nowrap;">${s.label}</span>`; }
+function b360FechaSeg(f, hoy){ if(!f) return '—'; const col = f<=hoy ? 'var(--danger)' : daysUntil(f)<=7 ? '#B8823D' : 'var(--ink)'; return `<b style="color:${col};">${fmtDate(f)}</b>`; }
+function viewBitacora360(){
+  const D = b360Datos(), I = b360Indicadores(D), hoy = D.hoy;
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const casos = Array.from(D.casos.values()).filter(c=>c.id!=='ADM');
+  const q = b360Texto.trim().toLowerCase();
+  const pasaCaso = c => (b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (b360Resp==='todos' || c.responsable===b360Resp)
+    && (!b360ClienteId || c.clienteId===b360ClienteId) && (!q || [c.id, c.cliente, c.poliza, c.aseguradora, c.tipo, c.estado].join(' ').toLowerCase().includes(q));
+  const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor??'—'}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
+  const aseguradoras = Array.from(new Set(casos.map(c=>c.aseguradora).filter(Boolean))).sort();
+  const responsables = Array.from(new Set(casos.map(c=>c.responsable).concat(D.R.map(r=>r.usuario)).filter(Boolean))).sort();
+  const opt = (val, actual, label) => `<option value="${esc(val)}" ${actual===val?'selected':''}>${esc(label||val)}</option>`;
+  const cliSel = b360ClienteId ? state.clientes.find(c=>c.id===b360ClienteId) : null;
+  let cuerpo = '';
+  if(b360Vista==='alertas'){
+    const filas = [];
+    casos.filter(pasaCaso).forEach(c=> c.alertas.forEach(a=>{ if((b360Area==='todas' || a.area===b360Area) && (b360Sem==='todos' || a.sem===b360Sem)) filas.push({ c, a }); }));
+    filas.sort((x,y)=> B360_SEM[x.a.sem].orden - B360_SEM[y.a.sem].orden || (y.a.dias||0) - (x.a.dias||0));
+    cuerpo = `<div class="card" style="padding:0;overflow-x:auto;"><table><thead><tr><th>Clasificación</th><th>Área</th><th>Alerta</th><th>Caso</th><th>Cliente</th><th>Aseguradora · Póliza</th><th>Responsable</th><th>Fecha clave</th><th>Días</th><th>Sin atención</th><th>Próxima gestión</th><th>Seguimiento</th></tr></thead><tbody>
+      ${filas.length ? filas.slice(0, 300).map(({c,a})=>`<tr><td>${b360Pill(a.sem)}</td><td>${a.area}</td><td>${esc(a.alerta)}</td><td class="folio">${esc(c.id)}</td>
+        <td>${c.clienteId ? `<a href="#" data-b360-cliente="${c.clienteId}" style="color:var(--primary);">${esc(c.cliente)}</a>` : esc(c.cliente)}</td>
+        <td>${esc(c.aseguradora||'—')}<div class="hint">${esc(c.poliza||'—')} · ${esc(c.tipo)}</div></td><td>${esc(c.responsable||'—')}</td>
+        <td><b>${fmtDate(a.fechaClave)}</b></td><td class="num">${a.dias??'—'}</td><td class="num">${c.diasSinAtencion??'—'}</td><td style="max-width:260px;font-size:13px;">${esc(c.prox.join('; ')||'—')}</td><td>${b360FechaSeg(c.fseg, hoy)}</td></tr>`).join('')
+        : '<tr class="empty-row"><td colspan="12">No hay alertas con estos filtros.</td></tr>'}</tbody></table></div>
+      ${filas.length>300 ? `<div class="hint" style="margin-top:6px;">Se muestran las primeras 300 de ${filas.length} alertas; descarga el Excel para verlas todas.</div>` : ''}`;
+  } else if(b360Vista==='bitacora'){
+    let rows = D.R.filter(r=>{ const c = D.casos.get(r.caso); return c && c.id!=='ADM' && pasaCaso(c) || (c && c.id==='ADM' && !b360ClienteId && b360Sem==='todos' && !q); })
+      .filter(r=> (b360Area==='todas' || r.area===b360Area) && (!b360Desde || r.fecha.slice(0,10)>=b360Desde) && (!b360Hasta || r.fecha.slice(0,10)<=b360Hasta));
+    if(q) rows = rows.filter(r=> [r.accion, r.resultado, r.obs, r.usuario, D.casos.get(r.caso).cliente, r.caso].join(' ').toLowerCase().includes(q) || pasaCaso(D.casos.get(r.caso)));
+    rows = rows.slice().sort((a,b)=> b360ClienteId ? a.fecha.localeCompare(b.fecha) : b.fecha.localeCompare(a.fecha));
+    const total = rows.length, paginas = Math.max(1, Math.ceil(total/B360_POR_PAGINA)); if(b360Pagina>paginas) b360Pagina = paginas;
+    const ini = (b360Pagina-1)*B360_POR_PAGINA;
+    cuerpo = `${cliSel ? b360CabeceraCliente(D, cliSel) : ''}
+      <div class="hint" style="margin-bottom:6px;">${total} gestión(es) ${b360ClienteId ? 'en orden cronológico' : 'de la más reciente a la más antigua'}. Pase el mouse sobre «Observaciones» para ver el texto original.</div>
+      <div class="card" style="padding:0;overflow-x:auto;"><table style="font-size:13px;"><thead><tr><th>Fecha y hora</th><th>Usuario responsable</th><th>Cliente</th><th>Aseguradora</th><th>N.° póliza</th><th>Tipo de seguro</th><th>Estado del trámite</th><th>Acción realizada</th><th>Resultado obtenido</th><th>Pendientes</th><th>Próxima gestión</th><th>Fecha de seguimiento</th><th>Observaciones</th><th>Área</th><th>Clasificación</th><th>Caso</th></tr></thead><tbody>
+      ${rows.slice(ini, ini+B360_POR_PAGINA).map(r=>{ const c = D.casos.get(r.caso); return `<tr${r.duplicado?' style="opacity:0.55;" title="Gestión repetida en menos de 15 minutos"':''}>
+        <td style="white-space:nowrap;"><b>${b360Fmt(r.fecha)}</b></td><td>${esc(r.usuario)}</td><td>${c.clienteId ? `<a href="#" data-b360-cliente="${c.clienteId}" style="color:var(--primary);">${esc(c.cliente)}</a>` : esc(c.cliente)}</td>
+        <td>${esc(c.aseguradora||'—')}</td><td>${esc(c.poliza||'—')}</td><td>${esc(c.tipo||'—')}</td><td>${esc(c.estado)}</td><td>${esc(r.accion)}</td><td style="min-width:200px;">${esc(r.resultado)}</td>
+        <td style="min-width:160px;">${r.ultima ? esc(c.pend.join('; ')||'Ninguno') : '<span class="hint">Ver gestión posterior</span>'}</td><td>${r.ultima ? esc(c.prox.join('; ')||'Sin gestión pendiente') : '—'}</td>
+        <td>${r.ultima ? b360FechaSeg(c.fseg, hoy) : '—'}</td><td style="min-width:180px;" title="${esc(r.original ? 'Texto original: '+r.original : '')}">${esc(r.obs||'—')}</td><td>${r.area}</td><td>${b360Pill(c.sem)}</td><td class="folio">${esc(c.id)}</td></tr>`; }).join('') || '<tr class="empty-row"><td colspan="16">No hay gestiones con estos filtros.</td></tr>'}
+      </tbody></table></div>
+      ${paginas>1 ? `<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-sm" data-b360-pag="${b360Pagina-1}" ${b360Pagina<=1?'disabled':''}>◀</button><span class="hint">Página ${b360Pagina} de ${paginas}</span><button class="btn btn-sm" data-b360-pag="${b360Pagina+1}" ${b360Pagina>=paginas?'disabled':''}>▶</button></div>` : ''}`;
+  } else if(b360Vista==='casos'){
+    const rows = casos.filter(pasaCaso).filter(c=> b360Area==='todas' || c.area===b360Area || c.alertas.some(a=>a.area===b360Area))
+      .sort((a,b)=> B360_SEM[a.sem].orden - B360_SEM[b.sem].orden || (b.diasSinAtencion||0) - (a.diasSinAtencion||0));
+    cuerpo = `<div class="card" style="padding:0;overflow-x:auto;"><table style="font-size:13px;"><thead><tr><th>Caso</th><th>Cliente</th><th>Aseguradora · Póliza</th><th>Área</th><th>Estado del trámite</th><th>Clasificación</th><th>Gestiones</th><th>Última gestión</th><th>Días sin atención</th><th>Pendientes</th><th>Próxima gestión</th><th>Seguimiento</th></tr></thead><tbody>
+      ${rows.slice(0, 400).map(c=>`<tr><td class="folio">${esc(c.id)}</td><td>${c.clienteId ? `<a href="#" data-b360-cliente="${c.clienteId}" style="color:var(--primary);">${esc(c.cliente)}</a>` : esc(c.cliente)}</td>
+        <td>${esc(c.aseguradora||'—')}<div class="hint">${esc(c.poliza||'—')} · ${esc(c.tipo)}</div></td><td>${c.area}</td><td>${esc(c.estado)}</td><td>${b360Pill(c.sem)}</td><td class="num">${c.gestiones}</td>
+        <td>${c.ultima ? `<b>${b360Fmt(c.ultima.fecha)}</b><div class="hint">${esc(c.ultima.accion)} · ${esc(c.ultima.usuario)}</div>` : '—'}</td><td class="num">${c.diasSinAtencion??'—'}</td>
+        <td style="max-width:240px;">${esc(c.pend.join('; ')||'Ninguno')}</td><td style="max-width:220px;">${esc(c.prox.join('; ')||'—')}</td><td>${b360FechaSeg(c.fseg, hoy)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="12">No hay casos con estos filtros.</td></tr>'}
+      </tbody></table></div>${rows.length>400 ? `<div class="hint" style="margin-top:6px;">Se muestran 400 de ${rows.length} casos; descarga el Excel para verlos todos.</div>` : ''}`;
+  } else if(b360Vista==='clientes'){
+    const porCli = new Map();
+    casos.forEach(c=>{ if(!c.clienteId) return; if(!porCli.has(c.clienteId)) porCli.set(c.clienteId, { id:c.clienteId, cliente:c.cliente, casos:0, gestiones:0, ultima:null, sem:'resuelto' });
+      const x = porCli.get(c.clienteId); x.casos++; x.gestiones += c.gestiones; x.sem = b360Peor(x.sem, c.sem); if(c.ultima && (!x.ultima || c.ultima.fecha > x.ultima.fecha)) x.ultima = c.ultima; });
+    const rows = Array.from(porCli.values()).filter(x=> (b360Sem==='todos' || x.sem===b360Sem) && (!q || x.cliente.toLowerCase().includes(q)))
+      .sort((a,b)=> B360_SEM[a.sem].orden - B360_SEM[b.sem].orden || ((a.ultima||{}).fecha||'').localeCompare((b.ultima||{}).fecha||''));
+    cuerpo = `<div class="hint" style="margin-bottom:6px;">Haga clic en un cliente para ver su historial cronológico completo.</div><div class="card" style="padding:0;overflow-x:auto;"><table><thead><tr><th>Cliente</th><th>Casos</th><th>Gestiones</th><th>Última gestión</th><th>Última acción</th><th>Usuario</th><th>Días sin atención</th><th>Peor clasificación</th></tr></thead><tbody>
+      ${rows.slice(0, 400).map(x=>`<tr><td><a href="#" data-b360-cliente="${x.id}" style="color:var(--primary);font-weight:600;">${esc(x.cliente)}</a></td><td class="num">${x.casos}</td><td class="num">${x.gestiones}</td>
+        <td><b>${x.ultima ? b360Fmt(x.ultima.fecha) : '—'}</b></td><td>${esc(x.ultima ? x.ultima.accion : '—')}</td><td>${esc(x.ultima ? x.ultima.usuario : '—')}</td><td class="num">${x.ultima ? b360Dias(x.ultima.fecha) : '—'}</td><td>${b360Pill(x.sem)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="8">Sin clientes con estos filtros.</td></tr>'}
+      </tbody></table></div>`;
+  } else if(b360Vista==='reportes'){
+    const usdF = n => 'US$ ' + (Math.round(n*100)/100).toLocaleString('es-PE', { minimumFractionDigits:2, maximumFractionDigits:2 });
+    const pct = n => n==null ? '—' : Math.round(n*1000)/10 + '%';
+    cuerpo = `
+      <div class="panel-title">Gestiones y alertas por área</div>
+      <div class="card" style="padding:0;overflow-x:auto;margin-bottom:16px;"><table><thead><tr><th>Área</th><th>Gestiones</th><th>Alertas abiertas</th></tr></thead><tbody>${I.porArea.map(a=>`<tr><td>${a.area}</td><td class="num">${a.gestiones}</td><td class="num">${a.alertas}</td></tr>`).join('')}</tbody></table></div>
+      <div class="panel-title">Ranking de asesores (cartera asignada)</div>
+      <div class="card" style="padding:0;overflow-x:auto;margin-bottom:6px;"><table><thead><tr><th>#</th><th>Asesor</th><th>Pólizas</th><th>Emitidas ${hoy.slice(0,4)}</th><th>Nuevas</th><th>Renovaciones</th><th>Prima</th><th>Comisión</th><th>Críticos</th><th>Urgentes</th><th>Vencidas sin renovar</th><th>% sin alertas</th></tr></thead><tbody>
+        ${I.asesores.map((a,i)=>`<tr><td>${i+1}</td><td>${esc(a.asesor)}</td><td class="num">${a.polizas}</td><td class="num">${a.anio}</td><td class="num">${a.nuevas}</td><td class="num">${a.renov}</td><td class="num">${usdF(a.prima)}</td><td class="num">${usdF(a.comision)}</td><td class="num">${a.criticos}</td><td class="num">${a.urgentes}</td><td class="num">${a.vencidas}</td><td class="num">${pct(a.sinAlertas)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="hint" style="margin-bottom:16px;">Puntaje = pólizas + emitidas en el año + 2 × renovaciones − 1,5 × críticos − 0,5 × urgentes.</div>
+      <div class="panel-title">Productividad de usuarios en el CRM</div>
+      <div class="card" style="padding:0;overflow-x:auto;margin-bottom:16px;"><table><thead><tr><th>Usuario</th><th>Gestiones</th><th>Registros</th><th>Actualizaciones</th><th>Eliminaciones</th><th>Días activos</th><th>Gestiones por día</th><th>Última actividad</th></tr></thead><tbody>
+        ${I.usuarios.map(u=>`<tr><td>${esc(u.usuario)}</td><td class="num">${u.gestiones}</td><td class="num">${u.registros}</td><td class="num">${u.actualizaciones}</td><td class="num">${u.eliminaciones}</td><td class="num">${u.diasActivos}</td><td class="num">${u.porDia}</td><td>${b360Fmt(u.ultima)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="panel-title">Cumplimiento por aseguradora</div>
+      <div class="card" style="padding:0;overflow-x:auto;margin-bottom:6px;"><table><thead><tr><th>#</th><th>Aseguradora</th><th>Pólizas</th><th>Anuladas</th><th>Prima</th><th>Comisión esperada</th><th>Comisión recibida</th><th>% con comisión pagada</th><th>Días al 1.er pago</th><th>Siniestros</th><th>Abiertos</th><th>Días sin mov. (abiertos)</th><th>Vencidas sin renovar</th><th>Índice</th></tr></thead><tbody>
+        ${I.aseguradoras.map((a,i)=>`<tr><td>${i+1}</td><td>${esc(a.aseguradora)}</td><td class="num">${a.polizas}</td><td class="num">${a.anuladas}</td><td class="num">${usdF(a.prima)}</td><td class="num">${usdF(a.esperada)}</td><td class="num">${usdF(a.recibida)}</td><td class="num">${pct(a.pctPagadas)}</td><td class="num">${a.diasPago??'—'}</td><td class="num">${a.siniestros}</td><td class="num">${a.abiertos}</td><td class="num">${a.sinMovProm??'—'}</td><td class="num">${a.vencidas}</td><td class="num"><b>${pct(a.indice)}</b></td></tr>`).join('')}</tbody></table></div>
+      <div class="hint">Índice = 60% pólizas con comisión pagada + 40% siniestros cerrados. Primero las aseguradoras con 10 o más pólizas. Montos en US$ al tipo de cambio del CRM.</div>`;
+  } else if(b360Vista==='duplicados'){
+    cuerpo = `<div class="hint" style="margin-bottom:6px;">No se eliminó nada: las gestiones repetidas se cuentan una sola vez en los indicadores y las fichas duplicadas quedan para revisión.</div>
+      <div class="card" style="padding:0;overflow-x:auto;"><table><thead><tr><th>Tipo</th><th>Casos</th><th>Cliente</th><th>Detalle</th><th>Recomendación</th></tr></thead><tbody>
+      ${D.dups.filter(x=> !q || [x.cliente, x.casos, x.detalle].join(' ').toLowerCase().includes(q)).map(x=>`<tr><td>${esc(x.tipo)}</td><td class="folio">${esc(x.casos)}</td><td>${esc(x.cliente)}</td><td style="font-size:13px;">${esc(x.detalle)}</td><td style="font-size:13px;">${esc(x.recomendacion)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="5">No se detectaron duplicados.</td></tr>'}</tbody></table></div>`;
+  }
+  const K = I.k;
+  const chip = s => `<button class="btn btn-sm ${b360Sem===s?'btn-primary':'btn-ghost'}" data-b360-sem="${s}">${B360_SEM[s].label} <b>${K.sem[s]}</b></button>`;
+  const vistas = [['alertas','🔔 Alertas'],['bitacora','📋 Bitácora'],['casos','🗂 Trazabilidad por caso'],['clientes','👤 Clientes'],['reportes','📊 Reportes ejecutivos'],['duplicados',`⧉ Duplicados (${D.dups.length})`]];
+  return `
+    <div class="page-head"><div><h1>Bitácora 360</h1><p>Todas las gestiones del CRM con la estructura estándar de auditoría: fecha, responsable, cliente, aseguradora, póliza, estado, acción, resultado, pendientes y seguimiento.</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnB360Excel">⬇ Descargar reporte Excel</button>' : ''}</div></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:12px;">
+      ${tarjeta('#1F4B41','Gestiones registradas', K.gestiones, 'sin contar repeticiones')}
+      ${tarjeta('#3D6B52','Pólizas emitidas', K.emitidas, `${K.emitidasAnio} en ${hoy.slice(0,4)} · ${K.anuladas} anuladas`)}
+      ${tarjeta('#2F5D7C','Renovaciones', K.renovaciones, 'pólizas de renovación')}
+      ${tarjeta('#8C3B3B','Casos vencidos', K.vencidos, 'pólizas vencidas sin renovar')}
+      ${tarjeta('#C26A1F','Próximos a vencer', K.proximos, 'en los próximos 60 días')}
+      ${tarjeta('#B8823D','Cobranzas pendientes', K.cobranzas, 'pólizas con cuotas vencidas')}
+      ${tarjeta('#5A4E7C','Siniestros abiertos', K.siniestrosAbiertos, `aviso promedio: ${K.aviso??'—'} días`)}
+      ${tarjeta('#4A5A6A','Tiempo de respuesta', K.sinAtencion!=null ? K.sinAtencion+' d' : '—', `días sin atención (casos abiertos) · comisión: ${K.pagoComision??'—'} d`)}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"><button class="btn btn-sm ${b360Sem==='todos'?'btn-primary':'btn-ghost'}" data-b360-sem="todos">Todos</button>${Object.keys(B360_SEM).map(chip).join('')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">${vistas.map(([k,l])=>`<button class="btn btn-sm ${b360Vista===k?'btn-primary':'btn-ghost'}" data-b360-vista="${k}">${l}</button>`).join('')}</div>
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <select id="fB360Area"><option value="todas">Todas las áreas</option>${B360_AREAS.map(a=>opt(a, b360Area)).join('')}</select>
+      <select id="fB360Resp"><option value="todos">Todos los responsables</option>${responsables.map(r=>opt(r, b360Resp)).join('')}</select>
+      <select id="fB360Aseg"><option value="todas">Todas las aseguradoras</option>${aseguradoras.map(a=>opt(a, b360AsegF)).join('')}</select>
+      ${b360Vista==='bitacora' ? `<input type="date" id="fB360Desde" value="${b360Desde}" title="Desde"><input type="date" id="fB360Hasta" value="${b360Hasta}" title="Hasta">` : ''}
+      <input type="text" id="fB360Texto" placeholder="Buscar cliente, póliza, caso…" value="${esc(b360Texto)}" style="min-width:220px;">
+      ${cliSel ? `<button class="btn btn-sm" id="btnB360QuitarCliente">✕ ${esc(b360Cliente(cliSel.nombre))}</button>` : ''}
+    </div>
+    ${cuerpo}`;
+}
+function b360CabeceraCliente(D, cli){
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const cs = Array.from(D.casos.values()).filter(c=>c.clienteId===cli.id);
+  const ult = cs.map(c=>c.ultima).filter(Boolean).sort((a,b)=> b.fecha.localeCompare(a.fecha))[0];
+  const sem = cs.reduce((s,c)=> b360Peor(s, c.sem), 'resuelto');
+  return `<div class="card" style="padding:14px;margin-bottom:10px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+    <div><div class="hint">Historial cronológico del cliente</div><div style="font-weight:700;font-size:16px;">${esc(b360Cliente(cli.nombre))}</div><div class="hint">${esc(cli.tipoDocumento||'')} ${esc(cli.documento||'s/d')}</div></div>
+    <div><div class="hint">Casos</div><b>${cs.length}</b></div><div><div class="hint">Gestiones</div><b>${cs.reduce((s,c)=>s+c.gestiones,0)}</b></div>
+    <div><div class="hint">Última gestión</div><b>${ult ? b360Fmt(ult.fecha) : '—'}</b><div class="hint">${ult ? esc(ult.accion)+' · '+esc(ult.usuario) : ''}</div></div>
+    <div><div class="hint">Días sin atención</div><b>${ult ? b360Dias(ult.fecha) : '—'}</b></div><div>${b360Pill(sem)}</div>
+    <button class="btn btn-sm btn-ghost" data-ficha-cliente="${cli.id}">Abrir ficha del cliente</button></div>`;
+}
+function wireBitacora360(){
+  const re = () => { b360Pagina = 1; render(); };
+  document.querySelectorAll('[data-b360-vista]').forEach(b=> b.onclick = ()=>{ b360Vista = b.dataset.b360Vista; re(); });
+  document.querySelectorAll('[data-b360-sem]').forEach(b=> b.onclick = ()=>{ b360Sem = b.dataset.b360Sem; re(); });
+  document.querySelectorAll('[data-b360-pag]').forEach(b=> b.onclick = ()=>{ b360Pagina = Number(b.dataset.b360Pag)||1; render(); window.scrollTo(0,0); });
+  document.querySelectorAll('[data-b360-cliente]').forEach(a=> a.onclick = e=>{ e.preventDefault(); b360ClienteId = a.dataset.b360Cliente; b360Vista = 'bitacora'; b360Sem = 'todos'; b360Area = 'todas'; b360Texto = ''; re(); });
+  document.querySelectorAll('#main-view [data-ficha-cliente]').forEach(a=> a.onclick = e=>{ e.preventDefault(); fichaClienteId = a.dataset.fichaCliente; tab = 'clientes'; render(); });
+  const sel = (id, fn) => { const el = document.getElementById(id); if(el) el.onchange = e=>{ fn(e.target.value); re(); }; };
+  sel('fB360Area', v=> b360Area = v); sel('fB360Resp', v=> b360Resp = v); sel('fB360Aseg', v=> b360AsegF = v); sel('fB360Desde', v=> b360Desde = v); sel('fB360Hasta', v=> b360Hasta = v);
+  const qc = document.getElementById('btnB360QuitarCliente'); if(qc) qc.onclick = ()=>{ b360ClienteId = ''; re(); };
+  const ft = document.getElementById('fB360Texto');
+  if(ft) ft.oninput = ()=>{ b360Texto = ft.value; clearTimeout(wireBitacora360._t); wireBitacora360._t = setTimeout(()=>{ b360Pagina = 1; render(); const f2 = document.getElementById('fB360Texto'); if(f2){ f2.focus(); f2.setSelectionRange(f2.value.length, f2.value.length); } }, 300); };
+  const ex = document.getElementById('btnB360Excel'); if(ex) ex.onclick = descargarBitacora360;
+}
+function descargarBitacora360(){
+  if(!puedeDescargar()){ alert('Tu perfil no tiene permiso para descargar archivos.'); return; }
+  try{
+    const D = b360Datos(), I = b360Indicadores(D), K = I.k;
+    const S = s => B360_SEM[s].label;
+    const wb = XLSX.utils.book_new();
+    const hoja = (nombre, filas, anchos) => { const ws = XLSX.utils.aoa_to_sheet(filas); ws['!cols'] = anchos.map(w=>({ wch:w })); ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{ r: Math.max(0, filas.length-1), c: filas[0].length-1 } }) }; XLSX.utils.book_append_sheet(wb, ws, nombre); };
+    const resumen = [['Indicador','Valor','Detalle'],
+      ['Total de gestiones realizadas', K.gestiones, 'Sin contar gestiones repetidas'], ['Pólizas emitidas', K.emitidas, `${K.emitidasAnio} en ${D.hoy.slice(0,4)}`], ['Pólizas anuladas', K.anuladas, ''],
+      ['Renovaciones', K.renovaciones, 'Pólizas registradas como renovación'], ['Cobranzas pendientes', K.cobranzas, 'Pólizas con cuotas vencidas sin pago registrado'], ['Comisiones sin pago registrado', K.comisiones, 'Más de 45 días desde el inicio de vigencia'],
+      ['Siniestros abiertos', K.siniestrosAbiertos, ''], ['Casos vencidos', K.vencidos, 'Pólizas vencidas sin renovación ni «No renueva»'], ['Casos próximos a vencer', K.proximos, 'Próximos 60 días'],
+      ['Tiempo promedio de aviso de siniestro (días)', K.aviso, 'Del evento al aviso'], ['Tiempo promedio de pago de comisión (días)', K.pagoComision, 'Del inicio de vigencia al primer pago'], ['Días promedio sin atención (casos abiertos)', K.sinAtencion, ''],
+      [], ['Clasificación de casos', '', ''], ...Object.keys(B360_SEM).map(s=>[S(s), K.sem[s], '']), [], ['Área', 'Gestiones', 'Alertas abiertas'], ...I.porArea.map(a=>[a.area, a.gestiones, a.alertas])];
+    hoja('Resumen ejecutivo', resumen, [48, 12, 50]);
+    const bit = [['Fecha y hora','Usuario responsable','Cliente','Aseguradora','N.° de póliza','Tipo de seguro','Estado del trámite','Acción realizada','Resultado obtenido','Pendientes','Próxima gestión','Fecha de seguimiento','Observaciones','Área','Clasificación','Caso','Días sin atención del caso','Gestión repetida','Fuente','Texto original']];
+    D.R.slice().sort((a,b)=> b.fecha.localeCompare(a.fecha)).forEach(r=>{ const c = D.casos.get(r.caso);
+      bit.push([b360Fmt(r.fecha), r.usuario, c.cliente, c.aseguradora, c.poliza, c.tipo, c.estado, r.accion, r.resultado, r.ultima ? (c.pend.join('; ')||'Ninguno') : 'Ver gestión posterior', r.ultima ? (c.prox.join('; ')||'Sin gestión pendiente') : '', r.ultima && c.fseg ? fmtDate(c.fseg) : '', r.obs, r.area, S(c.sem), c.id, c.diasSinAtencion, r.duplicado ? 'Sí' : '', r.fuente, r.original]); });
+    hoja('Bitácora estándar', bit, [17,24,36,18,16,18,28,40,50,45,38,14,50,13,17,10,10,9,18,50]);
+    const casos = Array.from(D.casos.values()).filter(c=>c.id!=='ADM').sort((a,b)=> B360_SEM[a.sem].orden - B360_SEM[b.sem].orden || (b.diasSinAtencion||0)-(a.diasSinAtencion||0));
+    const al = [['Clasificación','Área','Alerta','Caso','Cliente','Aseguradora','N.° de póliza','Tipo de seguro','Responsable','Fecha clave','Días','Días sin atención','Próxima gestión','Fecha de seguimiento']];
+    casos.forEach(c=> c.alertas.slice().sort((a,b)=> B360_SEM[a.sem].orden-B360_SEM[b.sem].orden).forEach(a=> al.push([S(a.sem), a.area, a.alerta, c.id, c.cliente, c.aseguradora, c.poliza, c.tipo, c.responsable, fmtDate(a.fechaClave), a.dias, c.diasSinAtencion, c.prox.join('; '), c.fseg ? fmtDate(c.fseg) : ''])));
+    hoja('Alertas', al, [17,13,40,10,36,18,16,18,22,12,8,10,45,14]);
+    hoja('Trazabilidad de casos', [['Caso','Cliente','Aseguradora','N.° de póliza','Tipo de seguro','Área','Estado del trámite','Clasificación','Gestiones','Última gestión','Última acción','Último usuario','Días sin atención','Pendientes','Próxima gestión','Fecha de seguimiento'],
+      ...casos.map(c=>[c.id, c.cliente, c.aseguradora, c.poliza, c.tipo, c.area, c.estado, S(c.sem), c.gestiones, c.ultima ? b360Fmt(c.ultima.fecha) : '', c.ultima ? c.ultima.accion : '', c.ultima ? c.ultima.usuario : '', c.diasSinAtencion, c.pend.join('; '), c.prox.join('; '), c.fseg ? fmtDate(c.fseg) : ''])], [10,36,18,16,18,13,30,17,9,17,40,22,10,50,40,14]);
+    const hist = [['Cliente','Fecha y hora','Caso','Área','Acción realizada','Resultado obtenido','Usuario responsable','Clasificación']];
+    D.R.map(r=>({ r, c: D.casos.get(r.caso) })).filter(x=> x.c.clienteId).sort((a,b)=> a.c.cliente.localeCompare(b.c.cliente) || a.r.fecha.localeCompare(b.r.fecha)).forEach(({r,c})=> hist.push([c.cliente, b360Fmt(r.fecha), c.id, r.area, r.accion, r.resultado, r.usuario, S(c.sem)]));
+    hoja('Historial por cliente', hist, [36,17,10,13,40,55,24,17]);
+    hoja('Asesores', [['#','Asesor','Pólizas','Emitidas en el año','Nuevas','Renovaciones','Prima US$','Comisión US$','Críticos','Urgentes','Vencidas sin renovar','% sin alertas'], ...I.asesores.map((a,i)=>[i+1, a.asesor, a.polizas, a.anio, a.nuevas, a.renov, Math.round(a.prima*100)/100, Math.round(a.comision*100)/100, a.criticos, a.urgentes, a.vencidas, Math.round(a.sinAlertas*1000)/10])], [5,28,9,10,9,11,13,13,9,9,11,10]);
+    hoja('Usuarios CRM', [['Usuario','Gestiones','Registros','Actualizaciones','Eliminaciones','Días activos','Gestiones por día','Última actividad'], ...I.usuarios.map(u=>[u.usuario, u.gestiones, u.registros, u.actualizaciones, u.eliminaciones, u.diasActivos, u.porDia, b360Fmt(u.ultima)])], [32,10,10,13,12,11,13,17]);
+    hoja('Aseguradoras', [['#','Aseguradora','Pólizas','Anuladas','Prima US$','Comisión esperada US$','Comisión recibida US$','% con comisión pagada','Días al 1.er pago','Siniestros','Abiertos','Días sin mov. (abiertos)','Vencidas sin renovar','Índice de cumplimiento %'],
+      ...I.aseguradoras.map((a,i)=>[i+1, a.aseguradora, a.polizas, a.anuladas, Math.round(a.prima*100)/100, Math.round(a.esperada*100)/100, Math.round(a.recibida*100)/100, Math.round(a.pctPagadas*1000)/10, a.diasPago, a.siniestros, a.abiertos, a.sinMovProm, a.vencidas, Math.round(a.indice*1000)/10])], [5,22,9,9,13,14,14,12,11,9,9,12,11,12]);
+    hoja('Duplicados', [['Tipo','Casos','Cliente','Detalle','Recomendación'], ...D.dups.map(x=>[x.tipo, x.casos, x.cliente, x.detalle, x.recomendacion])], [40,20,36,60,40]);
+    XLSX.writeFile(wb, `Bitacora_360_FG_${D.hoy}.xlsx`);
+  }catch(e){ console.error('No se pudo generar la Bitácora 360', e); alert('No se pudo generar el Excel.'); }
+}
+
 // ---------------- Reporte de siniestros en Excel ----------------
 // Usa la plantilla plantillas/reporte-siniestros-fg.xlsx (mismo formato, gráficos y fórmulas del reporte de gerencia)
 // y reemplaza solo los datos. Los indicadores del Resumen son fórmulas sobre la tabla tblSiniestros: Excel los recalcula al abrir.
@@ -6790,7 +7274,7 @@ function viewFichaCliente(id){
   const sugerenciasCruzadas = todosLosProductos().filter(r=> r.categoria==='seguro' && !esOncologico(r.id) && !productosQueTiene.has(r.id)).slice(0,4);
 
   return `
-    <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div>
+    <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" data-b360-historial="${c.id}" title="Historial cronológico de todas las gestiones del cliente">📋 Historial 360</button><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div></div>
     ${enRiesgo ? `<div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--danger);background:var(--danger-soft);">
       <div style="font-weight:600;color:var(--danger);">⚠ Cliente en riesgo de fuga</div>
       <div style="font-size:13px;margin-top:4px;">Tiene ${polizasVencidasSinRenovar.length} póliza(s) vencida(s) hace más de 30 días sin renovar (${polizasVencidasSinRenovar.map(v=>prodLabel(v.tipoProducto)).join(', ')}). Contáctalo antes de que se vaya con otra compañía.</div>
@@ -7056,6 +7540,7 @@ function wireClientes(){
   const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; render(); };
   if(fichaClienteId){
     const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
+    document.querySelectorAll('[data-b360-historial]').forEach(b=> b.onclick = ()=>{ b360ClienteId = b.dataset.b360Historial; b360Vista = 'bitacora'; b360Sem = 'todos'; b360Area = 'todas'; b360Texto = ''; b360Pagina = 1; fichaClienteId = null; tab = 'bitacora360'; render(); });
     document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
     const btnNota = document.getElementById('btnAgregarInteraccion');
     if(btnNota) btnNota.onclick = () => {
@@ -8912,6 +9397,7 @@ render = function(){
   if(tab==='soat') wireSoat();
   if(tab==='pipeline') wirePipeline();
   if(tab==='siniestros') wireSiniestros();
+  if(tab==='bitacora360') wireBitacora360();
   if(tab==='cartera_recuperacion') wireCarteraRecuperacion();
   if(tab==='mensajes_grupo') wireMensajesGrupo();
   if(tab==='asesores') wireAsesores();
