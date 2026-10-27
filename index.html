@@ -82,7 +82,7 @@
 #crm-app .pill-gray { background: #EEF0EF; color: var(--ink-soft); }
 
 #crm-app .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-#crm-app select, #crm-app input[type=text], #crm-app input[type=number], #crm-app input[type=date], #crm-app textarea {
+#crm-app select, #crm-app input[type=text], #crm-app input[type=number], #crm-app input[type=date], #crm-app input[type=datetime-local], #crm-app textarea {
   font-family: 'Inter', sans-serif; font-size: 13px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--ink);
 }
 #crm-app select:focus, #crm-app input:focus, #crm-app textarea:focus { outline: 2px solid var(--primary); outline-offset: 0; border-color: var(--primary); }
@@ -259,6 +259,7 @@ const FB_ARCHIVO_REF = () => fbDb.collection('crm_historico').doc('ventas_archiv
 const FB_RESPALDOS_COL = () => fbDb.collection('crm_respaldos_automaticos');
 const FB_AUDITORIA_COL = () => fbDb.collection('crm_auditoria'); // historial de cambios: un registro por acción
 const FB_PAPELERA_COL = () => fbDb.collection('crm_papelera');   // papelera: un registro por elemento eliminado
+const FB_GESTIONES_COL = () => fbDb.collection('crm_gestiones'); // bitácora de gestiones (13 campos): un registro por gestión
 const FB_CONTADORES_REF = () => fbDb.collection('crm').doc('contadores'); // folios: contador único compartido por todos los usuarios
 const FB_CARGAS_CLAUDE_COL = () => fbDb.collection('crm_cargas_claude'); // cargas cifradas que Claude deja para que el administrador las apruebe
 const FB_LLAVE_CLAUDE_REF = () => fbDb.collection('crm').doc('llave_claude'); // llave para descifrar esas cargas (el usuario de Claude no puede leerla)
@@ -971,10 +972,11 @@ function snapshotGuardado(){
     siniestros: Object.fromEntries(state.siniestros.map(s=>[s.id, JSON.stringify(s)])),
     auditoria: Object.fromEntries((state.auditoria||[]).map(a=>[a.id, JSON.stringify(a)])),
     papelera: Object.fromEntries((state.papelera||[]).map(p=>[p.id, JSON.stringify(p)])),
+    gestiones: Object.fromEntries((state.gestiones||[]).map(g=>[g.id, JSON.stringify(g)])),
   };
 }
 function coreState(){
-  const { clientes, ventas, asesores, siniestros, auditoria, papelera, ...resto } = state;
+  const { clientes, ventas, asesores, siniestros, auditoria, papelera, gestiones, ...resto } = state;
   return resto;
 }
 async function load(opts){
@@ -1006,6 +1008,8 @@ async function load(opts){
               state.papelera = papSnap.docs.map(d=>d.data());
             }
           }catch(e){ console.warn('No se pudo leer historial/papelera', e); }
+          try{ const gesSnap = await FB_GESTIONES_COL().get(); state.gestiones = gesSnap.docs.map(d=>d.data()); }
+          catch(e){ console.warn('No se pudieron leer las gestiones', e); }
           aplicarMigracionesState();
           asegurarIdsHistorial();
           ordenarHistorial();
@@ -1069,6 +1073,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 function aplicarMigracionesState(){
+  if(!Array.isArray(state.gestiones)) state.gestiones = [];
   if(!state.productosPersonalizados) state.productosPersonalizados = [];
   if(!state.metas) state.metas = { general:0, porAsesor:{} };
   if(!state.metas.porAsesor) state.metas.porAsesor = {};
@@ -1248,10 +1253,10 @@ function aplicarCambioCore(snap){
   if(!remoto) return;
   const actual = JSON.stringify(coreState());
   if(coreGuardado!==null && actual!==coreGuardado) return; // hay cambios locales sin subir
-  const { auditoria: _a, papelera: _p, ...remotoSinHistorial } = remoto;
+  const { auditoria: _a, papelera: _p, gestiones: _g, ...remotoSinHistorial } = remoto;
   if(jsonEstable(JSON.parse(actual))===jsonEstable(remotoSinHistorial)) return;
   const temaLocal = state.tema;
-  Object.keys(remoto).forEach(k=>{ if(k!=='auditoria' && k!=='papelera') state[k] = remoto[k]; }); // esos dos tienen colección propia
+  Object.keys(remoto).forEach(k=>{ if(k!=='auditoria' && k!=='papelera' && k!=='gestiones') state[k] = remoto[k]; }); // esos tienen colección propia
   state.tema = temaLocal; // el tema claro/oscuro es preferencia de cada dispositivo
   aplicarMigracionesState();
   state.folioVenta = Math.max(Number(state.folioVenta)||0, ...state.ventas.map(v=>Number(v.folio)||0));
@@ -1269,6 +1274,7 @@ function iniciarSincronizacion(){
     FB_SINIESTROS_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('siniestros', s), err),
     FB_AUDITORIA_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('auditoria', s), err),
     FB_PAPELERA_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('papelera', s), err),
+    FB_GESTIONES_COL().onSnapshot({ includeMetadataChanges:false }, s=>aplicarCambiosColeccion('gestiones', s), err),
     FB_DOC_REF().onSnapshot({ includeMetadataChanges:false }, aplicarCambioCore, err),
   ];
 }
@@ -1332,6 +1338,7 @@ function save(inmediato){
           { clave:'siniestros', col: FB_SINIESTROS_COL(), items: state.siniestros },
           { clave:'auditoria', col: FB_AUDITORIA_COL(), items: state.auditoria||[] },
           { clave:'papelera', col: FB_PAPELERA_COL(), items: state.papelera||[] },
+          { clave:'gestiones', col: FB_GESTIONES_COL(), items: state.gestiones||[] },
         ];
         const operaciones = [];
         colecciones.forEach(({clave, col, items})=>{
@@ -5955,7 +5962,7 @@ function b360CasoSeguimiento(s, hoy){
   if(atraso>0) caso.alertas.push({ sem, area: caso.area, alerta:'Cotización o pendiente con seguimiento atrasado', fechaClave: s.proximo, dias: atraso });
   return caso;
 }
-const b360Firma = () => [state.ventas.length, state.siniestros.length, (state.auditoria||[]).length, ((state.auditoria||[])[0]||{}).id, seguimientosLista().length, state.clientes.length, todayISO(), JSON.stringify(sesionEfectiva()||{})].join('|');
+const b360Firma = () => [state.ventas.length, state.siniestros.length, (state.auditoria||[]).length, ((state.auditoria||[])[0]||{}).id, seguimientosLista().length, gestionesLista().length, state.clientes.length, todayISO(), JSON.stringify(sesionEfectiva()||{})].join('|');
 function b360Datos(){
   const firma = b360Firma();
   if(b360Datos._c && b360Datos._c.firma===firma) return b360Datos._c;
@@ -6004,11 +6011,29 @@ function b360Datos(){
     (s.log||[]).forEach(l=> reg(l.fecha, b360Persona(l.por), c, c.area, 'Seguimiento al cliente', b360Redactar(l.texto), l.texto, 'Cotización / pendiente'));
   });
   state.clientes.filter(clientePerteneceAAsesor).forEach(cl=> (cl.interacciones||[]).forEach(it=> reg(it.fecha, b360Persona(it.por||''), casoCliente(cl), 'Comercial', 'Contacto con el cliente', b360Redactar(it.nota), it.nota, 'Contacto')));
+  // Gestiones registradas con el formulario de 13 campos: van al caso de su póliza (o del cliente) y generan alertas de seguimiento
+  gestionesLista().forEach(g=>{
+    const cl = state.clientes.find(c=>c.id===g.clienteId);
+    if(cl ? !clientePerteneceAAsesor(cl) : esAsesorSesion()) return;
+    const v = g.ventaId && vPorId.get(g.ventaId);
+    const caso = (v && casos.get(folioV(v.folio))) || casoCliente(cl || { id: g.clienteId||'sin-cliente', nombre:'Sin cliente', estadoContacto:'' });
+    const sem = semGestion(g, hoy);
+    reg(g.fecha, b360Persona(g.usuario), caso, g.area || caso.area, b360Redactar(g.accion), b360Redactar(g.resultado) || '—',
+      [g.accion, g.resultado, g.observaciones].filter(Boolean).join(' | '), 'Gestión registrada', b360Redactar(g.observaciones));
+    Object.assign(R[R.length-1], { gestion: g, sem });
+    if(['resuelto','anulado'].includes(g.estado)) return;
+    caso.sem = b360Peor(caso.sem, sem);
+    if(g.pendientes) caso.pend.push(g.pendientes);
+    if(g.proximaGestion && !caso.prox.includes(g.proximaGestion)) caso.prox.push(g.proximaGestion);
+    if(g.fechaSeguimiento && (!caso.fseg || g.fechaSeguimiento < caso.fseg)) caso.fseg = g.fechaSeguimiento;
+    if(g.fechaSeguimiento && sem!=='seguimiento') caso.alertas.push({ sem, area: g.area || caso.area, alerta: `Seguimiento ${sem==='critico' ? 'atrasado' : 'para hoy o vencido'}: ${g.proximaGestion || g.accion}`.slice(0,140), fechaClave: g.fechaSeguimiento, dias: -daysUntil(g.fechaSeguimiento) });
+  });
   // Auditoría: cada acción de un usuario en el CRM queda como gestión del caso al que pertenece
   const ACC = { crear:'Registro', editar:'Actualización', eliminar:'Eliminación', restaurar:'Restauración', importar:'Importación' };
   const ENT = { venta:'póliza', cliente:'ficha de cliente', siniestro:'siniestro', seguimiento:'cotización / pendiente', asesor:'asesor', ejecutiva:'usuario ejecutivo' };
   const papelera = new Map((state.papelera||[]).map(p=>[p.entidadId, p]));
   (state.auditoria||[]).forEach(a=>{
+    if(a.entidad==='gestion') return; // la gestión ya figura como registro propio (los cambios quedan en la pestaña de auditoría)
     const desc = a.descripcion || '';
     let caso = null, area = 'Comercial';
     if(a.entidad==='venta'){
@@ -6162,11 +6187,12 @@ function viewBitacora360(){
     cuerpo = `${cliSel ? b360CabeceraCliente(D, cliSel) : ''}
       <div class="hint" style="margin-bottom:6px;">${total} gestión(es) ${b360ClienteId ? 'en orden cronológico' : 'de la más reciente a la más antigua'}. Pase el mouse sobre «Observaciones» para ver el texto original.</div>
       <div class="card" style="padding:0;overflow-x:auto;"><table style="font-size:13px;"><thead><tr><th>Fecha y hora</th><th>Usuario responsable</th><th>Cliente</th><th>Aseguradora</th><th>N.° póliza</th><th>Tipo de seguro</th><th>Estado del trámite</th><th>Acción realizada</th><th>Resultado obtenido</th><th>Pendientes</th><th>Próxima gestión</th><th>Fecha de seguimiento</th><th>Observaciones</th><th>Área</th><th>Clasificación</th><th>Caso</th></tr></thead><tbody>
-      ${rows.slice(ini, ini+B360_POR_PAGINA).map(r=>{ const c = D.casos.get(r.caso); return `<tr${r.duplicado?' style="opacity:0.55;" title="Gestión repetida en menos de 15 minutos"':''}>
+      ${rows.slice(ini, ini+B360_POR_PAGINA).map(r=>{ const c = D.casos.get(r.caso), g = r.gestion; return `<tr${r.duplicado?' style="opacity:0.55;" title="Gestión repetida en menos de 15 minutos"':''}${g?' style="background:rgba(61,107,82,0.06);"':''}>
         <td style="white-space:nowrap;"><b>${b360Fmt(r.fecha)}</b></td><td>${esc(r.usuario)}</td><td>${c.clienteId ? `<a href="#" data-b360-cliente="${c.clienteId}" style="color:var(--primary);">${esc(c.cliente)}</a>${estrella(c.clienteId)}` : esc(c.cliente)}</td>
-        <td>${esc(c.aseguradora||'—')}</td><td>${esc(c.poliza||'—')}</td><td>${esc(c.tipo||'—')}</td><td>${esc(c.estado)}</td><td>${esc(r.accion)}</td><td style="min-width:200px;">${esc(r.resultado)}</td>
-        <td style="min-width:160px;">${r.ultima ? esc(c.pend.join('; ')||'Ninguno') : '<span class="hint">Ver gestión posterior</span>'}</td><td>${r.ultima ? esc(c.prox.join('; ')||'Sin gestión pendiente') : '—'}</td>
-        <td>${r.ultima ? b360FechaSeg(c.fseg, hoy) : '—'}</td><td style="min-width:180px;" title="${esc(r.original ? 'Texto original: '+r.original : '')}">${esc(r.obs||'—')}</td><td>${r.area}</td><td>${b360Pill(c.sem)}</td><td class="folio">${esc(c.id)}</td></tr>`; }).join('') || '<tr class="empty-row"><td colspan="16">No hay gestiones con estos filtros.</td></tr>'}
+        <td>${esc((g && b360Aseg(g.aseguradora)) || c.aseguradora || '—')}</td><td>${esc((g && g.numeroPoliza) || c.poliza || '—')}</td><td>${esc((g && g.tipoSeguro) ? prodLabel(g.tipoSeguro) : (c.tipo||'—'))}</td><td>${esc(g ? estadoGestionLabel(g.estado) : c.estado)}</td><td>${esc(r.accion)}</td><td style="min-width:200px;">${esc(r.resultado)}</td>
+        <td style="min-width:160px;">${g ? esc(g.pendientes||'Ninguno') : r.ultima ? esc(c.pend.join('; ')||'Ninguno') : '<span class="hint">Ver gestión posterior</span>'}</td><td>${g ? esc(g.proximaGestion||'—') : r.ultima ? esc(c.prox.join('; ')||'Sin gestión pendiente') : '—'}</td>
+        <td>${g ? (['resuelto','anulado'].includes(g.estado) ? fmtDate(g.fechaSeguimiento) : b360FechaSeg(g.fechaSeguimiento, hoy)) : r.ultima ? b360FechaSeg(c.fseg, hoy) : '—'}</td><td style="min-width:180px;" title="${esc(r.original ? 'Texto original: '+r.original : '')}">${esc(r.obs||'—')}</td><td>${r.area}</td><td>${b360Pill(g ? r.sem : c.sem)}</td>
+        <td class="folio">${esc(c.id)}${g ? `<div><button class="btn btn-ghost btn-sm" data-b360-editar-gestion="${g.id}" title="Editar, cerrar o anular esta gestión">✎ Editar</button></div>` : ''}</td></tr>`; }).join('') || '<tr class="empty-row"><td colspan="16">No hay gestiones con estos filtros.</td></tr>'}
       </tbody></table></div>
       ${paginas>1 ? `<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-sm" data-b360-pag="${b360Pagina-1}" ${b360Pagina<=1?'disabled':''}>◀</button><span class="hint">Página ${b360Pagina} de ${paginas}</span><button class="btn btn-sm" data-b360-pag="${b360Pagina+1}" ${b360Pagina>=paginas?'disabled':''}>▶</button></div>` : ''}`;
   } else if(b360Vista==='casos'){
@@ -6215,7 +6241,7 @@ function viewBitacora360(){
   const vistas = [['alertas','🔔 Alertas'],['bitacora','📋 Bitácora'],['casos','🗂 Trazabilidad por caso'],['clientes','👤 Clientes'],['reportes','📊 Reportes ejecutivos'],['duplicados',`⧉ Duplicados (${D.dups.length})`]];
   return `
     <div class="page-head"><div><h1>Bitácora 360</h1><p>Todas las gestiones del CRM con la estructura estándar de auditoría: fecha, responsable, cliente, aseguradora, póliza, estado, acción, resultado, pendientes y seguimiento.</p></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnB360Excel">⬇ Descargar reporte Excel</button>' : ''}</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnB360Excel">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" data-b360-nueva-gestion="${b360ClienteId}">+ Registrar gestión</button></div></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:12px;">
       ${tarjeta('#1F4B41','Gestiones registradas', K.gestiones, 'sin contar repeticiones')}
       ${tarjeta('#3D6B52','Pólizas emitidas', K.emitidas, `${K.emitidasAnio} en ${hoy.slice(0,4)} · ${K.anuladas} anuladas`)}
@@ -6250,7 +6276,104 @@ function b360CabeceraCliente(D, cli){
     <div><div class="hint">Casos</div><b>${cs.length}</b></div><div><div class="hint">Gestiones</div><b>${cs.reduce((s,c)=>s+c.gestiones,0)}</b></div>
     <div><div class="hint">Última gestión</div><b>${ult ? b360Fmt(ult.fecha) : '—'}</b><div class="hint">${ult ? esc(ult.accion)+' · '+esc(ult.usuario) : ''}</div></div>
     <div><div class="hint">Días sin atención</div><b>${ult ? b360Dias(ult.fecha) : '—'}</b></div><div>${b360Pill(sem)}</div>
-    <button class="btn btn-sm btn-ghost" data-ficha-cliente="${cli.id}">Abrir ficha del cliente</button></div>`;
+    <button class="btn btn-sm btn-ghost" data-ficha-cliente="${cli.id}">Abrir ficha del cliente</button><button class="btn btn-sm btn-primary" data-b360-nueva-gestion="${cli.id}">+ Registrar gestión</button></div>`;
+}
+// ---------- Registrar gestión (13 campos) ----------
+// Cada gestión se guarda en su propia colección (crm_gestiones). No se borra: se puede editar o anular, y la auditoría guarda cada cambio.
+const ESTADOS_GESTION = [
+  { id:'pendiente',          label:'Pendiente' },
+  { id:'en_tramite',         label:'En trámite' },
+  { id:'espera_aseguradora', label:'Esperando a la aseguradora' },
+  { id:'espera_cliente',     label:'Esperando al cliente' },
+  { id:'resuelto',           label:'Resuelto' },
+  { id:'anulado',            label:'Anulado (registro sin efecto)' },
+];
+const estadoGestionLabel = id => (ESTADOS_GESTION.find(e=>e.id===id)||{}).label || id || '—';
+function gestionesLista(){ if(!Array.isArray(state.gestiones)) state.gestiones = []; return state.gestiones; }
+function ahoraLocal(){ const d = new Date(), p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
+// Semáforo de una gestión: resuelta o anulada = 🟢; seguimiento vencido hace más de 7 días = 🔴; vencido o vence hoy = 🟠; si no, 🟡
+function semGestion(g, hoy){
+  if(['resuelto','anulado'].includes(g.estado)) return 'resuelto';
+  if(!g.fechaSeguimiento) return 'seguimiento';
+  const atraso = -daysUntil(g.fechaSeguimiento);
+  return atraso>7 ? 'critico' : atraso>=0 ? 'urgente' : 'seguimiento';
+}
+function abrirFormGestion(id, pre){
+  const g = id ? gestionesLista().find(x=>x.id===id) : null;
+  const d = g || Object.assign({ fecha: ahoraLocal(), usuario: nombreSesionActual(), estado:'pendiente', area:'' }, pre||{});
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const clientes = state.clientes.filter(c=>clientePerteneceAAsesor(c)).slice().sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const usuarios = Array.from(new Set([nombreSesionActual(), ...(state.asesores||[]).filter(a=>a.activo!==false).map(a=>b360Persona(a.nombre)), ...(state.ejecutivas||[]).map(e=>e.nombre)].filter(Boolean)));
+  const ov = document.createElement('div');
+  ov.className = 'modal-backdrop';
+  const campo = (n, label, html, ayuda) => `<label style="display:block;margin-bottom:10px;"><span style="display:block;font-size:12.5px;font-weight:600;margin-bottom:3px;">${n ? n+'. ' : ''}${label}</span>${html}${ayuda ? `<div class="hint" style="font-size:11.5px;">${ayuda}</div>` : ''}</label>`;
+  const ta = (idc, val, ph) => `<textarea id="${idc}" rows="2" style="width:100%;" placeholder="${ph||''}">${esc(val)}</textarea>`;
+  ov.innerHTML = `<div class="modal" style="max-width:740px;">
+    <h2>${g ? 'Editar gestión' : 'Registrar gestión'}</h2>
+    <div class="modal-hint">Los campos con * son obligatorios. Al elegir la póliza se completan solos la aseguradora, el número y el tipo de seguro.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 14px;">
+      ${campo(1,'Fecha y hora *', `<input type="datetime-local" id="gFecha" value="${esc(d.fecha)}" style="width:100%;">`)}
+      ${campo(2,'Usuario responsable *', `<input type="text" id="gUsuario" list="gUsuarios" value="${esc(d.usuario)}" style="width:100%;"><datalist id="gUsuarios">${usuarios.map(u=>`<option value="${esc(u)}">`).join('')}</datalist>`)}
+      ${campo(3,'Cliente *', `<select id="gCliente" style="width:100%;"><option value="">— Elegir cliente —</option>${clientes.map(c=>`<option value="${c.id}" ${d.clienteId===c.id?'selected':''}>${esc(c.nombre)}</option>`).join('')}</select>`)}
+      ${campo('','Póliza del cliente', `<select id="gVenta" style="width:100%;"></select>`, 'Opcional. Si la gestión no es de una póliza, déjelo en «Sin póliza».')}
+      ${campo(4,'Aseguradora', `<input type="text" id="gAseg" list="gAsegs" value="${esc(d.aseguradora)}" style="width:100%;"><datalist id="gAsegs">${(state.aseguradoras||[]).map(a=>`<option value="${esc(a)}">`).join('')}</datalist>`)}
+      ${campo(5,'Número de póliza', `<input type="text" id="gPoliza" value="${esc(d.numeroPoliza)}" style="width:100%;">`)}
+      ${campo(6,'Tipo de seguro', `<select id="gTipo" style="width:100%;"><option value="">—</option>${todosLosProductos().filter(r=>esSeguro(r.id)).map(r=>`<option value="${r.id}" ${d.tipoSeguro===r.id?'selected':''}>${esc(r.label)}</option>`).join('')}</select>`)}
+      ${campo('','Área', `<select id="gArea" style="width:100%;">${B360_AREAS.map(a=>`<option ${(d.area||'Comercial')===a?'selected':''}>${a}</option>`).join('')}</select>`)}
+      ${campo(7,'Estado del trámite *', `<select id="gEstado" style="width:100%;">${ESTADOS_GESTION.filter(e=> g || e.id!=='anulado').map(e=>`<option value="${e.id}" ${d.estado===e.id?'selected':''}>${e.label}</option>`).join('')}</select>`)}
+    </div>
+    ${campo(8,'Acción realizada *', ta('gAccion', d.accion, 'Ej.: Llamé al cliente para confirmar la renovación'))}
+    ${campo(9,'Resultado obtenido', ta('gResultado', d.resultado, 'Ej.: Acepta renovar; pide la cotización por correo'))}
+    ${campo(10,'Pendientes', ta('gPendientes', d.pendientes, 'Ej.: Enviar cotización de Rímac y Pacífico'))}
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:0 14px;">
+      ${campo(11,'Próxima gestión', `<input type="text" id="gProxima" value="${esc(d.proximaGestion)}" style="width:100%;" placeholder="Ej.: Llamar para cerrar la renovación">`)}
+      ${campo(12,'Fecha de seguimiento', `<input type="date" id="gFechaSeg" value="${esc(d.fechaSeguimiento)}" style="width:100%;">`, 'Si la deja vacía no se genera alerta.')}
+    </div>
+    ${campo(13,'Observaciones', ta('gObs', d.observaciones, ''))}
+    <div id="gError" style="color:var(--danger);font-size:13px;margin-bottom:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn" id="gCancelar">Cancelar</button>
+      <button class="btn btn-primary" id="gGuardar">${g ? 'Guardar cambios' : 'Registrar gestión'}</button>
+    </div></div>`;
+  (document.getElementById('crm-app')||document.body).appendChild(ov);
+  const $ = idc => ov.querySelector('#'+idc);
+  const cerrar = () => ov.remove();
+  const llenarVentas = (ventaSel) => {
+    const vs = state.ventas.filter(v=> v.clienteId===$('gCliente').value).sort((a,b)=>(b.vigenciaInicio||'').localeCompare(a.vigenciaInicio||''));
+    $('gVenta').innerHTML = `<option value="">— Sin póliza —</option>` + vs.map(v=>`<option value="${v.id}" ${ventaSel===v.id?'selected':''}>${folioV(v.folio)} · ${esc(prodLabel(v.tipoProducto))} · ${esc(v.aseguradora||'')} ${esc(v.numeroPoliza||'')}${ventaActiva(v)?'':' (anulada)'}${v.vigenciaFin ? ' · vence '+fmtDate(v.vigenciaFin) : ''}</option>`).join('');
+  };
+  llenarVentas(d.ventaId);
+  $('gCliente').onchange = () => llenarVentas('');
+  $('gVenta').onchange = () => {
+    const v = state.ventas.find(x=>x.id===$('gVenta').value); if(!v) return;
+    $('gAseg').value = v.aseguradora||''; $('gPoliza').value = v.numeroPoliza||''; $('gTipo').value = v.tipoProducto||'';
+    $('gArea').value = b360AreaProducto(v.tipoProducto, v.aseguradora);
+  };
+  $('gTipo').onchange = () => { if($('gTipo').value) $('gArea').value = b360AreaProducto($('gTipo').value, $('gAseg').value); };
+  $('gCancelar').onclick = cerrar;
+  ov.addEventListener('click', e=>{ if(e.target===ov) cerrar(); });
+  $('gGuardar').onclick = () => {
+    const datos = { fecha: $('gFecha').value, usuario: $('gUsuario').value.trim(), clienteId: $('gCliente').value, ventaId: $('gVenta').value,
+      aseguradora: $('gAseg').value.trim(), numeroPoliza: $('gPoliza').value.trim(), tipoSeguro: $('gTipo').value, area: $('gArea').value, estado: $('gEstado').value,
+      accion: $('gAccion').value.trim(), resultado: $('gResultado').value.trim(), pendientes: $('gPendientes').value.trim(), proximaGestion: $('gProxima').value.trim(),
+      fechaSeguimiento: $('gFechaSeg').value, observaciones: $('gObs').value.trim() };
+    const falta = [!datos.fecha && 'fecha y hora', !datos.usuario && 'usuario responsable', !datos.clienteId && 'cliente', !datos.accion && 'acción realizada'].filter(Boolean);
+    if(falta.length){ $('gError').textContent = 'Falta completar: ' + falta.join(', ') + '.'; return; }
+    const cli = state.clientes.find(c=>c.id===datos.clienteId);
+    const desc = `Gestión ${datos.area} — ${cli ? cli.nombre : ''}: ${datos.accion.slice(0,120)} (${estadoGestionLabel(datos.estado)})`;
+    if(g){
+      const cambios = Object.keys(datos).filter(k=> String(g[k]??'')!==String(datos[k]??''));
+      if(!cambios.length){ cerrar(); return; }
+      const antes = cambios.map(k=> `${k}: «${String(g[k]??'').slice(0,80)}»`).join('; ');
+      Object.assign(g, datos, { modificado: ahoraLocal(), modificadoPor: nombreSesionActual() });
+      registrarAuditoria('editar','gestion', g.id, `${desc} — antes: ${antes}`);
+    } else {
+      const nueva = Object.assign({ id: uid(), creado: new Date().toISOString(), creadoPor: nombreSesionActual() }, datos);
+      gestionesLista().push(nueva);
+      registrarAuditoria('crear','gestion', nueva.id, desc);
+    }
+    save(); cerrar(); render();
+  };
 }
 function wireBitacora360(){
   const re = () => { b360Pagina = 1; render(); };
@@ -6261,6 +6384,8 @@ function wireBitacora360(){
   document.querySelectorAll('#main-view [data-ficha-cliente]').forEach(a=> a.onclick = e=>{ e.preventDefault(); fichaClienteId = a.dataset.fichaCliente; tab = 'clientes'; render(); });
   const sel = (id, fn) => { const el = document.getElementById(id); if(el) el.onchange = e=>{ fn(e.target.value); re(); }; };
   sel('fB360Area', v=> b360Area = v); sel('fB360Resp', v=> b360Resp = v); sel('fB360Aseg', v=> b360AsegF = v); sel('fB360Desde', v=> b360Desde = v); sel('fB360Hasta', v=> b360Hasta = v);
+  document.querySelectorAll('[data-b360-nueva-gestion]').forEach(b=> b.onclick = ()=> abrirFormGestion(null, b.dataset.b360NuevaGestion ? { clienteId: b.dataset.b360NuevaGestion } : null));
+  document.querySelectorAll('[data-b360-editar-gestion]').forEach(b=> b.onclick = ()=> abrirFormGestion(b.dataset.b360EditarGestion));
   const bc = document.getElementById('btnB360Clave'); if(bc) bc.onclick = ()=>{ b360SoloClave = !b360SoloClave; re(); };
   const qc = document.getElementById('btnB360QuitarCliente'); if(qc) qc.onclick = ()=>{ b360ClienteId = ''; re(); };
   const ft = document.getElementById('fB360Texto');
@@ -6282,7 +6407,8 @@ function descargarBitacora360(){
       [], ['Clasificación de casos', '', ''], ...Object.keys(B360_SEM).map(s=>[S(s), K.sem[s], '']), [], ['Área', 'Gestiones', 'Alertas abiertas'], ...I.porArea.map(a=>[a.area, a.gestiones, a.alertas])];
     hoja('Resumen ejecutivo', resumen, [48, 12, 50]);
     const bit = [['Fecha y hora','Usuario responsable','Cliente','Aseguradora','N.° de póliza','Tipo de seguro','Estado del trámite','Acción realizada','Resultado obtenido','Pendientes','Próxima gestión','Fecha de seguimiento','Observaciones','Área','Clasificación','Caso','Días sin atención del caso','Gestión repetida','Fuente','Texto original']];
-    D.R.slice().sort((a,b)=> b.fecha.localeCompare(a.fecha)).forEach(r=>{ const c = D.casos.get(r.caso);
+    D.R.slice().sort((a,b)=> b.fecha.localeCompare(a.fecha)).forEach(r=>{ const c = D.casos.get(r.caso), g = r.gestion;
+      if(g){ bit.push([b360Fmt(r.fecha), r.usuario, c.cliente, b360Aseg(g.aseguradora)||c.aseguradora, g.numeroPoliza||c.poliza, g.tipoSeguro ? prodLabel(g.tipoSeguro) : c.tipo, estadoGestionLabel(g.estado), r.accion, r.resultado, g.pendientes||'Ninguno', g.proximaGestion||'', g.fechaSeguimiento ? fmtDate(g.fechaSeguimiento) : '', r.obs, r.area, S(r.sem), c.id, c.diasSinAtencion, '', r.fuente, r.original]); return; }
       bit.push([b360Fmt(r.fecha), r.usuario, c.cliente, c.aseguradora, c.poliza, c.tipo, c.estado, r.accion, r.resultado, r.ultima ? (c.pend.join('; ')||'Ninguno') : 'Ver gestión posterior', r.ultima ? (c.prox.join('; ')||'Sin gestión pendiente') : '', r.ultima && c.fseg ? fmtDate(c.fseg) : '', r.obs, r.area, S(c.sem), c.id, c.diasSinAtencion, r.duplicado ? 'Sí' : '', r.fuente, r.original]); });
     hoja('Bitácora estándar', bit, [17,24,36,18,16,18,28,40,50,45,38,14,50,13,17,10,10,9,18,50]);
     const casos = Array.from(D.casos.values()).filter(c=>c.id!=='ADM').sort((a,b)=> B360_SEM[a.sem].orden - B360_SEM[b.sem].orden || (b.diasSinAtencion||0)-(a.diasSinAtencion||0));
@@ -7287,7 +7413,7 @@ function viewFichaCliente(id){
   const sugerenciasCruzadas = todosLosProductos().filter(r=> r.categoria==='seguro' && !esOncologico(r.id) && !productosQueTiene.has(r.id)).slice(0,4);
 
   return `
-    <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" data-b360-historial="${c.id}" title="Historial cronológico de todas las gestiones del cliente">📋 Historial 360</button><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div></div>
+    <div class="page-head"><div><a href="#" id="btnVolverClientes" style="font-size:13px;color:var(--ink-faint);">← Volver a Clientes</a><h1 style="margin-top:6px;">${c.nombre}</h1><p>${c.documento||'Sin documento'} · ${c.ciudad||'—'}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" data-b360-historial="${c.id}" title="Historial cronológico de todas las gestiones del cliente">📋 Historial 360</button><button class="btn" data-ficha-nueva-gestion="${c.id}" title="Registrar una gestión con la estructura de 13 campos">+ Gestión</button><button class="btn btn-primary" data-edit-cliente="${c.id}">Editar datos</button></div></div>
     ${enRiesgo ? `<div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--danger);background:var(--danger-soft);">
       <div style="font-weight:600;color:var(--danger);">⚠ Cliente en riesgo de fuga</div>
       <div style="font-size:13px;margin-top:4px;">Tiene ${polizasVencidasSinRenovar.length} póliza(s) vencida(s) hace más de 30 días sin renovar (${polizasVencidasSinRenovar.map(v=>prodLabel(v.tipoProducto)).join(', ')}). Contáctalo antes de que se vaya con otra compañía.</div>
@@ -7553,6 +7679,7 @@ function wireClientes(){
   const fb = document.getElementById('fClienteBusqueda'); if(fb) fb.oninput = e=>{ filtroClienteBusqueda=e.target.value; render(); };
   if(fichaClienteId){
     const back = document.getElementById('btnVolverClientes'); if(back) back.onclick = (e)=>{ e.preventDefault(); fichaClienteId=null; render(); };
+    document.querySelectorAll('[data-ficha-nueva-gestion]').forEach(b=> b.onclick = ()=> abrirFormGestion(null, { clienteId: b.dataset.fichaNuevaGestion }));
     document.querySelectorAll('[data-b360-historial]').forEach(b=> b.onclick = ()=>{ b360ClienteId = b.dataset.b360Historial; b360Vista = 'bitacora'; b360Sem = 'todos'; b360Area = 'todas'; b360Texto = ''; b360Pagina = 1; fichaClienteId = null; tab = 'bitacora360'; render(); });
     document.querySelectorAll('[data-edit-cliente]').forEach(b=> b.onclick = ()=>{ editing={type:'cliente', id:b.dataset.editCliente}; render(); });
     const btnNota = document.getElementById('btnAgregarInteraccion');
