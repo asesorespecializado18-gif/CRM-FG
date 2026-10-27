@@ -944,6 +944,13 @@ function esEndoso(v){ return v.tipoVenta==='endoso'; }
 const etiquetaTipoVenta = t => ({ nueva:'Nueva', renovacion:'Renovación', anulacion:'Anulación', endoso:'Endoso' })[t] || 'Renovación';
 const claseTipoVenta = t => t==='nueva' ? 'pill-green' : t==='anulacion' ? 'pill-red' : t==='endoso' ? 'pill-gray' : 'pill-gold';
 function ventaSeguroActiva(v){ return ventaActiva(v) && esSeguro(v.tipoProducto); }
+// Días que la comisión de FG lleva sin cobrarse a la aseguradora, contados desde el inicio de vigencia (null si ya se cobró o no aplica).
+// La misma regla alimenta el resumen de colores de Comisiones y las alertas de la Bitácora 360.
+function diasComisionSinCobro(v){
+  if(!ventaSeguroActiva(v) || (v.estadoCobroFG||'pendiente')==='cobrado') return null;
+  const f = v.vigenciaInicio || v.fechaVenta;
+  return f ? Math.max(0, -daysUntil(f)) : null;
+}
 
 function ventasEnMes(asesorId, key){
   return state.ventas.filter(v=> ventaActiva(v) && monthKey(v.fechaVenta)===key && (asesorId===undefined || v.asesorId===asesorId));
@@ -3543,11 +3550,31 @@ function viewCobroComisiones(){
   const aseguradorasOrdenadas = Object.entries(porAseguradora).sort((a,b)=>b[1].maxDias-a[1].maxDias);
   const umbralAlertaCobro = state.diasAlertaCobro || 45;
 
+  // ---- Resumen de colores (mismo semáforo que la Bitácora 360, solo lectura) ----
+  const tramo = (min, max) => todasSeguro.filter(v=>{ const d = diasComisionSinCobro(v); return d!==null && d>=min && d<=max; });
+  const enPlazo = tramo(0, 45), en46a90 = tramo(46, 90), mas90 = tramo(91, Infinity);
+  const montos = l => { const pen = l.filter(v=>v.moneda!=='USD').reduce((s,v)=>s+comisionFG(v),0), usd = l.filter(v=>v.moneda==='USD').reduce((s,v)=>s+comisionFG(v),0); return `${fmtMoney(pen)} · ${fmtUSD(usd)}`; };
+  const cobradasTodas = todasSeguro.filter(v=> v.estadoCobroFG==='cobrado');
+  const diasCobro = todasSeguro.filter(v=> !v.origenCarga && v.vigenciaInicio && (v.pagosComision||[]).some(p=>p.fecha)).map(v=> Math.round((new Date(v.pagosComision.map(p=>p.fecha).filter(Boolean).sort()[0]) - new Date(v.vigenciaInicio))/86400000)).filter(x=>x>=0);
+  const promCobro = diasCobro.length ? Math.round(diasCobro.reduce((s,x)=>s+x,0)/diasCobro.length) : null;
+  const tarjetaCom = (bg, label, valor, hint, sem) => `<div class="card stat-card" ${sem ? `data-com-b360="${sem}" title="Ver estos casos en la Bitácora 360" style="cursor:pointer;` : 'style="'}background:${bg};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor}</div><div class="hint" style="color:rgba(255,255,255,0.8);">${hint}</div></div>`;
+  const resumenColores = `
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:6px;">
+      ${tarjetaCom('#1F4B41','Pendientes de calcular', pendientesCalculo.length, 'ventas sin % de comisión')}
+      ${tarjetaCom('#2F5D7C','Por cobrar en plazo', enPlazo.length, `hasta 45 días · ${montos(enPlazo)}`)}
+      ${tarjetaCom(B360_SEM.seguimiento.color,'🟡 Sin cobrar 46 a 90 días', en46a90.length, montos(en46a90), 'seguimiento')}
+      ${tarjetaCom(B360_SEM.urgente.color,'🟠 Sin cobrar más de 90 días', mas90.length, montos(mas90), 'urgente')}
+      ${tarjetaCom(B360_SEM.resuelto.color,'🟢 Cobradas', cobradasTodas.length, `${cobradoEsteMes.length} este mes`)}
+      ${tarjetaCom('#4A5A6A','Tiempo de cobro', promCobro!==null ? promCobro+' d' : '—', 'promedio desde el inicio de vigencia hasta el pago')}
+    </div>
+    <div class="hint" style="margin-bottom:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">Días contados desde el inicio de vigencia. Haga clic en 🟡 o 🟠 para ver esos casos en la Bitácora 360. <button class="btn btn-sm btn-ghost" data-com-b360="todos">📋 Ver comisiones en Bitácora 360</button></div>`;
+
   return `
     <div class="page-head">
       <div><h1>Comisiones</h1><p>Calcula la comisión de cada venta, revisa qué te falta cobrar de las aseguradoras, y su margen para FG.</p></div>
       <div style="display:flex;gap:8px;">${esAsesorSesion() ? '' : '<button class="btn btn-primary" id="btnConciliarAlta" title="Pega el detalle de comisiones del correo de Alta y marca como cobradas todas sus pólizas de una vez">📥 Conciliar reporte de Alta</button>'}${sesionUsuario && sesionUsuario.rol==='admin' && !vistaComo ? '<button class="btn" id="btnImportarHistorial" title="Carga un archivo de historial o de correcciones (anulaciones, renovaciones, cuotas pagadas, pagos de comisión). Solo agrega o completa: no reemplaza nada y no duplica si se carga dos veces">📂 Importar historial</button><input type="file" id="inputImportarHistorial" accept=".json,application/json" style="display:none"><button class="btn" id="btnCargasClaude" title="Cambios que Claude preparó para el CRM: revísalos y aplícalos con un clic (antes se guarda un respaldo automático)">🤖 Cargas de Claude</button>' : ''}${puedeDescargar() ? '<button class="btn" id="btnExportCobroPDF">Descargar PDF</button><button class="btn" id="btnExportCobro">Exportar a Excel</button>' : ''}</div>
     </div>
+    ${resumenColores}
     ${pendientesCalculo.length>0 ? `
     <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;border:1px solid var(--border);">
       <div style="padding:10px 16px;font-weight:600;background:var(--surface);border-bottom:1px solid var(--border);">⚪ Pendientes de calcular (${pendientesCalculo.length})</div>
@@ -3642,6 +3669,7 @@ function setEstadoCobro(id, estado){
   if(v){ v.estadoCobroFG = estado; v.fechaCobroFG = estado==='cobrado' ? todayISO() : ''; registrarAuditoria('editar', 'venta', v.id, `Cobro de comisión ${descVentaAud(v)}: ${estado==='cobrado'?'marcado cobrado':'marcado pendiente'}`); save(); render(); }
 }
 function wireCobroComisiones(){
+  document.querySelectorAll('[data-com-b360]').forEach(b=> b.onclick = () => { b360Area = 'Comisiones'; b360Sem = b.dataset.comB360; b360Vista = 'alertas'; b360ClienteId = ''; b360Texto = ''; b360Resp = 'todos'; b360AsegF = 'todas'; b360SoloClave = false; b360Desde = ''; b360Hasta = ''; b360Pagina = 1; tab = 'bitacora360'; render(); window.scrollTo(0,0); });
   document.querySelectorAll('[data-calcular-comision]').forEach(b=> b.onclick = () => { editing = {type:'venta', id: b.dataset.calcularComision, calculoComision:true}; render(); });
   const lnkPagoAsesores = document.getElementById('lnkVerPagoAsesores'); if(lnkPagoAsesores) lnkPagoAsesores.onclick = (e) => { e.preventDefault(); tab = 'pago_comisiones'; render(); };
   const btnEx = document.getElementById('btnExportCobro'); if(btnEx) btnEx.onclick = () => {
@@ -5951,11 +5979,9 @@ function b360CasoVenta(v, hoy){
       `${venc.length} cuota(s) vencida(s) desde ${fmtDate(f0)} (${v.moneda||''} ${monto.toFixed(2)})${v.cuotasAlDia?' — figura «al día»: verificar':''}`,
       'Confirmar el pago de las cuotas con la aseguradora', hoy);
   }
-  if(!(v.pagosComision||[]).length && v.estadoComision!=='pagada' && v.vigenciaInicio){
-    const d0 = -daysUntil(v.vigenciaInicio);
-    if(d0>45) add(d0>90?'urgente':'seguimiento','Comisiones','Comisión sin pago registrado', v.vigenciaInicio, d0,
-      `Comisión sin pago registrado (${d0} días desde el inicio de vigencia)`, 'Reclamar la comisión en la liquidación de Alta', hoy);
-  }
+  const d0 = diasComisionSinCobro(v);
+  if(d0!==null && d0>45) add(d0>90?'urgente':'seguimiento','Comisiones','Comisión sin pago registrado', v.vigenciaInicio || v.fechaVenta, d0,
+    `Comisión sin pago registrado (${d0} días desde el inicio de vigencia)`, 'Reclamar la comisión en la liquidación de Alta', hoy);
   if(!v.numeroPoliza){ caso.pend.push('Falta número de póliza'); caso.sem = b360Peor(caso.sem, 'seguimiento'); }
   if(/APROXIMADO/.test(v.notas||'')) caso.pend.push('Prima y/o vigencia aproximadas: corregir con la póliza');
   return caso;
@@ -6180,7 +6206,7 @@ function viewBitacora360(){
   const q = b360Texto.trim().toLowerCase();
   const textoCaso = c => [c.id, c.cliente, c.poliza, c.aseguradora, c.tipo, c.estado].join(' ').toLowerCase();
   const estrella = id => D.clave.has(id) ? ` <span title="Cliente clave (categoría ${D.clave.get(id)} en Clientes de alto valor)">⭐</span>` : '';
-  const pasaCaso = (c, conResp=true, conTexto=true) => (!b360SoloClave || D.clave.has(c.clienteId)) && (b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (!conResp || b360Resp==='todos' || c.responsable===b360Resp)
+  const pasaCaso = (c, conResp=true, conTexto=true, conSem=true) => (!b360SoloClave || D.clave.has(c.clienteId)) && (!conSem || b360Sem==='todos' || c.sem===b360Sem) && (b360AsegF==='todas' || c.aseguradora===b360AsegF) && (!conResp || b360Resp==='todos' || c.responsable===b360Resp)
     && (!b360ClienteId || c.clienteId===b360ClienteId) && (!conTexto || !q || textoCaso(c).includes(q));
   const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:14px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor??'—'}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
   const aseguradoras = Array.from(new Set(casos.map(c=>c.aseguradora).filter(Boolean))).sort();
@@ -6190,7 +6216,8 @@ function viewBitacora360(){
   let cuerpo = '';
   if(b360Vista==='alertas'){
     const filas = [];
-    casos.filter(pasaCaso).forEach(c=> c.alertas.forEach(a=>{ if((b360Area==='todas' || a.area===b360Area) && (b360Sem==='todos' || a.sem===b360Sem)) filas.push({ c, a }); }));
+    // En Alertas el color se filtra por alerta: una alerta 🟠 se ve aunque el caso tenga además otra 🔴
+    casos.filter(c=> pasaCaso(c, true, true, false)).forEach(c=> c.alertas.forEach(a=>{ if((b360Area==='todas' || a.area===b360Area) && (b360Sem==='todos' || a.sem===b360Sem)) filas.push({ c, a }); }));
     filas.sort((x,y)=> B360_SEM[x.a.sem].orden - B360_SEM[y.a.sem].orden || (D.clave.has(y.c.clienteId) - D.clave.has(x.c.clienteId)) || (y.a.dias||0) - (x.a.dias||0));
     cuerpo = `<div class="card" style="padding:0;overflow-x:auto;"><table><thead><tr><th>Clasificación</th><th>Área</th><th>Alerta</th><th>Caso</th><th>Cliente</th><th>Aseguradora · Póliza</th><th>Responsable</th><th>Fecha clave</th><th>Días</th><th>Sin atención</th><th>Próxima gestión</th><th>Seguimiento</th></tr></thead><tbody>
       ${filas.length ? filas.slice(0, 300).map(({c,a})=>`<tr><td>${b360Pill(a.sem)}</td><td>${a.area}</td><td>${esc(a.alerta)}</td><td class="folio">${esc(c.id)}</td>
@@ -6219,7 +6246,7 @@ function viewBitacora360(){
       </tbody></table></div>
       ${paginas>1 ? `<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button class="btn btn-sm" data-b360-pag="${b360Pagina-1}" ${b360Pagina<=1?'disabled':''}>◀</button><span class="hint">Página ${b360Pagina} de ${paginas}</span><button class="btn btn-sm" data-b360-pag="${b360Pagina+1}" ${b360Pagina>=paginas?'disabled':''}>▶</button></div>` : ''}`;
   } else if(b360Vista==='casos'){
-    const rows = casos.filter(pasaCaso).filter(c=> b360Area==='todas' || c.area===b360Area || c.alertas.some(a=>a.area===b360Area))
+    const rows = casos.filter(c=> pasaCaso(c)).filter(c=> b360Area==='todas' || c.area===b360Area || c.alertas.some(a=>a.area===b360Area))
       .sort((a,b)=> B360_SEM[a.sem].orden - B360_SEM[b.sem].orden || (b.diasSinAtencion||0) - (a.diasSinAtencion||0));
     cuerpo = `<div class="card" style="padding:0;overflow-x:auto;"><table style="font-size:13px;"><thead><tr><th>Caso</th><th>Cliente</th><th>Aseguradora · Póliza</th><th>Área</th><th>Estado del trámite</th><th>Clasificación</th><th>Gestiones</th><th>Última gestión</th><th>Días sin atención</th><th>Pendientes</th><th>Próxima gestión</th><th>Seguimiento</th></tr></thead><tbody>
       ${rows.slice(0, 400).map(c=>`<tr><td class="folio">${esc(c.id)}</td><td>${c.clienteId ? `<a href="#" data-b360-cliente="${c.clienteId}" style="color:var(--primary);">${esc(c.cliente)}</a>${estrella(c.clienteId)}` : esc(c.cliente)}</td>
