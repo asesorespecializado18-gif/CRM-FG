@@ -5784,6 +5784,52 @@ function sinClienteTexto(s){
 }
 function sinPoliza(s){ const v = sinVenta(s); return (v && v.numeroPoliza) || s.poliza || ''; }
 function sinRamo(s){ if(s.ramo) return s.ramo; const v = sinVenta(s); return (v && RAMO_SIN_POR_PRODUCTO[v.tipoProducto]) || 'Por confirmar'; }
+// Checklist de documentos por tipo de siniestro: lo que la aseguradora suele pedir para no dejar el caso parado
+const DOCS_SINIESTRO = {
+  'Vehicular': ['Denuncia policial / constancia','Dosaje etílico','Licencia de conducir','Tarjeta de propiedad','DNI del conductor','Fotos del daño','Presupuesto del taller','Informe del procurador'],
+  'SCTR Salud': ['Aviso de accidente de trabajo','Informe médico','DNI del trabajador','Constancia de cobertura SCTR','Facturas / boletas médicas'],
+  'SCTR Pensión': ['Aviso de accidente de trabajo','Informe médico','DNI del trabajador','Constancia de cobertura SCTR','Dictamen de invalidez o acta de defunción'],
+  'Vida Ley': ['Acta de defunción','Certificado médico de defunción','DNI del fallecido','DNI de los beneficiarios','Sucesión intestada o declaratoria de herederos','Boletas de pago (remuneraciones)'],
+  'Desgravamen': ['Acta de defunción','Certificado médico de defunción','DNI del fallecido','Historia clínica','Estado de cuenta del crédito'],
+  'Salud / EPS': ['Formulario de reembolso','Informe médico','Facturas / boletas','Recetas','Resultados de exámenes'],
+  'Transporte (robo de mercadería)': ['Denuncia policial','Guías de remisión','Facturas de la mercadería','Informe del transportista','Reclamo al transportista'],
+  'Carta fianza (fiel cumplimiento)': ['Carta de ejecución','Contrato','Cartas notariales','Liquidación del monto'],
+  'Multirriesgo / Patrimonial': ['Carta de reclamo','Denuncia policial (si hubo robo)','Fotos del daño','Presupuesto de reparación','Facturas de preexistencia','Informe técnico','Informe del ajustador'],
+  'Responsabilidad civil': ['Carta de reclamo del tercero','Fotos / pruebas del hecho','Presupuesto o factura del daño','Denuncia policial','Informe del ajustador'],
+  'CAR / TREC': ['Carta de reclamo','Fotos del daño','Informe técnico de obra','Presupuesto de reparación','Informe del ajustador'],
+};
+const DOCS_SINIESTRO_OTRO = ['Carta de reclamo','Documentos de sustento','Informe del ajustador'];
+const docsRequeridosRamo = ramo => DOCS_SINIESTRO[ramo] || DOCS_SINIESTRO_OTRO;
+function sinDocs(s){
+  const requeridos = docsRequeridosRamo(sinRamo(s));
+  const recibidos = (s.docsRecibidos||[]);
+  const tiene = d => recibidos.some(r=> String(r).toLowerCase()===d.toLowerCase());
+  return { requeridos, recibidos: requeridos.filter(tiene), faltan: requeridos.filter(d=>!tiene(d)), extra: recibidos.filter(r=> !requeridos.some(d=>d.toLowerCase()===String(r).toLowerCase())) };
+}
+const MOTIVOS_RECHAZO = ['Exclusión de la póliza','Cobertura no contratada','Póliza sin vigencia o con primas impagas','Aviso fuera de plazo','Documentación incompleta','Conductor sin licencia o en estado de ebriedad','Uso distinto al declarado','Preexistencia','Monto por debajo del deducible','Falta de medidas de seguridad','Otro'];
+// Etapas del trámite: aviso → inspección → aprobación → pago o cierre (días entre cada una)
+function sinEtapas(s){
+  const dias = (a, b) => a && b ? Math.round((new Date(b) - new Date(a)) / 86400000) : null;
+  const cierre = s.fechaPago || (!siniestroAbierto(s) ? s.ultimoMovimiento : '') || '';
+  return { avisoInspeccion: dias(s.fechaAviso, s.fechaInspeccion), inspeccionAprobacion: dias(s.fechaInspeccion, s.fechaAprobacion), aprobacionPago: dias(s.fechaAprobacion, s.fechaPago),
+    total: cierre ? dias(s.fechaAviso || s.fechaEvento, cierre) : null, abiertoHace: siniestroAbierto(s) ? dias(s.fechaAviso || s.fechaEvento, todayISO()) : null };
+}
+// Semáforo por aseguradora: ROJO = tarda más de 60 días en cerrar, 2+ casos abiertos sin movimiento +30 días o rechaza 30%+ de lo cerrado
+function sinResumenAseguradoras(lista){
+  const grupos = {};
+  lista.forEach(s=>{ const a = aseguradoraCorta(s.aseguradora) || 'Sin aseguradora'; (grupos[a] = grupos[a] || []).push(s); });
+  return Object.entries(grupos).map(([aseg, casos])=>{
+    const abiertos = casos.filter(siniestroAbierto), cerrados = casos.filter(s=>!siniestroAbierto(s));
+    const atrasados = abiertos.filter(s=>(sinDiasSinMov(s)??0)>30).length;
+    const rechazados = casos.filter(s=>s.estado==='rechazado').length;
+    const tiempos = cerrados.map(s=>sinEtapas(s).total).filter(t=>t!==null && t>=0);
+    const promCierre = tiempos.length ? Math.round(tiempos.reduce((a,b)=>a+b,0)/tiempos.length) : null;
+    const pctRechazo = cerrados.length ? Math.round(rechazados*100/cerrados.length) : 0;
+    const indemnizado = { PEN:0, USD:0 }; casos.forEach(s=>{ indemnizado[s.monedaMontos==='USD'?'USD':'PEN'] += Number(s.montoPagado)||0; });
+    const sem = (promCierre!==null && promCierre>60) || atrasados>=2 || (cerrados.length>=2 && pctRechazo>=30) ? 'ROJO' : (promCierre!==null && promCierre>30) || atrasados>=1 ? 'ÁMBAR' : 'VERDE';
+    return { aseg, casos: casos.length, abiertos: abiertos.length, atrasados, rechazados, pctRechazo, promCierre, indemnizado, sem };
+  }).sort((a,b)=> ({ROJO:0,'ÁMBAR':1,VERDE:2}[a.sem]) - ({ROJO:0,'ÁMBAR':1,VERDE:2}[b.sem]) || b.casos-a.casos);
+}
 function sinBien(s){
   if(s.bienAsegurado) return s.bienAsegurado;
   const v = sinVenta(s); if(!v || !v.vehPlaca) return '';
@@ -5821,6 +5867,12 @@ function viewSiniestros(){
       ${tarjeta('#8C3B3B','Rechazados', rechazados, cerrados ? `${Math.round(rechazados*100/cerrados)}% de los casos cerrados` : 'por la aseguradora')}
       ${tarjeta('#5A4E7C','Abiertos sin movimiento +30 días', atrasados, 'requieren seguimiento')}
     </div>
+    ${misSiniestros.length ? `<div class="card" style="padding:0;overflow-x:auto;margin-bottom:16px;">
+      <div style="padding:12px 16px 4px;font-weight:600;">Atención por aseguradora</div>
+      <div style="padding:0 16px 8px;font-size:12px;color:var(--ink-faint);">🔴 tarda más de 60 días en cerrar, tiene 2 o más casos sin movimiento +30 días o rechaza 30% o más · 🟠 más de 30 días o 1 caso atrasado · 🟢 al día. Escala a la aseguradora a los 15 días sin movimiento y a gerencia a los 30.</div>
+      <table><thead><tr><th></th><th>Aseguradora</th><th class="num">Casos</th><th class="num">Abiertos</th><th class="num">Sin mov. +30 d</th><th class="num">Rechazos</th><th class="num">Días prom. hasta cierre</th><th class="num">Indemnizado</th></tr></thead><tbody>
+      ${sinResumenAseguradoras(misSiniestros).map(r=>`<tr><td><span title="${r.sem}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorSem[r.sem]};"></span></td><td>${esc(r.aseg)}</td><td class="num">${r.casos}</td><td class="num">${r.abiertos}</td><td class="num" style="${r.atrasados?'color:var(--danger);font-weight:600;':''}">${r.atrasados}</td><td class="num">${r.rechazados}${r.rechazados?` <span style="color:var(--ink-faint);font-size:12px;">(${r.pctRechazo}%)</span>`:''}</td><td class="num">${r.promCierre??'—'}</td><td class="num">${[r.indemnizado.PEN ? 'S/ '+r.indemnizado.PEN.toLocaleString('es-PE',{maximumFractionDigits:2}) : '', r.indemnizado.USD ? 'US$ '+r.indemnizado.USD.toLocaleString('es-PE',{maximumFractionDigits:2}) : ''].filter(Boolean).join(' · ') || '—'}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
     <div class="toolbar" style="flex-wrap:wrap;">
       <select id="fSiniestroSituacion"><option value="abiertos" ${filtroSiniestroSituacion==='abiertos'?'selected':''}>Casos abiertos</option><option value="cerrados" ${filtroSiniestroSituacion==='cerrados'?'selected':''}>Casos cerrados</option><option value="todas" ${filtroSiniestroSituacion==='todas'?'selected':''}>Todos los casos</option></select>
       <select id="fSiniestroEstado"><option value="todas">Todos los estados</option>${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${filtroSiniestroEstado===e.id?'selected':''}>${e.label}</option>`).join('')}</select>
@@ -5837,6 +5889,8 @@ function viewSiniestros(){
             const sem = siniestroAbierto(s) || s.estado==='rechazado' ? sinSemaforo(s) : '';
             const punto = sem ? `<span title="${sem}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorSem[sem]};"></span>` : '';
             const proximo = s.proximoPaso || s.notas || s.documentosPendientes || '—';
+            const dc = sinDocs(s);
+            const docsTxt = siniestroAbierto(s) ? `<div style="font-size:11.5px;margin-top:3px;color:${dc.faltan.length?'#B8823D':'#3D6B52'};" title="${dc.faltan.length ? 'Faltan: '+esc(dc.faltan.join(', ')) : 'Documentos completos'}">📎 ${dc.recibidos.length}/${dc.requeridos.length} docs</div>` : (s.estado==='rechazado' && s.motivoRechazo ? `<div style="font-size:11.5px;margin-top:3px;color:var(--ink-faint);">${esc(s.motivoRechazo)}</div>` : '');
             return `<tr>
               <td>${punto}</td>
               <td class="folio">${esc(s.numeroSiniestro||'—')}<div style="font-size:11px;color:var(--ink-faint);">SN-${String(s.folio).padStart(4,'0')}</div></td>
@@ -5844,8 +5898,8 @@ function viewSiniestros(){
               <td>${esc(aseguradoraCorta(s.aseguradora)||'—')}<div style="font-size:12px;color:var(--ink-faint);">${esc(sinPoliza(s)||'—')}</div></td>
               <td>${esc(sinRamo(s))}<div style="font-size:12px;color:var(--ink-faint);">${esc(sinBien(s)||'—')}</div></td>
               <td>${fmtDate(s.fechaEvento)}</td>
-              <td><span class="pill ${est.clase}">${est.label}</span></td>
-              <td>${fmtDate(sinUltimoMov(s))}${siniestroAbierto(s) && dias!==null ? `<div style="font-size:12px;color:${dias>30?'var(--danger)':'var(--ink-faint)'};">${dias} día${dias===1?'':'s'}</div>` : ''}</td>
+              <td><span class="pill ${est.clase}">${est.label}</span>${docsTxt}</td>
+              <td>${fmtDate(sinUltimoMov(s))}${siniestroAbierto(s) && dias!==null ? `<div style="font-size:12px;color:${dias>30?'var(--danger)':'var(--ink-faint)'};">${dias} día${dias===1?'':'s'}${dias>30?' · escalar a gerencia':dias>15?' · escalar a la aseguradora':''}</div>` : ''}</td>
               <td style="max-width:280px;font-size:13px;">${esc(proximo)}</td>
               <td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
           }).join('')}
@@ -5889,10 +5943,30 @@ function modalSiniestro(){
     </div>
     <div class="field-row">
       <div class="field"><label>Estado del trámite</label><select id="mSinEstado" style="width:100%;">${ESTADOS_SINIESTRO.map(e=>`<option value="${e.id}" ${estId===e.id?'selected':''}>${e.label}</option>`).join('')}</select></div>
-      <div class="field"><label>Monto pagado (S/)</label><input type="number" min="0" step="0.01" id="mSinMonto" style="width:100%;" value="${s.montoPagado??''}"></div>
+      <div class="field"><label>Moneda de los montos</label><select id="mSinMoneda" style="width:100%;"><option value="PEN" ${s.monedaMontos!=='USD'?'selected':''}>Soles (S/)</option><option value="USD" ${s.monedaMontos==='USD'?'selected':''}>Dólares (US$)</option></select></div>
     </div>
+    <div class="field-row">
+      <div class="field"><label>Deducible</label><input type="number" min="0" step="0.01" id="mSinDeducible" style="width:100%;" value="${s.deducible??''}"></div>
+      <div class="field"><label>Monto reclamado</label><input type="number" min="0" step="0.01" id="mSinReclamado" style="width:100%;" value="${s.montoReclamado??''}"></div>
+      <div class="field"><label>Monto indemnizado (lo que recibió el cliente)</label><input type="number" min="0" step="0.01" id="mSinMonto" style="width:100%;" value="${s.montoPagado??''}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Fecha de inspección</label><input type="date" id="mSinInspeccion" style="width:100%;" value="${s.fechaInspeccion||''}"></div>
+      <div class="field"><label>Fecha de aprobación</label><input type="date" id="mSinAprobacion" style="width:100%;" value="${s.fechaAprobacion||''}"></div>
+      <div class="field"><label>Fecha de pago o cierre</label><input type="date" id="mSinPago" style="width:100%;" value="${s.fechaPago||''}"></div>
+    </div>
+    ${(()=>{ if(!editing.id) return ''; const e = sinEtapas(s); const d = v => v===null ? '—' : v+' d'; return `<p class="modal-hint" style="margin-top:-4px;">Tiempo por etapa: aviso → inspección ${d(e.avisoInspeccion)} · inspección → aprobación ${d(e.inspeccionAprobacion)} · aprobación → pago ${d(e.aprobacionPago)} · ${e.total!==null ? 'total '+e.total+' días' : e.abiertoHace!==null ? 'abierto hace '+e.abiertoHace+' días' : ''}</p>`; })()}
+    <div class="field-row">
+      <div class="field"><label>Taller o proveedor</label><input type="text" id="mSinTaller" style="width:100%;" value="${esc(s.tallerProveedor)}" placeholder="Ej. Taller Autoservicios Lima"></div>
+      <div class="field"><label>Contacto del taller</label><input type="text" id="mSinTallerContacto" style="width:100%;" value="${esc(s.tallerContacto)}" placeholder="Nombre y celular"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Procurador o ajustador</label><input type="text" id="mSinProcurador" style="width:100%;" value="${esc(s.procurador)}"></div>
+      <div class="field"><label>Contacto del procurador</label><input type="text" id="mSinProcuradorContacto" style="width:100%;" value="${esc(s.procuradorContacto)}" placeholder="Nombre y celular o correo"></div>
+    </div>
+    <div class="field"><label>Checklist de documentos <span id="mSinDocsRamo" style="font-weight:400;color:var(--ink-faint);"></span></label><div id="mSinDocsChecklist" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 12px;font-size:13px;"></div></div>
     <div class="field"><label>Observación (qué pasó en la última gestión)</label><textarea id="mSinNotas" style="width:100%;min-height:60px;">${esc(s.notas)}</textarea></div>
-    <div class="field"><label>Documentos pendientes</label><input type="text" id="mSinDocs" style="width:100%;" value="${esc(s.documentosPendientes)}" placeholder="Ej. Fotos del daño, denuncia policial"></div>
+    <div class="field"><label>Documentos pendientes (otros o detalle)</label><input type="text" id="mSinDocs" style="width:100%;" value="${esc(s.documentosPendientes)}" placeholder="Ej. Fotos del daño, denuncia policial"></div>
     <div class="field-row">
       <div class="field" style="flex:2;"><label>Próximo paso</label><input type="text" id="mSinProximo" style="width:100%;" value="${esc(s.proximoPaso)}"></div>
       <div class="field"><label>Responsable</label><input type="text" id="mSinResponsable" style="width:100%;" value="${esc(s.responsable||'Asesora de cuentas')}"></div>
@@ -5900,6 +5974,7 @@ function modalSiniestro(){
     </div>
     <div class="field"><label>Comentario de la gestión</label><input type="text" id="mSinComentario" style="width:100%;" value="${esc(s.comentarioGestion)}"></div>
     <div class="field-row" id="mSinRechazoWrap" style="${estId==='rechazado'?'':'display:none;'}">
+      <div class="field" style="flex:2;"><label>Motivo del rechazo</label><select id="mSinMotivoRechazo" style="width:100%;"><option value=""></option>${MOTIVOS_RECHAZO.map(o=>`<option ${s.motivoRechazo===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="field"><label>¿Rechazo evitable?</label><select id="mSinEvitable" style="width:100%;"><option value=""></option>${['Sí','Parcial','No'].map(o=>`<option ${s.rechazoEvitable===o?'selected':''}>${o}</option>`).join('')}</select></div>
       <div class="field" style="flex:3;"><label>Cómo prevenirlo</label><input type="text" id="mSinPrevencion" style="width:100%;" value="${esc(s.rechazoPrevencion)}"></div>
     </div>
@@ -6710,7 +6785,7 @@ async function armarReporteSiniestros(zip, lista, corte){
   cri.fila(r++, ['N° siniestro','Aseguradora','Cliente / asegurado','Ramo','Motivo del rechazo','Fecha','¿Evitable?','Cómo prevenirlo'].map(v=>({ s:39, v })));
   const rechazos = filas.filter(f=>f.s.estado==='rechazado').sort((a,b)=>sinUltimoMov(a.s).localeCompare(sinUltimoMov(b.s)));
   rechazos.forEach(f=>{
-    cri.fila(r++, [ { s:40, v:f.numero }, { s:40, v:f.aseg }, { s:40, v:f.cliente }, { s:40, v:f.ramo }, { s:40, v:f.s.notas||'' },
+    cri.fila(r++, [ { s:40, v:f.numero }, { s:40, v:f.aseg }, { s:40, v:f.cliente }, { s:40, v:f.ramo }, { s:40, v:[f.s.motivoRechazo, f.s.notas].filter(Boolean).join(' — ') },
       { s:41, v:sinUltimoMov(f.s), tipo:'d' }, { s:42, v:f.s.rechazoEvitable||'' }, { s:42, v:f.s.rechazoPrevencion||'' } ], altoFila([null,null,f.cliente,null,f.s.notas,null,null,f.s.rechazoPrevencion], anchosCri));
   });
   if(!rechazos.length) cri.fila(r++, [{ s:40, v:'Sin rechazos en el periodo.' }]);
@@ -7639,7 +7714,24 @@ const CX_ENTIDADES = {
       { h:'Fecha del evento', tipo:'fecha', get:s=>s.fechaEvento, set:(s,x)=>{ s.fechaEvento = x; } },
       { h:'Fecha de aviso', tipo:'fecha', get:s=>s.fechaAviso, set:(s,x)=>{ s.fechaAviso = x; } },
       { h:'Estado', opciones:()=>ESTADOS_SINIESTRO.map(e=>({id:e.id,label:e.label})), get:s=>estadoSin(s).label, set:(s,x,o,ctx)=>{ s.estado = o.id; ctx.gestion = true; } },
-      { h:'Monto pagado', tipo:'numero', get:s=> s.montoPagado==null || s.montoPagado==='' ? '' : String(s.montoPagado), set:(s,x,o,ctx)=>{ s.montoPagado = x==='' ? null : Number(x); ctx.gestion = true; } },
+      { h:'Monto indemnizado', alias:['Monto pagado'], tipo:'numero', get:s=> s.montoPagado==null || s.montoPagado==='' ? '' : String(s.montoPagado), set:(s,x,o,ctx)=>{ s.montoPagado = x==='' ? null : Number(x); ctx.gestion = true; } },
+      { h:'Deducible', tipo:'numero', get:s=> s.deducible==null || s.deducible==='' ? '' : String(s.deducible), set:(s,x,o,ctx)=>{ s.deducible = x==='' ? null : Number(x); ctx.gestion = true; } },
+      { h:'Monto reclamado', tipo:'numero', get:s=> s.montoReclamado==null || s.montoReclamado==='' ? '' : String(s.montoReclamado), set:(s,x,o,ctx)=>{ s.montoReclamado = x==='' ? null : Number(x); ctx.gestion = true; } },
+      { h:'Moneda de los montos', opciones:()=>[{id:'PEN',label:'PEN'},{id:'USD',label:'USD'}], get:s=> s.monedaMontos==='USD' ? 'USD' : 'PEN', set:(s,x)=>{ s.monedaMontos = x; } },
+      { h:'Fecha de inspección', tipo:'fecha', get:s=>s.fechaInspeccion, set:(s,x,o,ctx)=>{ s.fechaInspeccion = x; ctx.gestion = true; } },
+      { h:'Fecha de aprobación', tipo:'fecha', get:s=>s.fechaAprobacion, set:(s,x,o,ctx)=>{ s.fechaAprobacion = x; ctx.gestion = true; } },
+      { h:'Fecha de pago o cierre', tipo:'fecha', get:s=>s.fechaPago, set:(s,x,o,ctx)=>{ s.fechaPago = x; ctx.gestion = true; } },
+      { h:'Días hasta el cierre', ro:true, get:s=>{ const e = sinEtapas(s); return e.total!==null ? String(e.total) : ''; } },
+      { h:'Documentos recibidos', get:s=>(s.docsRecibidos||[]).join('; '), set:(s,x,o,ctx)=>{
+          const req = docsRequeridosRamo(sinRamo(s));
+          s.docsRecibidos = Array.from(new Set(String(x).split(/[;\n]+/).map(t=>t.trim()).filter(Boolean).map(t=> req.find(d=> cxNorm(d)===cxNorm(t)) || t)));
+          ctx.gestion = true; } },
+      { h:'Documentos faltantes', ro:true, get:s=> sinDocs(s).faltan.join('; ') },
+      { h:'Taller o proveedor', get:s=>s.tallerProveedor, set:(s,x)=>{ s.tallerProveedor = x; } },
+      { h:'Contacto del taller', get:s=>s.tallerContacto, set:(s,x)=>{ s.tallerContacto = x; } },
+      { h:'Procurador o ajustador', get:s=>s.procurador, set:(s,x)=>{ s.procurador = x; } },
+      { h:'Contacto del procurador', get:s=>s.procuradorContacto, set:(s,x)=>{ s.procuradorContacto = x; } },
+      { h:'Motivo del rechazo', opciones:()=>MOTIVOS_RECHAZO.map(m=>({id:m,label:m})), get:s=>s.motivoRechazo, set:(s,x,o,ctx)=>{ s.motivoRechazo = x; ctx.gestion = true; } },
       { h:'Documentos pendientes', get:s=>s.documentosPendientes, set:(s,x,o,ctx)=>{ s.documentosPendientes = x; ctx.gestion = true; } },
       { h:'Próximo paso', get:s=>s.proximoPaso, set:(s,x,o,ctx)=>{ s.proximoPaso = x; ctx.gestion = true; } },
       { h:'Responsable', get:s=>s.responsable, set:(s,x)=>{ s.responsable = x; } },
@@ -7737,7 +7829,7 @@ function cxLeerReporteSiniestros(wb){
     const num = String(r['N° siniestro / reporte']||'').trim(); if(!num) return;
     const o = fila(num);
     [['Ramo','Ramo'],['Aseguradora','Aseguradora'],['Cliente / asegurado','Cliente'],['Póliza','N° de póliza'],['Bien asegurado','Bien asegurado'],['Causa','Causa'],
-     ['Fecha ocurrencia','Fecha del evento'],['Fecha aviso','Fecha de aviso'],['Estado','Estado'],['Último movimiento','Último movimiento'],['Monto pagado (S/)','Monto pagado']].forEach(([de,a])=> poner(o, a, r[de]));
+     ['Fecha ocurrencia','Fecha del evento'],['Fecha aviso','Fecha de aviso'],['Estado','Estado'],['Último movimiento','Último movimiento'],['Monto pagado (S/)','Monto indemnizado']].forEach(([de,a])=> poner(o, a, r[de]));
     const obs = String(r['Observación / próximo paso']||'').trim();
     if(obs){ const i = obs.indexOf('Pendiente:'); poner(o, 'Notas', i>=0 ? obs.slice(0,i).trim() : obs); if(i>=0) poner(o, 'Documentos pendientes', obs.slice(i+10).trim()); }
   });
@@ -7780,7 +7872,7 @@ function cxLeerReporteSiniestros(wb){
 function cxBaseReporte(s){
   return { [CX_ID]: s.id, 'N° de siniestro': s.numeroSiniestro||'', 'Ramo': sinRamo(s), 'Aseguradora': s.aseguradora||'', 'Cliente': sinClienteTexto(s),
     'N° de póliza': sinPoliza(s), 'Bien asegurado': sinBien(s), 'Causa': s.causa||'', 'Fecha del evento': s.fechaEvento||'', 'Fecha de aviso': s.fechaAviso||'',
-    'Estado': estadoSin(s).label, 'Último movimiento': sinUltimoMov(s), 'Monto pagado': s.montoPagado==null ? '' : s.montoPagado, 'Notas': s.notas||'',
+    'Estado': estadoSin(s).label, 'Último movimiento': sinUltimoMov(s), 'Monto indemnizado': s.montoPagado==null ? '' : s.montoPagado, 'Notas': s.notas||'',
     'Documentos pendientes': s.documentosPendientes||'', 'Próximo paso': s.proximoPaso || s.documentosPendientes || '', 'Responsable': s.responsable || 'Asesora de cuentas',
     'Fecha compromiso': s.fechaCompromiso||'', 'Comentario de gestión': s.comentarioGestion||'', 'Rechazo: ¿evitable?': s.rechazoEvitable||'', 'Rechazo: cómo prevenirlo': s.rechazoPrevencion||'' };
 }
@@ -7790,6 +7882,8 @@ function planCicloExcel(clave, wb){
   const ent = CX_ENTIDADES[clave], cols = cxColumnas(ent);
   if(clave==='siniestros' && !wb.SheetNames.includes(ent.hoja) && cxEsReporteSiniestros(wb)){
     const rep = cxLeerReporteSiniestros(wb);
+    // reportes descargados antes con el título «Monto pagado» en la hoja oculta
+    Object.values(rep.base).forEach(b=>{ if('Monto pagado' in b && !('Monto indemnizado' in b)) b['Monto indemnizado'] = b['Monto pagado']; });
     if(!rep.filas.length) return { error:'El reporte no tiene siniestros en las hojas «Detalle» ni «Casos en curso».' };
     return cxArmarPlan(clave, ent, cols, rep.filas, rep.base, { hoja:'Detalle + Casos en curso (Reporte de siniestros)', ignoradas:[], conBase:!rep.sinHojaBase, reporte:true, derivado: cxBaseReporte });
   }
@@ -7797,7 +7891,7 @@ function planCicloExcel(clave, wb){
   if(!nombreHoja) return { error:'El archivo no tiene una hoja de datos.' };
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreHoja], { defval:'', raw:true });
   if(!filas.length) return { error:'La hoja «'+nombreHoja+'» no tiene filas.' };
-  const tituloDe = k => { const n = cxNorm(k); return cols.find(c=> cxNorm(c.h)===n) ? cols.find(c=> cxNorm(c.h)===n).h : (n===cxNorm(CX_ID) || n==='id' ? CX_ID : null); };
+  const tituloDe = k => { const n = cxNorm(k); const c = cols.find(c=> cxNorm(c.h)===n) || cols.find(c=> (c.alias||[]).some(a=> cxNorm(a)===n)); return c ? c.h : (n===cxNorm(CX_ID) || n==='id' ? CX_ID : null); };
   const encabezados = Object.keys(filas[0]);
   const reconocidas = encabezados.map(tituloDe).filter(Boolean);
   if(!reconocidas.some(h=>h!==CX_ID)) return { error:`No reconozco las columnas de «${nombreHoja}». Descarga el Excel desde esta pantalla y edítalo sin cambiar los títulos.` };
@@ -8785,7 +8879,22 @@ function wireModalSiniestro(){
     const aseg = document.getElementById('mSinAseguradora'); if(!aseg.value && v.aseguradora) aseg.value = v.aseguradora;
     const ramo = document.getElementById('mSinRamo'); if(!ramo.value && RAMO_SIN_POR_PRODUCTO[v.tipoProducto]) ramo.value = RAMO_SIN_POR_PRODUCTO[v.tipoProducto];
     const bien = document.getElementById('mSinBien'); if(!bien.value && v.vehPlaca) bien.value = [v.vehPlaca, v.vehMarca, v.vehModelo].filter(Boolean).join(' ');
+    pintarChecklistDocs();
   };
+  // Checklist según el ramo (el elegido o el de la póliza); conserva lo marcado al cambiar de ramo
+  let docsMarcados = (original.docsRecibidos||[]).slice();
+  function pintarChecklistDocs(){
+    const caja = document.getElementById('mSinDocsChecklist'); if(!caja) return;
+    caja.querySelectorAll('input[data-doc]').forEach(chk=>{ const d = chk.dataset.doc; docsMarcados = docsMarcados.filter(x=>x!==d); if(chk.checked) docsMarcados.push(d); });
+    const v = state.ventas.find(x=>x.id===selVenta.value);
+    const ramo = document.getElementById('mSinRamo').value || (v && RAMO_SIN_POR_PRODUCTO[v.tipoProducto]) || 'Otro';
+    const lista = docsRequeridosRamo(ramo).concat(docsMarcados.filter(d=> !docsRequeridosRamo(ramo).includes(d)));
+    document.getElementById('mSinDocsRamo').textContent = `(${ramo}: marca lo que ya se entregó a la aseguradora)`;
+    const escD = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    caja.innerHTML = lista.map(d=>`<label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" data-doc="${escD(d)}" ${docsMarcados.includes(d)?'checked':''}> ${escD(d)}</label>`).join('');
+  }
+  pintarChecklistDocs();
+  document.getElementById('mSinRamo').addEventListener('change', pintarChecklistDocs);
   document.getElementById('mSinEstado').onchange = e => { document.getElementById('mSinRechazoWrap').style.display = e.target.value==='rechazado' ? '' : 'none'; };
   document.getElementById('mSinSave').onclick = () => {
     const val = id => document.getElementById(id).value.trim();
@@ -8805,6 +8914,18 @@ function wireModalSiniestro(){
       ultimoMovimiento: val('mSinUltMov'),
       estado: val('mSinEstado'),
       montoPagado: monto==='' ? null : Number(monto),
+      deducible: val('mSinDeducible')==='' ? null : Number(val('mSinDeducible')),
+      montoReclamado: val('mSinReclamado')==='' ? null : Number(val('mSinReclamado')),
+      monedaMontos: val('mSinMoneda'),
+      fechaInspeccion: val('mSinInspeccion'),
+      fechaAprobacion: val('mSinAprobacion'),
+      fechaPago: val('mSinPago'),
+      tallerProveedor: val('mSinTaller'),
+      tallerContacto: val('mSinTallerContacto'),
+      procurador: val('mSinProcurador'),
+      procuradorContacto: val('mSinProcuradorContacto'),
+      docsRecibidos: Array.from(document.querySelectorAll('#mSinDocsChecklist input[data-doc]:checked')).map(c=>c.dataset.doc),
+      motivoRechazo: val('mSinEstado')==='rechazado' ? val('mSinMotivoRechazo') : (original.motivoRechazo||''),
       documentosPendientes: val('mSinDocs'),
       notas: val('mSinNotas'),
       proximoPaso: val('mSinProximo'),
@@ -8816,7 +8937,8 @@ function wireModalSiniestro(){
     };
     if(!data.clienteId){ alert('Selecciona un cliente.'); return; }
     // Si cambió la gestión y no se tocó la fecha de último movimiento, se toma hoy
-    const gestionCambio = ['estado','notas','documentosPendientes','proximoPaso','comentarioGestion','montoPagado'].some(k=> String(data[k]??'') !== String((k==='estado' && original.estado==='liquidado' ? 'pagado' : original[k])??''));
+    const gestionCambio = ['estado','notas','documentosPendientes','proximoPaso','comentarioGestion','montoPagado','deducible','montoReclamado','fechaInspeccion','fechaAprobacion','fechaPago','motivoRechazo'].some(k=> String(data[k]??'') !== String((k==='estado' && original.estado==='liquidado' ? 'pagado' : original[k])??''))
+      || (data.docsRecibidos||[]).slice().sort().join('|') !== (original.docsRecibidos||[]).slice().sort().join('|');
     if(editing.id && gestionCambio && data.ultimoMovimiento===(original.ultimoMovimiento||'')) data.ultimoMovimiento = todayISO();
     if(!data.ultimoMovimiento) data.ultimoMovimiento = todayISO();
     if(editing.id){ Object.assign(state.siniestros.find(x=>x.id===editing.id), data); }
