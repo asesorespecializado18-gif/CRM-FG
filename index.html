@@ -4139,6 +4139,17 @@ function porcentajeDesdePago(v, monto){
   if(!(pn>0) || !(monto>0)) return 0;
   return Math.round((monto / ((Number(v.porcentajeFG)||70)/100)) / pn * 10000) / 100;
 }
+// Las fichas cargadas desde los reportes de Alta guardan 100% («comisión = prima») porque el reporte solo trae la comisión.
+// Si luego se pone la prima real, ese 100% convertiría toda la prima en comisión: se usa el % que resulta de lo que pagó Alta,
+// o la tasa de la aseguradora si aún no hay pagos. Devuelve null si no hay cómo saberlo.
+function pctComisionReal(v, pct){
+  if(!(Number(pct)>70)) return pct;
+  const pagado = pagosDe(v).filter(p=>(p.moneda||'PEN')===(v.moneda||'PEN')).reduce((s,p)=>s+(Number(p.monto)||0),0);
+  const desdePago = porcentajeDesdePago(v, pagado);
+  if(desdePago) return desdePago;
+  const tasa = (state.tasasComision||{})[claveTasa(v.aseguradora, v.tipoProducto)];
+  return tasa ? pctVigente(tasa, v.fechaVenta||todayISO()) : null;
+}
 function completarCalculoConPago(v, monto, moneda){
   if(!ventaPendienteCalculo(v) || (moneda||'PEN')!==(v.moneda||'PEN')) return false;
   const pct = porcentajeDesdePago(v, monto);
@@ -7740,6 +7751,8 @@ const CX_ENTIDADES = {
       }
       if((nuevo || ctx.recalcular) && v.modoComisionAseguradora!=='fijo'){
         v.primaNeta = calcPrimaNeta(v.primaBruta);
+        const pctReal = pctComisionReal(v, v.porcentajeComisionAseguradora);
+        if(pctReal!==null) v.porcentajeComisionAseguradora = pctReal;
         v.comisionTotal = v.primaNeta * (Number(v.porcentajeComisionAseguradora)||0) / 100;
       }
       if(ctx.renov && !(nuevo && !ctx.renov.estado && !ctx.renov.nota)){
@@ -10305,6 +10318,14 @@ function wireModal(){
             else { porcentajeComisionAseguradora = 0; tasaPendiente = true; }
           } else {
             porcentajeComisionAseguradora = parseFloat(document.getElementById('mPctAseguradora').value)||0;
+            if(porcentajeComisionAseguradora>70){
+              const base = editing.id ? (state.ventas.find(x=>x.id===editing.id)||{}) : {};
+              const pctReal = pctComisionReal({ pagosComision: base.pagosComision, primaNeta, porcentajeFG: parseFloat(document.getElementById('mPctFG').value)||70,
+                moneda: document.getElementById('mMoneda').value, aseguradora: document.getElementById('mAseguradora').value || '', tipoProducto: tipoProductoSel,
+                fechaVenta: document.getElementById('mFecha').value }, porcentajeComisionAseguradora);
+              if(pctReal===null){ irAPestanaModal('comisiones'); mostrarErrorModal(`El % de comisión de la aseguradora dice ${porcentajeComisionAseguradora}%: debe estar entre 0.1% y 70%. Pon el % real de la póliza (pestaña "Comisiones").`); return; }
+              porcentajeComisionAseguradora = pctReal;
+            }
           }
           comisionTotal = primaNeta * porcentajeComisionAseguradora / 100;
         }
