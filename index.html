@@ -823,6 +823,36 @@ function linkWhatsApp(telefono, mensaje){
   const base = n ? `https://wa.me/${n}` : `https://wa.me/`;
   return `${base}?text=${encodeURIComponent(mensaje)}`;
 }
+// Protocolo de choque: lo que el cliente debe hacer si choca, para que el siniestro no se rechace por documentación o plazo
+function mensajeProtocoloChoque(cli, v){
+  const nombre = cli ? String(cli.nombre||'').split(/\s+/).slice(0,1).join(' ') || cli.nombre : '';
+  const placa = v && v.vehPlaca ? ` de placa ${v.vehPlaca}` : '';
+  const aseg = v && v.aseguradora ? v.aseguradora : 'su aseguradora';
+  return `Hola${nombre ? ' '+nombre : ''}, le escribimos de FG Seguros. Guarde este mensaje: es lo que debe hacer si tiene un choque con su vehículo${placa}.\n\n`
+    + `1️⃣ Mantenga la calma, encienda las luces de emergencia y tome fotos y video del lugar, de los vehículos y de las placas.\n`
+    + `2️⃣ Llame a la central de emergencias de ${aseg} (el número está en su póliza) y avísenos a este WhatsApp. El aviso debe hacerse dentro de las 24 horas.\n`
+    + `3️⃣ No pacte, no firme nada ni acepte responsabilidad con el otro conductor. Solo pida sus datos: nombre, DNI, placa y SOAT.\n`
+    + `4️⃣ Haga la denuncia policial en la comisaría del sector.\n`
+    + `5️⃣ Pase el dosaje etílico de inmediato, en las primeras horas. Es obligatorio: sin él la aseguradora puede rechazar el siniestro.\n`
+    + `6️⃣ No lleve el vehículo a reparar sin la autorización de la aseguradora.\n\n`
+    + `Ante cualquier duda, escríbanos. Estamos para ayudarle.`;
+}
+const PRODUCTOS_CON_PROTOCOLO = ['seguros_vehiculares','soat'];
+// Requisitos al emitir: sin ellos la aseguradora puede rechazar un siniestro. Se controlan en las ventas registradas desde REQUISITOS_DESDE.
+const REQUISITOS_EMISION = {
+  inspeccion: { label:'Inspección vehicular realizada', corto:'inspección vehicular' },
+  dps: { label:'DPS (declaración personal de salud) firmada', corto:'DPS' },
+  trama: { label:'Continuidad confirmada en la trama de desgravamen', corto:'continuidad en la trama' },
+};
+const REQUISITOS_POR_PRODUCTO = { seguros_vehiculares:['inspeccion'], desgravamen:['dps','trama'], salud:['dps'], eps:['dps'], seguro_oncologico:['dps'], seguro_oncologico_plus:['dps'] };
+const REQUISITOS_DESDE = '2026-10-28';
+const requisitosDe = tipoProducto => REQUISITOS_POR_PRODUCTO[tipoProducto] || [];
+function requisitosFaltantes(v){
+  const req = v.requisitos || {};
+  return requisitosDe(v.tipoProducto).filter(k=> !req[k]);
+}
+// Solo cuenta para el control las pólizas vigentes registradas desde que existe (las antiguas se pueden marcar, pero no alertan)
+const requisitosControlados = v => ventaActiva(v) && !esEndoso(v) && requisitosDe(v.tipoProducto).length>0 && (v.fechaVenta||'') >= REQUISITOS_DESDE;
 function obtenerWhatsAppAdmin(){
   if(state.auth.whatsappAdmin) return state.auth.whatsappAdmin;
   const num = prompt('Escribe tu número de WhatsApp (con o sin +51), para poder mandarte avisos:');
@@ -1834,6 +1864,18 @@ function abrirCentroAlertas(){
 function wireCommon(){
   document.querySelectorAll('#crm-app .nav-btn').forEach(b=>{ b.onclick = () => { tab = b.dataset.tab; render(); }; });
   document.querySelectorAll('[data-ciclo-excel]').forEach(b=>{ b.onclick = () => abrirCicloExcel(b.dataset.cicloExcel); });
+  document.querySelectorAll('[data-protocolo-venta],[data-protocolo-sin]').forEach(b=>{ b.onclick = () => {
+    const sin = b.dataset.protocoloSin ? state.siniestros.find(x=>x.id===b.dataset.protocoloSin) : null;
+    const v = sin ? sinVenta(sin) : state.ventas.find(x=>x.id===b.dataset.protocoloVenta);
+    const cli = state.clientes.find(c=>c.id===(sin ? sin.clienteId : v && v.clienteId));
+    const tel = cli ? (cli.celular1||cli.telefono||'') : '';
+    if(!tel && !confirm('Este cliente no tiene celular registrado. ¿Abrir WhatsApp de todas formas para elegir el contacto?')) return;
+    window.open(linkWhatsApp(tel, mensajeProtocoloChoque(cli, v)), '_blank');
+    const reg = sin || v; if(!reg) return;
+    reg.protocoloChoqueEnviado = todayISO();
+    registrarAuditoria('editar', sin ? 'siniestro' : 'venta', reg.id, `Envió el protocolo de choque por WhatsApp a ${cli?cli.nombre:'cliente'}`);
+    save(); render();
+  }; });
   const buscadorInput = document.getElementById('buscadorGlobal');
   const buscadorResultados = document.getElementById('buscadorGlobalResultados');
   if(buscadorInput && buscadorResultados){
@@ -4671,7 +4713,7 @@ function viewPolizas(){
   return `
     <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button>${puedeCicloExcel() ? '<button class="btn" data-ciclo-excel="polizas" title="Descarga la bitácora en Excel, edítala y vuelve a subirla: verás los cambios antes de guardar">📊 Editar en Excel</button>' : ''}<button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-ghost" id="btnClaveIA" title="Ver, cambiar o borrar la clave de Anthropic que usa la lectura con IA">🔑 Clave IA</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
     <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
-    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
         <div class="label" style="color:rgba(255,255,255,0.85);">Por renovar este mes</div>
         <div class="value num" style="color:#fff;">${totalPorRenovarEsteMes}</div>
@@ -4687,6 +4729,11 @@ function viewPolizas(){
         <div class="value num" style="color:#fff;">${totalPorVencer15}</div>
         <div class="hint" style="color:rgba(255,255,255,0.75);">urgentes, contactar ya</div>
       </div>
+      ${(()=>{ const ctrl = misVentas(state.ventas).filter(requisitosControlados); if(!ctrl.length) return ''; const ok = ctrl.filter(v=>!requisitosFaltantes(v).length).length;
+        return `<div class="card stat-card" style="background:${ok===ctrl.length?'#3D6B52':'#8C3B3B'};color:#fff;padding:16px;" title="Inspección vehicular, DPS y continuidad en la trama de desgravamen, según el producto (ventas desde el ${fmtDate(REQUISITOS_DESDE)})">
+        <div class="label" style="color:rgba(255,255,255,0.85);">Emitidas con requisitos completos</div>
+        <div class="value num" style="color:#fff;">${ok} / ${ctrl.length}</div>
+        <div class="hint" style="color:rgba(255,255,255,0.75);">${ctrl.length-ok ? (ctrl.length-ok)+' con requisito pendiente' : 'todo en regla'}</div></div>`; })()}
     </div>
     <div class="card" style="margin-bottom:16px;padding:16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
@@ -4752,13 +4799,14 @@ function viewPolizas(){
               <td class="folio">${v.numeroPoliza}${(()=>{ const ends = endososDe(v.id); return ends.length ? `<div><span class="pill pill-gray" title="${ends.map(e=>`${e.endosoNumero?'N° '+e.endosoNumero+' · ':''}${fmtDate(e.fechaVenta)}${e.endosoDescripcion?' · '+e.endosoDescripcion:''}`).join('\n').replace(/"/g,'&quot;')}">📎 ${ends.length} endoso${ends.length>1?'s':''}</span></div>` : ''; })()}</td>
               <td>${cli?cli.nombre:'—'}</td>
               <td>${v.aseguradora||'—'}</td>
-              <td>${prodLabel(v.tipoProducto)}</td>
+              <td>${prodLabel(v.tipoProducto)}${requisitosControlados(v) && requisitosFaltantes(v).length ? `<div><span class="pill pill-red" title="Requisito pendiente al emitir">⚠ Falta ${requisitosFaltantes(v).map(k=>REQUISITOS_EMISION[k].corto).join(' y ')}</span></div>` : ''}</td>
               <td class="num">${celdaComisionPol}</td>
               <td>${v.vigenciaFin?fmtDate(v.vigenciaFin):'—'} ${vigenciaPill}</td>
               <td>${avisoCelda}</td>
               <td>${enCuotas ? (v.formaPago==='cupones'?'Cupones':'Débito automático') + (v.cantidadCuotas?` (${v.cantidadCuotas})`:'') : 'Al contado'}</td>
               <td style="white-space:nowrap;">
                 <button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar</button>
+                ${ventaActiva(v) && PRODUCTOS_CON_PROTOCOLO.includes(v.tipoProducto) ? `<button class="btn btn-ghost btn-sm" data-protocolo-venta="${v.id}" style="margin-left:6px;" title="Enviar al cliente por WhatsApp qué hacer si choca (denuncia, dosaje, no pactar, aviso en 24 h)${v.protocoloChoqueEnviado?' · enviado el '+fmtDate(v.protocoloChoqueEnviado):''}">📲 Protocolo${v.protocoloChoqueEnviado?' ✓':''}</button>` : ''}
                 ${ventaActiva(v) ? `<button class="btn btn-ghost btn-sm" data-endoso="${v.id}" style="margin-left:6px;" title="Registrar un endoso de inclusión (u otro endoso) de esta póliza, a mano o desde su PDF">＋ Endoso</button>` : ''}
                 ${cercaDeVencer ? `<button class="btn btn-ghost btn-sm" data-aviso="${v.id}" style="margin-left:6px;">Aviso de renovación</button><button class="btn btn-ghost btn-sm" data-wa-renovacion="${v.id}" style="margin-left:6px;">📲 Renovación</button><button class="btn btn-sm" data-renovar="${v.id}" style="margin-left:6px;">Generar renovación</button><button class="btn btn-sm" data-renovar-pdf="${v.id}" style="margin-left:6px;" title="Sube el PDF de la renovación y la IA llena la nueva vigencia, la prima y las cuotas">🤖 Renovar con PDF</button>` : ''}
               </td>
@@ -5806,6 +5854,8 @@ function sinDocs(s){
   const tiene = d => recibidos.some(r=> String(r).toLowerCase()===d.toLowerCase());
   return { requeridos, recibidos: requeridos.filter(tiene), faltan: requeridos.filter(d=>!tiene(d)), extra: recibidos.filter(r=> !requeridos.some(d=>d.toLowerCase()===String(r).toLowerCase())) };
 }
+// Rechazos evitables con el protocolo de choque y el control de requisitos (indicador: deben ser 0)
+const MOTIVOS_RECHAZO_DOCUMENTACION = ['Aviso fuera de plazo','Documentación incompleta','Conductor sin licencia o en estado de ebriedad','Póliza sin vigencia o con primas impagas'];
 const MOTIVOS_RECHAZO = ['Exclusión de la póliza','Cobertura no contratada','Póliza sin vigencia o con primas impagas','Aviso fuera de plazo','Documentación incompleta','Conductor sin licencia o en estado de ebriedad','Uso distinto al declarado','Preexistencia','Monto por debajo del deducible','Falta de medidas de seguridad','Otro'];
 // Etapas del trámite: aviso → inspección → aprobación → pago o cierre (días entre cada una)
 function sinEtapas(s){
@@ -5864,11 +5914,12 @@ function viewSiniestros(){
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:16px;">
       ${tarjeta('#3D6B52','Siniestros gestionados', misSiniestros.length, 'casos registrados')}
       ${tarjeta('#B8823D','Casos abiertos', abiertos.length, 'aún sin cierre')}
-      ${tarjeta('#8C3B3B','Rechazados', rechazados, cerrados ? `${Math.round(rechazados*100/cerrados)}% de los casos cerrados` : 'por la aseguradora')}
+      ${tarjeta('#8C3B3B','Rechazados', rechazados, (cerrados ? `${Math.round(rechazados*100/cerrados)}% de los cerrados` : 'por la aseguradora') + ` · ${misSiniestros.filter(s=>s.estado==='rechazado' && MOTIVOS_RECHAZO_DOCUMENTACION.includes(s.motivoRechazo)).length} por documentación o plazo`)}
       ${tarjeta('#5A4E7C','Abiertos sin movimiento +30 días', atrasados, 'requieren seguimiento')}
     </div>
     ${misSiniestros.length ? `<div class="card" style="padding:0;overflow-x:auto;margin-bottom:16px;">
       <div style="padding:12px 16px 4px;font-weight:600;">Atención por aseguradora</div>
+      <div style="padding:0 16px 4px;font-size:12px;color:var(--ink-faint);">${(()=>{ const c = misSiniestros.filter(s=>!siniestroAbierto(s)); const conFecha = c.filter(s=>s.fechaPago).length; return c.length ? `Casos cerrados con fecha de cierre: <b style="color:${conFecha===c.length?'#3D6B52':'var(--danger)'};">${conFecha} de ${c.length}</b> (meta: 100%). ` : ''; })()}</div>
       <div style="padding:0 16px 8px;font-size:12px;color:var(--ink-faint);">🔴 tarda más de 60 días en cerrar, tiene 2 o más casos sin movimiento +30 días o rechaza 30% o más · 🟠 más de 30 días o 1 caso atrasado · 🟢 al día. Escala a la aseguradora a los 15 días sin movimiento y a gerencia a los 30.</div>
       <table><thead><tr><th></th><th>Aseguradora</th><th class="num">Casos</th><th class="num">Abiertos</th><th class="num">Sin mov. +30 d</th><th class="num">Rechazos</th><th class="num">Días prom. hasta cierre</th><th class="num">Indemnizado</th></tr></thead><tbody>
       ${sinResumenAseguradoras(misSiniestros).map(r=>`<tr><td><span title="${r.sem}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorSem[r.sem]};"></span></td><td>${esc(r.aseg)}</td><td class="num">${r.casos}</td><td class="num">${r.abiertos}</td><td class="num" style="${r.atrasados?'color:var(--danger);font-weight:600;':''}">${r.atrasados}</td><td class="num">${r.rechazados}${r.rechazados?` <span style="color:var(--ink-faint);font-size:12px;">(${r.pctRechazo}%)</span>`:''}</td><td class="num">${r.promCierre??'—'}</td><td class="num">${[r.indemnizado.PEN ? 'S/ '+r.indemnizado.PEN.toLocaleString('es-PE',{maximumFractionDigits:2}) : '', r.indemnizado.USD ? 'US$ '+r.indemnizado.USD.toLocaleString('es-PE',{maximumFractionDigits:2}) : ''].filter(Boolean).join(' · ') || '—'}</td></tr>`).join('')}
@@ -5901,7 +5952,7 @@ function viewSiniestros(){
               <td><span class="pill ${est.clase}">${est.label}</span>${docsTxt}</td>
               <td>${fmtDate(sinUltimoMov(s))}${siniestroAbierto(s) && dias!==null ? `<div style="font-size:12px;color:${dias>30?'var(--danger)':'var(--ink-faint)'};">${dias} día${dias===1?'':'s'}${dias>30?' · escalar a gerencia':dias>15?' · escalar a la aseguradora':''}</div>` : ''}</td>
               <td style="max-width:280px;font-size:13px;">${esc(proximo)}</td>
-              <td><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button></td></tr>`;
+              <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm" data-edit-siniestro="${s.id}">Editar</button>${siniestroAbierto(s) && sinRamo(s)==='Vehicular' ? `<div><button class="btn btn-ghost btn-sm" data-protocolo-sin="${s.id}" title="Enviar al cliente por WhatsApp qué hacer tras el choque (denuncia, dosaje, no pactar, aviso en 24 h)${s.protocoloChoqueEnviado?' · enviado el '+fmtDate(s.protocoloChoqueEnviado):''}">📲 Protocolo${s.protocoloChoqueEnviado?' ✓':''}</button></div>` : ''}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -7619,6 +7670,11 @@ const CX_ENTIDADES = {
       { h:'Comisión total', ro:true, fin:true, get:v=> String(Math.round((Number(v.comisionTotal)||0)*100)/100) },
       { h:'Asesor', opciones:cxAsesorOpciones, get:v=>{ const a = state.asesores.find(x=>x.id===v.asesorId); return a?a.nombre:'Directa'; }, set:(v,x,o)=>{ v.asesorId = o.id; if(!o.id) v.tipoComisionAsesor = 'ninguna'; else if(v.tipoComisionAsesor==='ninguna'){ v.tipoComisionAsesor = 'porcentaje'; v.valorComisionAsesor = 0; } } },
       { h:'Estado', ro:true, get:v=> v.estadoVenta==='anulada' ? 'Anulada' : 'Emitida' },
+      { h:'Inspección vehicular', tipo:'fecha', get:v=> (v.requisitos||{}).inspeccion||'', set:(v,x)=>{ v.requisitos = Object.assign({}, v.requisitos, { inspeccion:x }); } },
+      { h:'DPS firmada', opciones:()=>[{id:'si',label:'Sí'},{id:'no',label:'No'}], get:v=> requisitosDe(v.tipoProducto).includes('dps') || (v.requisitos||{}).dps ? ((v.requisitos||{}).dps ? 'Sí' : 'No') : '', set:(v,x,o)=>{ v.requisitos = Object.assign({}, v.requisitos, { dps: o.id==='si' ? ((v.requisitos||{}).dps || todayISO()) : '' }); } },
+      { h:'Continuidad en trama de desgravamen', opciones:()=>[{id:'si',label:'Sí'},{id:'no',label:'No'}], get:v=> requisitosDe(v.tipoProducto).includes('trama') || (v.requisitos||{}).trama ? ((v.requisitos||{}).trama ? 'Sí' : 'No') : '', set:(v,x,o)=>{ v.requisitos = Object.assign({}, v.requisitos, { trama: o.id==='si' ? ((v.requisitos||{}).trama || todayISO()) : '' }); } },
+      { h:'Requisitos pendientes', ro:true, get:v=> requisitosFaltantes(v).map(k=>REQUISITOS_EMISION[k].corto).join('; ') },
+      { h:'Protocolo de choque enviado', ro:true, get:v=> v.protocoloChoqueEnviado||'' },
       { h:'Estado de renovación', opciones:()=>ESTADOS_RENOV.map(e=>({id:e.id,label:e.label})), get:v=>((ESTADOS_RENOV.find(e=>e.id===((v.renov||{}).estado||''))||ESTADOS_RENOV[0]).label), set:(v,x,o,ctx)=>{ ctx.renov = Object.assign(ctx.renov||{}, { estado:o.id }); } },
       { h:'Nota de renovación', get:v=>(v.renov||{}).nota, set:(v,x,o,ctx)=>{ ctx.renov = Object.assign(ctx.renov||{}, { nota:x }); } },
       { h:'Notas', get:v=>v.notas, set:(v,x)=>{ v.notas = x; } },
@@ -7759,6 +7815,7 @@ const CX_ENTIDADES = {
     },
     completar(s, nuevo, ctx){
       if(nuevo) s.folio = ++state.folioSiniestro;
+      if(SIN_ESTADOS_CERRADOS.includes(s.estado) && !s.fechaPago && ctx.gestion) s.fechaPago = todayISO();
       if(!ctx.ultMovManual && (ctx.gestion || !s.ultimoMovimiento)) s.ultimoMovimiento = todayISO();
     },
     agregar(s){ state.siniestros.push(s); },
@@ -8941,6 +8998,8 @@ function wireModalSiniestro(){
       || (data.docsRecibidos||[]).slice().sort().join('|') !== (original.docsRecibidos||[]).slice().sort().join('|');
     if(editing.id && gestionCambio && data.ultimoMovimiento===(original.ultimoMovimiento||'')) data.ultimoMovimiento = todayISO();
     if(!data.ultimoMovimiento) data.ultimoMovimiento = todayISO();
+    // al cerrar el caso (pagado, atendido, rechazado o cerrado) sin fecha de pago o cierre, se toma la de hoy
+    if(SIN_ESTADOS_CERRADOS.includes(data.estado) && !data.fechaPago) data.fechaPago = todayISO();
     if(editing.id){ Object.assign(state.siniestros.find(x=>x.id===editing.id), data); }
     else{ data.id = uid(); data.folio = ++state.folioSiniestro; state.siniestros.push(data); }
     const cliAudSin = state.clientes.find(c=>c.id===data.clienteId);
@@ -9459,6 +9518,7 @@ function modalVenta(){
       <div class="field"><label>${v.tipoVenta==='endoso'?'Rige desde':'Inicio de vigencia'}</label><input type="date" id="mVigenciaInicio" style="width:100%;" value="${v.vigenciaInicio||''}"></div>
       <div class="field" id="mCampoVigenciaFin" style="${v.tipoVenta==='endoso'?'display:none;':''}"><label>Fin de vigencia (anualizada)</label><input type="date" id="mVigenciaFin" style="width:100%;" value="${v.vigenciaFin||''}"></div>
     </div>
+    <div id="mRequisitosEmision" data-req="${String(JSON.stringify(v.requisitos||{})).replace(/"/g,'&quot;')}"></div>
     </div>
 
     <div class="mtab-panel ${editing.calculoComision?'':'hidden'}" data-mtab-panel="comisiones">
@@ -9742,6 +9802,16 @@ function wireModal(){
     const totalInput = document.getElementById('mComisionTotal');
     const monedaSel = document.getElementById('mMoneda');
     const prodSel = document.getElementById('mProducto');
+    // Requisitos al emitir según el producto (inspección vehicular, DPS, trama de desgravamen)
+    const pintarRequisitosEmision = () => {
+      const caja = document.getElementById('mRequisitosEmision'); if(!caja || !prodSel) return;
+      const previos = JSON.parse(caja.dataset.req || '{}');
+      caja.querySelectorAll('[data-req-chk]').forEach(chk=>{ const k = chk.dataset.reqChk; const f = caja.querySelector(`[data-req-fecha="${k}"]`); previos[k] = chk.checked ? ((f && f.value) || previos[k] || todayISO()) : ''; });
+      caja.dataset.req = JSON.stringify(previos);
+      const lista = requisitosDe(prodSel.value);
+      caja.innerHTML = lista.length ? `<div class="panel-title" style="margin-top:6px;">Requisitos al emitir</div><p class="modal-hint" style="margin-top:-4px;">Sin estos requisitos la aseguradora puede rechazar un siniestro.</p>` + lista.map(k=>`<div style="display:flex;align-items:center;gap:10px;margin:4px 0;font-size:13px;"><label style="display:flex;align-items:center;gap:6px;flex:1;"><input type="checkbox" data-req-chk="${k}" ${previos[k]?'checked':''}> ${REQUISITOS_EMISION[k].label}</label><input type="date" data-req-fecha="${k}" value="${typeof previos[k]==='string' ? previos[k] : ''}" title="Fecha" style="width:150px;"></div>`).join('') : '';
+    };
+    if(prodSel){ pintarRequisitosEmision(); prodSel.addEventListener('change', pintarRequisitosEmision); }
     const bloqueSeguro = document.getElementById('mBloqueSeguro');
     const bloqueFijo = document.getElementById('mBloqueFijo');
     const fieldsVigencia = document.getElementById('mFieldsVigencia');
@@ -10294,6 +10364,7 @@ function wireModal(){
         cuotasAlDia: (document.getElementById('mFormaPago').value!=='contado') ? (document.getElementById('mCuotasAlDia').value!=='no') : true,
         comisionTotal, primaBruta, primaNeta, porcentajeComisionAseguradora, modoComisionAseguradora,
         estadoTasa: tasaPendiente ? 'pendiente' : '',
+        requisitos: (()=>{ const r = {}; document.querySelectorAll('#mRequisitosEmision [data-req-chk]').forEach(chk=>{ const k = chk.dataset.reqChk; if(chk.checked){ const f = document.querySelector(`#mRequisitosEmision [data-req-fecha="${k}"]`); r[k] = (f && f.value) || todayISO(); } }); return r; })(),
         porcentajeFG: esSeguro(tipoProductoSel) ? (parseFloat(document.getElementById('mPctFG').value)||70) : (editing.id ? ((state.ventas.find(x=>x.id===editing.id)||{}).porcentajeFG||70) : 70),
         moneda: document.getElementById('mMoneda').value,
         tipoComisionAsesor: document.getElementById('mTipoComAsesor').value,
