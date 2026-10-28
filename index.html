@@ -1833,6 +1833,7 @@ function abrirCentroAlertas(){
 
 function wireCommon(){
   document.querySelectorAll('#crm-app .nav-btn').forEach(b=>{ b.onclick = () => { tab = b.dataset.tab; render(); }; });
+  document.querySelectorAll('[data-ciclo-excel]').forEach(b=>{ b.onclick = () => abrirCicloExcel(b.dataset.cicloExcel); });
   const buscadorInput = document.getElementById('buscadorGlobal');
   const buscadorResultados = document.getElementById('buscadorGlobalResultados');
   if(buscadorInput && buscadorResultados){
@@ -2135,7 +2136,7 @@ function restaurarDePapelera(item){
   alert('Registro restaurado correctamente.');
 }
 function abrirHistorialAuditoria(){
-  const ETIQUETAS_ACCION = { crear:'🟢 Creó', editar:'✏️ Editó', eliminar:'🗑 Eliminó', restaurar:'↩ Restauró', importar:'🤖 Carga de Claude' };
+  const ETIQUETAS_ACCION = { crear:'🟢 Creó', editar:'✏️ Editó', eliminar:'🗑 Eliminó', restaurar:'↩ Restauró', importar:'📥 Importó', exportar:'⬇ Descargó' };
   const host = document.createElement('div'); host.id = 'auditoriaHost';
   const pintar = () => {
     const filtroAutor = document.getElementById('fAudAutor') ? document.getElementById('fAudAutor').value : 'todos';
@@ -2156,6 +2157,8 @@ function abrirHistorialAuditoria(){
             <option value="editar" ${filtroAccion==='editar'?'selected':''}>Ediciones</option>
             <option value="eliminar" ${filtroAccion==='eliminar'?'selected':''}>Eliminaciones</option>
             <option value="restaurar" ${filtroAccion==='restaurar'?'selected':''}>Restauraciones</option>
+            <option value="importar" ${filtroAccion==='importar'?'selected':''}>Cargas e importaciones</option>
+            <option value="exportar" ${filtroAccion==='exportar'?'selected':''}>Descargas</option>
           </select></div>
         </div>
         <div class="card" style="padding:0;max-height:380px;overflow-y:auto;">
@@ -4665,7 +4668,7 @@ function viewPolizas(){
   const th = (campo, label) => `<th data-orden-pol-campo="${campo}" style="cursor:pointer;user-select:none;" title="Ordenar por ${label}">${label}${flecha(campo)}</th>`;
 
   return `
-    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button><button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-ghost" id="btnClaveIA" title="Ver, cambiar o borrar la clave de Anthropic que usa la lectura con IA">🔑 Clave IA</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
+    <div class="page-head"><div><h1>Vigencias y Renovaciones</h1><p>Estado de vigencia de tus pólizas y generación de renovaciones. Para cuotas atrasadas y cobranza, ve a "Cobranzas".</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnExportPolizas">Exportar a Excel</button><button class="btn" id="btnPlantillaComisionesTPA">Plantilla TPA</button>' : ''}<button class="btn" id="btnCargaComisionesTPA">⬆ Actualizar comisiones (Excel)</button>${puedeCicloExcel() ? '<button class="btn" data-ciclo-excel="polizas" title="Descarga la bitácora en Excel, edítala y vuelve a subirla: verás los cambios antes de guardar">📊 Editar en Excel</button>' : ''}<button class="btn" id="btnPolizaDesdePDF" title="Sube el PDF de la póliza y la IA llena el formulario">🤖 Registrar desde PDF</button><button class="btn btn-ghost" id="btnClaveIA" title="Ver, cambiar o borrar la clave de Anthropic que usa la lectura con IA">🔑 Clave IA</button><button class="btn btn-primary" id="btnNuevaPoliza">+ Registrar venta con póliza</button></div></div>
     <input type="file" id="inputCargaComisionesTPA" accept=".xlsx,.xls" style="display:none;">
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="card stat-card" style="background:#4A5D7A;color:#fff;padding:16px;">
@@ -5810,7 +5813,7 @@ function viewSiniestros(){
   const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:16px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
   return `
     <div class="page-head"><div><h1>Siniestros</h1><p>Bitácora de siniestros: un caso por fila, con su estado, la última gestión y el próximo paso.</p></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargarSiniestros() ? '<button class="btn" id="btnReporteSiniestros" title="Descarga el Reporte de siniestros FG (Resumen, Casos en curso, Detalle, Casos críticos, Ideas de mejora y Notas)">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeCicloExcel() ? '<button class="btn" data-ciclo-excel="siniestros" title="Descarga la bitácora en Excel, edítala y vuelve a subirla: verás los cambios antes de guardar">📊 Editar en Excel</button>' : ''}${puedeDescargarSiniestros() ? '<button class="btn" id="btnReporteSiniestros" title="Descarga el Reporte de siniestros FG (Resumen, Casos en curso, Detalle, Casos críticos, Ideas de mejora y Notas)">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:16px;">
       ${tarjeta('#3D6B52','Siniestros gestionados', misSiniestros.length, 'casos registrados')}
       ${tarjeta('#B8823D','Casos abiertos', abiertos.length, 'aún sin cierre')}
@@ -6124,7 +6127,7 @@ function b360Datos(){
     if(g.fechaSeguimiento && sem!=='seguimiento') caso.alertas.push({ sem, area: g.area || caso.area, alerta: `Seguimiento ${sem==='critico' ? 'atrasado' : 'para hoy o vencido'}: ${g.proximaGestion || g.accion}`.slice(0,140), fechaClave: g.fechaSeguimiento, dias: -daysUntil(g.fechaSeguimiento) });
   });
   // Auditoría: cada acción de un usuario en el CRM queda como gestión del caso al que pertenece
-  const ACC = { crear:'Registro', editar:'Actualización', eliminar:'Eliminación', restaurar:'Restauración', importar:'Importación' };
+  const ACC = { crear:'Registro', editar:'Actualización', eliminar:'Eliminación', restaurar:'Restauración', importar:'Importación', exportar:'Descarga' };
   const ENT = { venta:'póliza', cliente:'ficha de cliente', siniestro:'siniestro', seguimiento:'cotización / pendiente', asesor:'asesor', ejecutiva:'usuario ejecutivo' };
   const papelera = new Map((state.papelera||[]).map(p=>[p.entidadId, p]));
   (state.auditoria||[]).forEach(a=>{
@@ -6604,6 +6607,28 @@ async function descargarReporteSiniestros(lista){
   }catch(e){ console.error('No se pudo generar el reporte de siniestros', e); alert('No se pudo generar el reporte de siniestros: ' + e.message); }
   finally{ const b = document.getElementById('btnReporteSiniestros'); if(b){ b.disabled = false; b.textContent = '⬇ Descargar reporte Excel'; } }
 }
+// Agrega una hoja oculta (solo texto y números) a un .xlsx abierto con JSZip
+async function agregarHojaOcultaXlsx(zip, nombre, aoa){
+  const xmlEsc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
+  const n = Object.keys(zip.files).filter(f=>/^xl\/worksheets\/sheet\d+\.xml$/.test(f)).length + 1;
+  const filas = aoa.map((fila, i)=> `<row r="${i+1}">${fila.map((v, j)=>{
+    if(v===null || v===undefined || v==='') return '';
+    const ref = colLetra(j) + (i+1);
+    return typeof v==='number' ? `<c r="${ref}"><v>${v}</v></c>` : `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+  }).join('')}</row>`).join('');
+  zip.file(`xl/worksheets/sheet${n}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${XLSX_NS}"><sheetData>${filas}</sheetData></worksheet>`);
+  let rels = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  const rid = 'rIdBase' + n;
+  rels = rels.replace('</Relationships>', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/></Relationships>`);
+  zip.file('xl/_rels/workbook.xml.rels', rels);
+  let libro = await zip.file('xl/workbook.xml').async('string');
+  const maxId = Math.max(0, ...Array.from(libro.matchAll(/sheetId="(\d+)"/g)).map(m=>Number(m[1])));
+  libro = libro.replace('</sheets>', `<sheet name="${xmlEsc(nombre)}" sheetId="${maxId+1}" state="hidden" r:id="${rid}"/></sheets>`);
+  zip.file('xl/workbook.xml', libro);
+  let tipos = await zip.file('[Content_Types].xml').async('string');
+  tipos = tipos.replace('</Types>', `<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
+  zip.file('[Content_Types].xml', tipos);
+}
 async function armarReporteSiniestros(zip, lista, corte){
   const diasA = (desde) => desde ? Math.round(serialExcel(corte) - serialExcel(desde)) : null;
   const diasSinMov = s => diasA(sinUltimoMov(s));
@@ -6728,10 +6753,14 @@ async function armarReporteSiniestros(zip, lista, corte){
     '• El estado de cada caso es el registrado en el CRM. Si no hay gestión de cierre, el caso figura como abierto.',
     '• Cerrados: Pagado, Atendido, Rechazado y Cerrado sin atención. Los demás estados se cuentan como abiertos.',
     '• Los días sin movimiento se miden desde el último movimiento registrado (o la fecha de aviso) hasta la fecha de corte.',
-    '• Para actualizar el reporte, cambia la fecha en Resumen!C4 o agrega o edita filas en la hoja Detalle. Los indicadores se recalculan solos.',
+    '• Para actualizar el reporte, cambia la fecha en Resumen!C4 o agrega o edita filas en la hoja Detalle. Para pasar al CRM lo trabajado aquí: Siniestros › 📊 Editar en Excel › Subir Excel editado.',
     '• Semáforo: ROJO = rechazado o más de 30 días sin movimiento · ÁMBAR = de 8 a 30 días · VERDE = hasta 7 días.',
   ].forEach((t, i)=> notas.poner(`A${4+i}`, t));
   zip.file('xl/worksheets/sheet6.xml', notas.xml());
+
+  // Copia oculta de lo descargado: al subir el reporte en «📊 Editar en Excel» se sabe qué celdas se editaron
+  const titulosBase = Object.keys(cxBaseReporte({}));
+  await agregarHojaOcultaXlsx(zip, CX_HOJA_BASE, [titulosBase].concat(lista.map(s=>{ const b = cxBaseReporte(s); return titulosBase.map(h=> b[h]); })));
 
   return zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', compression:'DEFLATE' });
 }
@@ -6788,7 +6817,7 @@ function viewAsesores(){
         <thead><tr><th>Nombre</th><th>Usuario (correo)</th><th>Acceso</th><th></th></tr></thead>
         <tbody>
           ${state.ejecutivas.length===0 ? `<tr class="empty-row"><td colspan="4">Aún no registras ejecutivas de cuenta.</td></tr>` : state.ejecutivas.map(e=>{
-            const acceso = (e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`) + (e.descargaSiniestros!==false ? ` <span class="pill pill-gray" title="Puede descargar el reporte Excel de Siniestros">⬇ Excel siniestros</span>` : '');
+            const acceso = (e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`) + (e.descargaSiniestros!==false ? ` <span class="pill pill-gray" title="Puede descargar el reporte Excel de Siniestros">⬇ Excel siniestros</span>` : '') + (e.excelEditable===true ? ` <span class="pill pill-gray" title="Puede descargar y subir Clientes, Pólizas y Siniestros en Excel">📊 Editar en Excel</span>` : '');
             return `<tr><td>${e.nombre}</td><td>${e.usuario||'—'}</td><td>${acceso}</td><td><button class="btn btn-ghost btn-sm" data-edit-ejecutiva="${e.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
@@ -7365,6 +7394,583 @@ async function descifrarCargaClaude(cifrado, privadaJwk){
   const claro = await crypto.subtle.decrypt({ name:'AES-GCM', iv: b64aBytes(cifrado.iv) }, aes, b64aBytes(cifrado.datos));
   return JSON.parse(new TextDecoder().decode(claro));
 }
+// ================= CICLO EXCEL: DESCARGAR, EDITAR Y SUBIR =================
+// Clientes, Pólizas y Siniestros se descargan con su ID; se editan en Excel y al subir el mismo archivo el CRM
+// muestra antes/después, cambia solo lo que se editó, agrega las filas nuevas (sin ID) y nunca borra nada.
+// La hoja oculta "_base" guarda lo que se descargó: si alguien cambió ese dato en el CRM después, no se pisa.
+const CX_ID = 'ID (no tocar)';
+const CX_HOJA_BASE = '_base';
+function puedeCicloExcel(){
+  const s = sesionEfectiva(); if(!s || s.rol==='asesor') return false;
+  if(s.rol!=='ejecutiva') return true;
+  const e = (state.ejecutivas||[]).find(x=>x.id===s.ejecutivaId);
+  return !!(e && e.activo!==false && e.excelEditable===true);
+}
+const cxPad = n => String(n).padStart(2,'0');
+const cxNorm = t => String(t??'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+function cxFecha(v){
+  if(v==null || v==='') return '';
+  let y, m, d;
+  if(typeof v==='number'){ const p = XLSX.SSF.parse_date_code(v); if(!p) return null; y = p.y; m = p.m; d = p.d; }
+  else {
+    const t = String(v).trim(); let r;
+    if((r = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))){ y = +r[1]; m = +r[2]; d = +r[3]; }
+    else if((r = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/))){ y = +(r[3].length===2 ? '20'+r[3] : r[3]); m = +r[2]; d = +r[1]; }
+    else return null;
+  }
+  if(y<1900 || y>2100 || m<1 || m>12 || d<1 || d>31) return null;
+  return `${y}-${cxPad(m)}-${cxPad(d)}`;
+}
+function cxNumero(v){
+  if(v==null || v==='') return '';
+  if(typeof v==='number') return Math.round(v*100)/100;
+  let t = String(v).replace(/[^\d,.\-]/g,'');
+  if(!t) return null;
+  if(t.includes(',') && t.includes('.')) t = t.lastIndexOf(',') > t.lastIndexOf('.') ? t.replace(/\./g,'').replace(',','.') : t.replace(/,/g,'');
+  else if(t.includes(',')) t = /,\d{3}$/.test(t) && t.split(',').length>1 && !/,\d{1,2}$/.test(t) ? t.replace(/,/g,'') : t.replace(',','.');
+  const n = Number(t);
+  return isNaN(n) ? null : Math.round(n*100)/100;
+}
+// Busca un valor en una lista de opciones {id,label}: por nombre exacto, por id o por coincidencia parcial única
+function cxOpcion(txt, opciones){
+  const n = cxNorm(txt); if(!n) return { id:'', label:'' };
+  // singular/plural y rr/r: «Seguro vehicular» = «Seguros Vehiculares», «Multirriesgo» = «Multiriesgo»
+  const sinPlural = t => cxNorm(t).replace(/rr/g,'r').split(' ').map(w=> /[rlndz]es$/.test(w) && w.length>5 ? w.slice(0,-2) : /s$/.test(w) && w.length>3 ? w.slice(0,-1) : w).join(' ');
+  const exacta = opciones.find(o=> cxNorm(o.label)===n || cxNorm(o.id)===n) || opciones.find(o=> sinPlural(o.label)===sinPlural(n));
+  if(exacta) return exacta;
+  const parciales = opciones.filter(o=> cxNorm(o.label).includes(n) || (n.length>=4 && n.includes(cxNorm(o.label))));
+  return parciales.length===1 ? parciales[0] : null;
+}
+// Valor de una celda tal como se compara (texto ya normalizado según el tipo de columna)
+function cxValor(col, crudo){
+  if(col.tipo==='fecha'){ const f = cxFecha(crudo); return f===null ? { error:`fecha no válida «${crudo}» (usa DD/MM/AAAA)` } : { v:f }; }
+  if(col.tipo==='numero'){ const n = cxNumero(crudo); return n===null ? { error:`número no válido «${crudo}»` } : { v: n==='' ? '' : String(n) }; }
+  if(col.opciones){
+    const o = cxOpcion(crudo, col.opciones());
+    return o===null ? { error:`«${crudo}» no es una opción válida (mira la hoja «Opciones»)` } : { v:o.label };
+  }
+  let t = String(crudo??'').replace(/\s+/g,' ').trim();
+  if(col.mayus) t = t.toUpperCase();
+  if(col.tipo==='doc'){ t = t.replace(/[\s.\-]/g,'').toUpperCase(); }
+  return { v:t };
+}
+const cxAsesorOpciones = () => [{ id:'', label:'Directa' }].concat((state.asesores||[]).map(a=>({ id:a.id, label:a.nombre })));
+const CX_FORMAS_PAGO = [{ id:'contado', label:'Contado' }, { id:'cupones', label:'Cupones / cuotas' }, { id:'debito_automatico', label:'Débito automático' }];
+const cxComisionCobrada = v => v.estadoComision==='pagada' || v.estadoCobroFG==='cobrado' || pagosDe(v).length>0;
+function cxClienteDe(id){ return state.clientes.find(c=>c.id===id); }
+// Cliente para una fila nueva de pólizas o siniestros: por DNI/RUC, si no por nombre exacto
+function cxResolverCliente(nombre, doc){
+  const d = normDocumento(doc);
+  if(d){ const c = state.clientes.find(x=> normDocumento(x.documento)===d); if(c) return c; }
+  const n = cxNorm(nombre);
+  return n ? state.clientes.find(x=> cxNorm(x.nombre)===n) : null;
+}
+
+const CX_ENTIDADES = {
+  clientes: {
+    titulo:'Clientes', hoja:'Clientes', archivo:'clientes', singular:'cliente', entidad:'cliente',
+    lista: () => state.clientes.filter(c=>clientePerteneceAAsesor(c)).sort((a,b)=> String(a.nombre||'').localeCompare(String(b.nombre||''),'es')),
+    porId: id => state.clientes.find(c=>c.id===id),
+    etiqueta: c => c.nombre || '(sin nombre)',
+    columnas: [
+      { h:'Nombre / Razón social', req:true, noAlCoincidir:true, get:c=>c.nombre, set:(c,v)=>{ c.nombre = v; } },
+      { h:'Tipo de documento', opciones:()=>[{id:'DNI',label:'DNI'},{id:'RUC',label:'RUC'},{id:'CE',label:'CE'}], get:c=>c.tipoDocumento, set:(c,v)=>{ c.tipoDocumento = v; } },
+      { h:'DNI / RUC', tipo:'doc', get:c=>c.documento, set:(c,v)=>{ c.documento = v; } },
+      { h:'Celular 1', get:c=>c.celular1, set:(c,v)=>{ c.celular1 = v; } },
+      { h:'Celular 2', get:c=>c.celular2, set:(c,v)=>{ c.celular2 = v; } },
+      { h:'Correo 1', get:c=>c.email, set:(c,v)=>{ c.email = v; } },
+      { h:'Correo 2', get:c=>c.email2, set:(c,v)=>{ c.email2 = v; } },
+      { h:'Dirección', get:c=>c.direccion, set:(c,v)=>{ c.direccion = v; } },
+      { h:'Ciudad', get:c=>c.ciudad, set:(c,v)=>{ c.ciudad = v; } },
+      { h:'Persona de contacto', get:c=>c.personaContacto, set:(c,v)=>{ c.personaContacto = v; } },
+      { h:'Fecha de nacimiento', tipo:'fecha', get:c=>c.fechaNacimiento, set:(c,v)=>{ c.fechaNacimiento = v; } },
+      { h:'Observaciones', get:c=>c.datosAdicionales, set:(c,v)=>{ c.datosAdicionales = v; } },
+    ],
+    validar(f, rec, ctx){
+      const doc = ctx.cambia('DNI / RUC') || ctx.cambia('Tipo de documento') ? f['DNI / RUC'] : '', tipo = f['Tipo de documento'] || (doc && doc.length===11 ? 'RUC' : doc ? 'DNI' : '');
+      if(doc && tipo==='DNI' && !/^\d{8}$/.test(doc)) ctx.error(`DNI «${doc}» debe tener 8 dígitos`);
+      if(doc && tipo==='RUC' && !/^(10|15|16|17|20)\d{9}$/.test(doc)) ctx.error(`RUC «${doc}» no es válido (11 dígitos, empieza en 10 o 20)`);
+      ['Correo 1','Correo 2'].forEach(k=>{ if(f[k] && ctx.cambia(k) && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f[k])) ctx.error(`${k} «${f[k]}» no parece un correo`); });
+      ['Celular 1','Celular 2'].forEach(k=>{ const d = String(f[k]||'').replace(/\D/g,''); if(f[k] && ctx.cambia(k) && !(d.length===9 && d[0]==='9') && !/^51 ?9/.test(f[k])) ctx.aviso(`${k} «${f[k]}» no parece un celular peruano (9 dígitos)`); });
+      if(doc){
+        const otro = state.clientes.find(c=> c!==rec && normDocumento(c.documento)===normDocumento(doc));
+        if(otro && rec) ctx.error(`el DNI/RUC ${doc} ya es de otro cliente: ${otro.nombre}`);
+      }
+    },
+    // Fila sin ID: si el DNI/RUC (o el nombre exacto) ya existe, se completa ese cliente en vez de duplicarlo
+    buscarExistente(f, ctx){
+      const doc = f['DNI / RUC'];
+      if(doc){ const c = state.clientes.find(x=> normDocumento(x.documento)===normDocumento(doc)); if(c) return c; }
+      const exacto = state.clientes.find(x=> cxNorm(x.nombre)===cxNorm(f['Nombre / Razón social']));
+      if(exacto) return exacto;
+      const parecido = state.clientes.find(c=> similitudNombres(c.nombre, f['Nombre / Razón social']) >= 0.87);
+      if(parecido){
+        if(doc && parecido.documento) ctx.aviso(`nombre parecido a «${parecido.nombre}» (otro DNI/RUC): se crea como cliente distinto`);
+        else ctx.error(`parece el mismo cliente que «${parecido.nombre}»: copia su ID en la fila o agrega el DNI/RUC`);
+      }
+      return null;
+    },
+    crear(f){
+      const doc = f['DNI / RUC'];
+      return { id: uid(), estadoContacto:'nuevo', etiquetas:[], tipoDocumento: doc && doc.length===11 ? 'RUC' : 'DNI' };
+    },
+    agregar(c){ state.clientes.push(c); },
+  },
+
+  polizas: {
+    titulo:'Pólizas (vigencias y renovaciones)', hoja:'Pólizas', archivo:'polizas', singular:'póliza', entidad:'venta',
+    lista: () => misVentas(state.ventas).filter(v=> esSeguro(v.tipoProducto)).sort((a,b)=> (a.folio||0)-(b.folio||0)),
+    porId: id => state.ventas.find(v=>v.id===id),
+    etiqueta: v => { const c = cxClienteDe(v.clienteId); return `${folioV(v.folio)} — ${c?c.nombre:''}${v.numeroPoliza?' · '+v.numeroPoliza:''}`; },
+    columnas: [
+      { h:'Folio', ro:true, get:v=>folioV(v.folio) },
+      { h:'Cliente', soloNuevo:true, get:v=>{ const c = cxClienteDe(v.clienteId); return c?c.nombre:''; } },
+      { h:'DNI / RUC del cliente', tipo:'doc', soloNuevo:true, get:v=>{ const c = cxClienteDe(v.clienteId); return c?c.documento:''; } },
+      { h:'Aseguradora', req:true, opciones:()=> (state.aseguradoras||[]).filter(a=>typeof a==='string').map(a=>({id:a,label:a})), get:v=>v.aseguradora, set:(v,x)=>{ v.aseguradora = x; } },
+      { h:'Ramo / producto', req:true, opciones:()=> todosLosProductos().filter(p=>p.categoria==='seguro').map(p=>({id:p.id,label:p.label})), get:v=>prodLabel(v.tipoProducto), set:(v,x,o)=>{ v.tipoProducto = o.id; } },
+      { h:'N° de póliza', get:v=>v.numeroPoliza, set:(v,x)=>{ v.numeroPoliza = x; } },
+      { h:'Placa', mayus:true, get:v=>v.vehPlaca, set:(v,x)=>{ v.vehPlaca = x; } },
+      { h:'Marca', get:v=>v.vehMarca, set:(v,x)=>{ v.vehMarca = x; } },
+      { h:'Modelo', get:v=>v.vehModelo, set:(v,x)=>{ v.vehModelo = x; } },
+      { h:'Año', get:v=>v.vehAnio, set:(v,x)=>{ v.vehAnio = x; } },
+      { h:'Fecha de venta', tipo:'fecha', get:v=>v.fechaVenta, set:(v,x)=>{ v.fechaVenta = x; } },
+      { h:'Inicio de vigencia', tipo:'fecha', get:v=>v.vigenciaInicio, set:(v,x)=>{ v.vigenciaInicio = x; } },
+      { h:'Fin de vigencia', tipo:'fecha', get:v=>v.vigenciaFin, set:(v,x)=>{ v.vigenciaFin = x; } },
+      { h:'Moneda', opciones:()=>[{id:'PEN',label:'PEN'},{id:'USD',label:'USD'}], get:v=>v.moneda==='USD'?'USD':'PEN', bloqueo:v=> cxComisionCobrada(v) && 'la comisión ya se cobró', set:(v,x,o,ctx)=>{ v.moneda = x; ctx.recalcular = true; } },
+      { h:'Prima total', tipo:'numero', get:v=>v.primaBruta ? String(Math.round(Number(v.primaBruta)*100)/100) : '', bloqueo:v=> cxComisionCobrada(v) && 'la comisión ya se cobró', set:(v,x,o,ctx)=>{ v.primaBruta = Number(x)||0; ctx.recalcular = true; } },
+      { h:'Forma de pago', opciones:()=>CX_FORMAS_PAGO, get:v=>(CX_FORMAS_PAGO.find(o=>o.id===v.formaPago)||CX_FORMAS_PAGO[0]).label, set:(v,x,o)=>{ v.formaPago = o.id; } },
+      { h:'% comisión aseguradora', tipo:'numero', fin:true, get:v=> v.modoComisionAseguradora==='fijo' ? '' : (v.porcentajeComisionAseguradora ? String(v.porcentajeComisionAseguradora) : ''), bloqueo:v=> (cxComisionCobrada(v) && 'la comisión ya se cobró') || (v.modoComisionAseguradora==='fijo' && 'la comisión es un monto fijo'), set:(v,x,o,ctx)=>{ v.porcentajeComisionAseguradora = Number(x)||0; ctx.recalcular = true; } },
+      { h:'Comisión total', ro:true, fin:true, get:v=> String(Math.round((Number(v.comisionTotal)||0)*100)/100) },
+      { h:'Asesor', opciones:cxAsesorOpciones, get:v=>{ const a = state.asesores.find(x=>x.id===v.asesorId); return a?a.nombre:'Directa'; }, set:(v,x,o)=>{ v.asesorId = o.id; if(!o.id) v.tipoComisionAsesor = 'ninguna'; else if(v.tipoComisionAsesor==='ninguna'){ v.tipoComisionAsesor = 'porcentaje'; v.valorComisionAsesor = 0; } } },
+      { h:'Estado', ro:true, get:v=> v.estadoVenta==='anulada' ? 'Anulada' : 'Emitida' },
+      { h:'Estado de renovación', opciones:()=>ESTADOS_RENOV.map(e=>({id:e.id,label:e.label})), get:v=>((ESTADOS_RENOV.find(e=>e.id===((v.renov||{}).estado||''))||ESTADOS_RENOV[0]).label), set:(v,x,o,ctx)=>{ ctx.renov = Object.assign(ctx.renov||{}, { estado:o.id }); } },
+      { h:'Nota de renovación', get:v=>(v.renov||{}).nota, set:(v,x,o,ctx)=>{ ctx.renov = Object.assign(ctx.renov||{}, { nota:x }); } },
+      { h:'Notas', get:v=>v.notas, set:(v,x)=>{ v.notas = x; } },
+    ],
+    validar(f, rec, ctx){
+      const ini = f['Inicio de vigencia'], fin = f['Fin de vigencia'];
+      if(ini && fin && fin < ini && (ctx.cambia('Inicio de vigencia') || ctx.cambia('Fin de vigencia'))) ctx.error('el fin de vigencia es anterior al inicio');
+      if(!rec){
+        if(!f['Cliente'] && !f['DNI / RUC del cliente']) ctx.error('falta el cliente (nombre o DNI/RUC)');
+        if(!f['Prima total']) ctx.error('falta la prima total');
+        if(!f['N° de póliza']) ctx.aviso('sin N° de póliza');
+        if(!ini) ctx.aviso('sin inicio de vigencia');
+      }
+      if(f['N° de póliza'] && ctx.cambia('N° de póliza')){
+        const num = cxNorm(f['N° de póliza']);
+        const mismas = state.ventas.filter(v=> v!==rec && v.numeroPoliza && cxNorm(v.numeroPoliza)===num && !esEndoso(v));
+        const cli = rec ? cxClienteDe(rec.clienteId) : cxResolverCliente(f['Cliente'], f['DNI / RUC del cliente']);
+        const deOtro = mismas.find(v=> !cli || v.clienteId!==cli.id);
+        if(deOtro && cli){ const c2 = cxClienteDe(deOtro.clienteId); ctx.error(`el N° de póliza ${f['N° de póliza']} ya es de otro cliente (${folioV(deOtro.folio)} — ${c2?c2.nombre:''})`); }
+      }
+    },
+    // Fila sin ID: misma póliza y misma vigencia = se completa esa venta; misma póliza con otra vigencia = renovación
+    buscarExistente(f, ctx){
+      if(!f['N° de póliza']) return null;
+      const num = cxNorm(f['N° de póliza']);
+      const mismas = state.ventas.filter(v=> v.numeroPoliza && cxNorm(v.numeroPoliza)===num && !esEndoso(v));
+      const misma = mismas.find(v=> !f['Inicio de vigencia'] || !v.vigenciaInicio || v.vigenciaInicio===f['Inicio de vigencia']);
+      if(misma){ ctx.aviso(`la póliza ya estaba registrada (${folioV(misma.folio)}): solo se actualiza`); return misma; }
+      if(mismas.length){
+        const anterior = mismas.slice().sort((a,b)=> String(b.vigenciaInicio||'').localeCompare(String(a.vigenciaInicio||'')))[0];
+        if(anterior.vigenciaInicio && f['Inicio de vigencia'] > anterior.vigenciaInicio){ ctx.renovacionDe = anterior; ctx.aviso(`misma póliza con nueva vigencia: se registra como renovación de ${folioV(anterior.folio)}`); }
+      }
+      return null;
+    },
+    crear(f, ctx){
+      let cli = cxResolverCliente(f['Cliente'], f['DNI / RUC del cliente']);
+      if(!cli){
+        const doc = f['DNI / RUC del cliente'];
+        cli = { id: uid(), nombre: f['Cliente'] || doc, documento: doc, tipoDocumento: doc && doc.length===11 ? 'RUC' : 'DNI', estadoContacto:'cliente', etiquetas:[] };
+        ctx.clienteNuevo = cli;
+      }
+      const v = { id: uid(), clienteId: cli.id, asesorId:'', canalVenta:'alta_corredores', tipoVenta:'nueva', formaPago:'contado', moneda:'PEN',
+        cantidadCuotas:null, cronogramaCuotas:[], proximaCuotaFecha:'', cuotasAlDia:true, beneficios:[], quienPagoPrima:'cliente',
+        modoComisionAseguradora:'porcentaje', porcentajeComisionAseguradora:0, porcentajeFG:70, tipoComisionAsesor:'ninguna', valorComisionAsesor:0,
+        estadoVenta:'emitida', estadoComision:'pendiente', fechaPagoComision:'', estadoCobroFG:'pendiente', comisionAprobada:false, estadoTasa:'',
+        notas:'', origenCarga:'excel' };
+      const ant = ctx.renovacionDe;
+      if(ant){ v.tipoVenta = 'renovacion'; v.renuevaVentaId = ant.id; v.primaAnteriorRenovacion = Number(ant.primaBruta)||0; v.primaAnteriorRenovacionMoneda = ant.moneda; }
+      return v;
+    },
+    // Después de aplicar los campos: prima neta, comisión, tasa por defecto y seguimiento de la renovación
+    completar(v, nuevo, ctx){
+      if(nuevo){
+        v.folio = ++state.folioVenta;
+        if(!v.fechaVenta) v.fechaVenta = v.vigenciaInicio || todayISO();
+        if(!v.vigenciaInicio) v.vigenciaInicio = v.fechaVenta;
+        if(!v.porcentajeComisionAseguradora){
+          const tasa = (state.tasasComision||{})[claveTasa(v.aseguradora, v.tipoProducto)];
+          if(tasa) v.porcentajeComisionAseguradora = pctVigente(tasa, v.fechaVenta);
+          else if(esEjecutivaSesion()) v.estadoTasa = 'pendiente';
+        }
+        if(v.asesorId){ v.tipoComisionAsesor = 'porcentaje'; v.valorComisionAsesor = 0; }
+      }
+      if((nuevo || ctx.recalcular) && v.modoComisionAseguradora!=='fijo'){
+        v.primaNeta = calcPrimaNeta(v.primaBruta);
+        v.comisionTotal = v.primaNeta * (Number(v.porcentajeComisionAseguradora)||0) / 100;
+      }
+      if(ctx.renov && !(nuevo && !ctx.renov.estado && !ctx.renov.nota)){
+        const r = v.renov || {};
+        marcarRenovacion(v, ctx.renov.estado!==undefined ? ctx.renov.estado : (r.estado||''), ctx.renov.nota!==undefined ? ctx.renov.nota : (r.nota||''));
+      }
+      if(nuevo && ctx.renovacionDe && !['renovado','no_renueva'].includes((ctx.renovacionDe.renov||{}).estado)) marcarRenovacion(ctx.renovacionDe, 'renovado', `Renovada con ${folioV(v.folio)} (Excel)`);
+    },
+    agregar(v, ctx){ if(ctx.clienteNuevo) state.clientes.push(ctx.clienteNuevo); state.ventas.push(v); },
+  },
+
+  siniestros: {
+    titulo:'Siniestros', hoja:'Siniestros', archivo:'siniestros', singular:'siniestro', entidad:'siniestro',
+    lista: () => misSiniestrosLista().slice().sort((a,b)=> (a.folio||0)-(b.folio||0)),
+    porId: id => state.siniestros.find(s=>s.id===id),
+    etiqueta: s => `SN-${String(s.folio||0).padStart(4,'0')} — ${sinClienteTexto(s)}${s.numeroSiniestro?' · '+s.numeroSiniestro:''}`,
+    columnas: [
+      { h:'Folio', ro:true, get:s=>'SN-'+String(s.folio||0).padStart(4,'0') },
+      { h:'Cliente', soloNuevo:true, get:s=>sinClienteTexto(s) },
+      { h:'DNI / RUC del cliente', tipo:'doc', soloNuevo:true, get:s=>{ const c = cxClienteDe(s.clienteId); return c?c.documento:''; } },
+      { h:'N° de póliza', get:s=>sinPoliza(s), set:(s,x)=>{ const v = x && state.ventas.find(v=> v.clienteId===s.clienteId && v.numeroPoliza && cxNorm(v.numeroPoliza)===cxNorm(x)); s.ventaId = v ? v.id : ''; s.poliza = v ? '' : x; } },
+      { h:'N° de siniestro', get:s=>s.numeroSiniestro, set:(s,x)=>{ s.numeroSiniestro = x; } },
+      { h:'Asegurado / afectado', get:s=>s.asegurado, set:(s,x)=>{ s.asegurado = x; } },
+      { h:'Ramo', get:s=>s.ramo, set:(s,x)=>{ s.ramo = x; } },
+      { h:'Aseguradora', opciones:()=> (state.aseguradoras||[]).filter(a=>typeof a==='string').map(a=>({id:a,label:a})), get:s=>s.aseguradora, set:(s,x)=>{ s.aseguradora = x; } },
+      { h:'Bien asegurado', get:s=>s.bienAsegurado, set:(s,x)=>{ s.bienAsegurado = x; } },
+      { h:'Causa', get:s=>s.causa, set:(s,x)=>{ s.causa = x; } },
+      { h:'Fecha del evento', tipo:'fecha', get:s=>s.fechaEvento, set:(s,x)=>{ s.fechaEvento = x; } },
+      { h:'Fecha de aviso', tipo:'fecha', get:s=>s.fechaAviso, set:(s,x)=>{ s.fechaAviso = x; } },
+      { h:'Estado', opciones:()=>ESTADOS_SINIESTRO.map(e=>({id:e.id,label:e.label})), get:s=>estadoSin(s).label, set:(s,x,o,ctx)=>{ s.estado = o.id; ctx.gestion = true; } },
+      { h:'Monto pagado', tipo:'numero', get:s=> s.montoPagado==null || s.montoPagado==='' ? '' : String(s.montoPagado), set:(s,x,o,ctx)=>{ s.montoPagado = x==='' ? null : Number(x); ctx.gestion = true; } },
+      { h:'Documentos pendientes', get:s=>s.documentosPendientes, set:(s,x,o,ctx)=>{ s.documentosPendientes = x; ctx.gestion = true; } },
+      { h:'Próximo paso', get:s=>s.proximoPaso, set:(s,x,o,ctx)=>{ s.proximoPaso = x; ctx.gestion = true; } },
+      { h:'Responsable', get:s=>s.responsable, set:(s,x)=>{ s.responsable = x; } },
+      { h:'Fecha compromiso', tipo:'fecha', get:s=>s.fechaCompromiso, set:(s,x)=>{ s.fechaCompromiso = x; } },
+      { h:'Notas', get:s=>s.notas, set:(s,x,o,ctx)=>{ s.notas = x; ctx.gestion = true; } },
+      { h:'Comentario de gestión', get:s=>s.comentarioGestion, set:(s,x,o,ctx)=>{ s.comentarioGestion = x; ctx.gestion = true; } },
+      { h:'Último movimiento', tipo:'fecha', get:s=>s.ultimoMovimiento, set:(s,x,o,ctx)=>{ s.ultimoMovimiento = x; ctx.ultMovManual = true; } },
+      { h:'Rechazo: ¿evitable?', get:s=>s.rechazoEvitable, set:(s,x)=>{ s.rechazoEvitable = x; } },
+      { h:'Rechazo: cómo prevenirlo', get:s=>s.rechazoPrevencion, set:(s,x)=>{ s.rechazoPrevencion = x; } },
+    ],
+    validar(f, rec, ctx){
+      if(!rec && !f['Cliente'] && !f['DNI / RUC del cliente']) ctx.error('falta el cliente (nombre o DNI/RUC)');
+      if(!rec && (f['Cliente'] || f['DNI / RUC del cliente']) && !cxResolverCliente(f['Cliente'], f['DNI / RUC del cliente'])) ctx.error('el cliente no está registrado en el CRM: regístralo primero (hoja Clientes)');
+      if(f['Fecha de aviso'] && f['Fecha del evento'] && f['Fecha de aviso'] < f['Fecha del evento'] && (ctx.cambia('Fecha de aviso') || ctx.cambia('Fecha del evento'))) ctx.error('la fecha de aviso es anterior al evento');
+    },
+    buscarExistente(f, ctx){
+      if(!f['N° de siniestro']) return null;
+      const s = cxBuscarSiniestro(f['N° de siniestro']);
+      if(s) ctx.aviso(`el siniestro ya estaba registrado (SN-${String(s.folio||0).padStart(4,'0')}): solo se actualiza`);
+      return s || null;
+    },
+    crear(f){
+      const cli = cxResolverCliente(f['Cliente'], f['DNI / RUC del cliente']);
+      return { id: uid(), clienteId: cli ? cli.id : '', ventaId:'', poliza:'', estado:'reportado' };
+    },
+    completar(s, nuevo, ctx){
+      if(nuevo) s.folio = ++state.folioSiniestro;
+      if(!ctx.ultMovManual && (ctx.gestion || !s.ultimoMovimiento)) s.ultimoMovimiento = todayISO();
+    },
+    agregar(s){ state.siniestros.push(s); },
+  },
+};
+// Columnas que ve quien descarga: la ejecutiva no ve comisiones
+const cxColumnas = ent => ent.columnas.filter(c=> !(c.fin && !puedeVerFinanzasFG()));
+
+function descargarCicloExcel(clave){
+  if(!puedeCicloExcel()){ alert('Tu perfil no tiene permiso para descargar archivos.'); return; }
+  const ent = CX_ENTIDADES[clave], cols = cxColumnas(ent);
+  const lista = ent.lista();
+  const headers = [CX_ID].concat(cols.map(c=>c.h));
+  const filas = lista.map(r=> [r.id].concat(cols.map(c=> String(c.get(r)??''))));
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...filas]);
+  ws['!cols'] = headers.map((h,i)=> ({ wch: i===0 ? 10 : Math.min(40, Math.max(h.length+2, ...filas.slice(0,200).map(f=> String(f[i]).length+1))) }));
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:Math.max(1,filas.length), c:headers.length-1} }) };
+  // todo como texto: así Excel no quita los ceros a la izquierda de un DNI ni cambia las fechas
+  for(const ref in ws){ if(ref[0]!=='!' && ws[ref].t==='s') ws[ref].z = '@'; }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, ent.hoja);
+  const instrucciones = [
+    [`${ent.titulo} — CRM FG Seguros`], [`Descargado el ${todayISO()} por ${nombreSesionActual()}`], [''],
+    ['Cómo usar este archivo:'],
+    ['1. Edita las celdas que necesites en la hoja «'+ent.hoja+'». No cambies la columna «'+CX_ID+'» ni los títulos.'],
+    ['2. Para agregar registros nuevos, escribe filas al final y deja vacía la columna del ID.'],
+    ['3. En el CRM, botón «📊 Editar en Excel» › «Subir Excel editado». Verás antes/después de cada cambio antes de guardar.'],
+    ['4. Las fechas van como DD/MM/AAAA. Las listas válidas están en la hoja «Opciones».'],
+    [''], ['Importante:'],
+    ['• Nada se borra desde Excel: una celda vacía no borra el dato del CRM y quitar una fila no elimina el registro.'],
+    ['• Las columnas Folio, Comisión total y Estado son solo de consulta. Para anular una póliza, hazlo en su ficha del CRM.'],
+    ['• Si alguien cambió un dato en el CRM después de que descargaste este archivo, ese dato no se pisa: verás un aviso.'],
+    ['• Antes de guardar, el CRM hace un respaldo automático y deja en la auditoría quién subió el archivo.'],
+  ];
+  const wsI = XLSX.utils.aoa_to_sheet(instrucciones); wsI['!cols'] = [{ wch:110 }];
+  XLSX.utils.book_append_sheet(wb, wsI, 'Instrucciones');
+  const conOpciones = cols.filter(c=>c.opciones);
+  if(conOpciones.length){
+    const listas = conOpciones.map(c=> c.opciones().map(o=>o.label));
+    const alto = Math.max(...listas.map(l=>l.length));
+    const aoa = [conOpciones.map(c=>c.h)].concat(Array.from({length:alto}, (_,i)=> listas.map(l=> l[i]||'')));
+    const wsO = XLSX.utils.aoa_to_sheet(aoa); wsO['!cols'] = conOpciones.map(()=>({ wch:30 }));
+    XLSX.utils.book_append_sheet(wb, wsO, 'Opciones');
+  }
+  // copia de lo descargado para detectar lo que se editó (hoja oculta)
+  const wsB = XLSX.utils.aoa_to_sheet([headers, ...filas]);
+  XLSX.utils.book_append_sheet(wb, wsB, CX_HOJA_BASE);
+  wb.Workbook = { Sheets: wb.SheetNames.map(n=> ({ name:n, Hidden: n===CX_HOJA_BASE ? 2 : 0 })) };
+  XLSX.writeFile(wb, `crm-fg-${ent.archivo}-${todayISO()}.xlsx`);
+  registrarAuditoria('exportar', ent.entidad, '', `Descargó ${ent.titulo} para editar en Excel (${lista.length} fila(s))`); save();
+}
+
+// El «Reporte de siniestros FG» (Detalle + Casos en curso + rechazos de Casos críticos) también se puede subir:
+// cada fila se reconoce por su N° de siniestro (o SN-0000) y se compara contra lo que el reporte mostraría hoy.
+function cxBuscarSiniestro(numero){
+  const n = cxNorm(numero); if(!n) return null;
+  const sn = n.match(/^sn-0*(\d+)$/);
+  if(sn) return state.siniestros.find(x=> String(x.folio)===sn[1]) || null;
+  return state.siniestros.find(x=> x.numeroSiniestro && cxNorm(x.numeroSiniestro)===n) || null;
+}
+function cxEsReporteSiniestros(wb){ return wb.SheetNames.includes('Detalle') && wb.SheetNames.includes('Casos en curso'); }
+function cxLeerReporteSiniestros(wb){
+  const tabla = (hoja, filaTitulos) => wb.Sheets[hoja] ? XLSX.utils.sheet_to_json(wb.Sheets[hoja], { range: filaTitulos, defval:'', raw:true }) : [];
+  const porNumero = new Map(), orden = [];
+  const fila = numero => { const k = cxNorm(numero); if(!porNumero.has(k)){ porNumero.set(k, { 'N° de siniestro': String(numero).trim() }); orden.push(k); } return porNumero.get(k); };
+  const poner = (o, h, v) => { if(String(v??'').trim()!=='') o[h] = v; };
+  tabla('Detalle', 3).forEach(r=>{
+    const num = String(r['N° siniestro / reporte']||'').trim(); if(!num) return;
+    const o = fila(num);
+    [['Ramo','Ramo'],['Aseguradora','Aseguradora'],['Cliente / asegurado','Cliente'],['Póliza','N° de póliza'],['Bien asegurado','Bien asegurado'],['Causa','Causa'],
+     ['Fecha ocurrencia','Fecha del evento'],['Fecha aviso','Fecha de aviso'],['Estado','Estado'],['Último movimiento','Último movimiento'],['Monto pagado (S/)','Monto pagado']].forEach(([de,a])=> poner(o, a, r[de]));
+    const obs = String(r['Observación / próximo paso']||'').trim();
+    if(obs){ const i = obs.indexOf('Pendiente:'); poner(o, 'Notas', i>=0 ? obs.slice(0,i).trim() : obs); if(i>=0) poner(o, 'Documentos pendientes', obs.slice(i+10).trim()); }
+  });
+  tabla('Casos en curso', 4).forEach(r=>{
+    const num = String(r['N° siniestro']||'').trim(); if(!num) return;
+    const o = fila(num);
+    if(!o['Estado']) poner(o, 'Estado', r['Estado actual']);
+    if(!o['Cliente']) poner(o, 'Cliente', r['Cliente / asegurado']);
+    [['Próximo paso','Próximo paso'],['Responsable','Responsable'],['Fecha compromiso','Fecha compromiso'],['Comentario de la gestión','Comentario de gestión']].forEach(([de,a])=> poner(o, a, r[de]));
+  });
+  const cri = wb.Sheets['Casos críticos'] ? XLSX.utils.sheet_to_json(wb.Sheets['Casos críticos'], { header:1, defval:'', raw:true }) : [];
+  const iRech = cri.findIndex(r=> r.includes('Motivo del rechazo'));
+  if(iRech>=0){
+    const t = cri[iRech];
+    cri.slice(iRech+1).forEach(r=>{
+      const num = String(r[t.indexOf('N° siniestro')]||'').trim(); if(!num || !cxBuscarSiniestro(num)) return;
+      const o = fila(num);
+      poner(o, 'Rechazo: ¿evitable?', r[t.indexOf('¿Evitable?')]); poner(o, 'Rechazo: cómo prevenirlo', r[t.indexOf('Cómo prevenirlo')]);
+    });
+  }
+  // Base para saber qué se editó: la hoja oculta "_base" del reporte (lo que se descargó);
+  // en reportes antiguos sin esa hoja, lo que el reporte mostraría hoy
+  const base = {}, filas = [];
+  if(wb.Sheets[CX_HOJA_BASE]) XLSX.utils.sheet_to_json(wb.Sheets[CX_HOJA_BASE], { defval:'', raw:true }).forEach(b=>{ if(b[CX_ID]) base[String(b[CX_ID]).trim()] = b; });
+  orden.forEach(k=>{
+    const o = porNumero.get(k);
+    const s = cxBuscarSiniestro(o['N° de siniestro']);
+    if(s){
+      o[CX_ID] = s.id;
+      if(/^sn-\d+$/.test(cxNorm(o['N° de siniestro']))) o['N° de siniestro'] = s.numeroSiniestro || '';
+      // la aseguradora sale abreviada en el reporte: si no cambió, se conserva el nombre completo
+      if(o['Aseguradora'] && cxNorm(o['Aseguradora'])===cxNorm(aseguradoraCorta(s.aseguradora))) o['Aseguradora'] = s.aseguradora;
+      if(!base[s.id]) base[s.id] = cxBaseReporte(s);
+    } else if(/^sn-\d+$/.test(cxNorm(o['N° de siniestro']))) o['N° de siniestro'] = '';
+    filas.push(o);
+  });
+  return { filas, base, sinHojaBase: !wb.Sheets[CX_HOJA_BASE] };
+}
+// Lo que el reporte muestra de un siniestro (incluye las columnas calculadas), con los títulos de la hoja «Siniestros»
+function cxBaseReporte(s){
+  return { [CX_ID]: s.id, 'N° de siniestro': s.numeroSiniestro||'', 'Ramo': sinRamo(s), 'Aseguradora': s.aseguradora||'', 'Cliente': sinClienteTexto(s),
+    'N° de póliza': sinPoliza(s), 'Bien asegurado': sinBien(s), 'Causa': s.causa||'', 'Fecha del evento': s.fechaEvento||'', 'Fecha de aviso': s.fechaAviso||'',
+    'Estado': estadoSin(s).label, 'Último movimiento': sinUltimoMov(s), 'Monto pagado': s.montoPagado==null ? '' : s.montoPagado, 'Notas': s.notas||'',
+    'Documentos pendientes': s.documentosPendientes||'', 'Próximo paso': s.proximoPaso || s.documentosPendientes || '', 'Responsable': s.responsable || 'Asesora de cuentas',
+    'Fecha compromiso': s.fechaCompromiso||'', 'Comentario de gestión': s.comentarioGestion||'', 'Rechazo: ¿evitable?': s.rechazoEvitable||'', 'Rechazo: cómo prevenirlo': s.rechazoPrevencion||'' };
+}
+
+// Lee el Excel subido y arma el plan: qué filas cambian, cuáles son nuevas y cuáles tienen errores. No toca el CRM.
+function planCicloExcel(clave, wb){
+  const ent = CX_ENTIDADES[clave], cols = cxColumnas(ent);
+  if(clave==='siniestros' && !wb.SheetNames.includes(ent.hoja) && cxEsReporteSiniestros(wb)){
+    const rep = cxLeerReporteSiniestros(wb);
+    if(!rep.filas.length) return { error:'El reporte no tiene siniestros en las hojas «Detalle» ni «Casos en curso».' };
+    return cxArmarPlan(clave, ent, cols, rep.filas, rep.base, { hoja:'Detalle + Casos en curso (Reporte de siniestros)', ignoradas:[], conBase:!rep.sinHojaBase, reporte:true, derivado: cxBaseReporte });
+  }
+  const nombreHoja = wb.SheetNames.find(n=> cxNorm(n)===cxNorm(ent.hoja)) || wb.SheetNames.find(n=> n!==CX_HOJA_BASE && !['instrucciones','opciones'].includes(cxNorm(n)));
+  if(!nombreHoja) return { error:'El archivo no tiene una hoja de datos.' };
+  const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreHoja], { defval:'', raw:true });
+  if(!filas.length) return { error:'La hoja «'+nombreHoja+'» no tiene filas.' };
+  const tituloDe = k => { const n = cxNorm(k); return cols.find(c=> cxNorm(c.h)===n) ? cols.find(c=> cxNorm(c.h)===n).h : (n===cxNorm(CX_ID) || n==='id' ? CX_ID : null); };
+  const encabezados = Object.keys(filas[0]);
+  const reconocidas = encabezados.map(tituloDe).filter(Boolean);
+  if(!reconocidas.some(h=>h!==CX_ID)) return { error:`No reconozco las columnas de «${nombreHoja}». Descarga el Excel desde esta pantalla y edítalo sin cambiar los títulos.` };
+  const ignoradas = encabezados.filter(k=> !tituloDe(k) && !/^__EMPTY/.test(k));
+  const base = {};
+  if(wb.Sheets[CX_HOJA_BASE]) XLSX.utils.sheet_to_json(wb.Sheets[CX_HOJA_BASE], { defval:'', raw:true }).forEach(b=>{ if(b[CX_ID]) base[String(b[CX_ID]).trim()] = b; });
+  // los títulos del archivo se pasan a los de la columna (sin importar tildes ni mayúsculas)
+  const normalizadas = filas.map(crudo=>{ const o = {}; Object.keys(crudo).forEach(k=>{ const h = tituloDe(k); if(h) o[h] = crudo[k]; }); return o; });
+  return cxArmarPlan(clave, ent, cols, normalizadas, base, { hoja:nombreHoja, ignoradas, conBase: !!wb.Sheets[CX_HOJA_BASE] });
+}
+function cxArmarPlan(clave, ent, cols, filas, base, extra){
+  const plan = Object.assign({ clave, ent, filas:[] }, extra);
+  const filasArchivo = filas; filas = [];
+  const vistosId = new Set(), vistosClave = new Map();
+  filasArchivo.forEach((val, i)=>{
+    const fila = { n: plan.reporte ? i+1 : i+2, errores:[], avisos:[], cambios:[], conflictos:[] };
+    const ctx = { error: t=>fila.errores.push(t), aviso: t=>fila.avisos.push(t) };
+    fila.ctx = ctx;
+    if(!Object.values(val).some(v=> String(v??'').trim()!=='')) return;
+    const id = String(val[CX_ID]||'').trim();
+    // valores normalizados de las columnas presentes en el archivo
+    const f = {}, opc = {};
+    cols.forEach(c=>{
+      if(!(c.h in val)) return;
+      const r = cxValor(c, val[c.h]);
+      if(r.error){ if(!c.ro) ctx.error(`${c.h}: ${r.error}`); return; }
+      f[c.h] = r.v;
+      if(c.opciones && r.v) opc[c.h] = cxOpcion(r.v, c.opciones());
+    });
+    let rec = null, nuevo = false;
+    if(id){
+      rec = ent.porId(id);
+      if(!rec){ ctx.error(`el ID ${id} no existe en el CRM (¿registro eliminado o archivo de otra pantalla?)`); }
+      else if(!ent.lista().includes(rec)) { ctx.error('no tienes acceso a este registro'); rec = null; }
+      if(vistosId.has(id)) ctx.error(`el ID ${id} está repetido en el archivo`);
+      vistosId.add(id);
+    } else {
+      rec = ent.buscarExistente(f, ctx);
+      if(!rec) nuevo = true;
+    }
+    const claveDup = ent.archivo==='clientes' ? normDocumento(f['DNI / RUC']) : ent.archivo==='polizas' ? (f['N° de póliza'] ? cxNorm(f['N° de póliza'])+'|'+(f['Inicio de vigencia']||'') : '') : cxNorm(f['N° de siniestro']||'');
+    if(claveDup){ if(vistosClave.has(claveDup)) ctx.error(`repetido: ya está en la fila ${vistosClave.get(claveDup)} del archivo; edítalo ahí`); else vistosClave.set(claveDup, fila.n); }
+    // campos obligatorios: en filas nuevas siempre; en existentes solo si los vaciaron (y eso no borra nada)
+    if(nuevo) cols.filter(c=>c.req).forEach(c=>{ if(!f[c.h]) ctx.error(`falta «${c.h}»`); });
+    const b = rec && base[rec.id];
+    cols.forEach(c=>{
+      if(c.ro || !(c.h in f) || !c.set) return;
+      if(c.soloNuevo && !nuevo) return;
+      const nuevoVal = f[c.h];
+      if(c.noAlCoincidir && !id && !nuevo){ if(nuevoVal && cxNorm(nuevoVal)!==cxNorm(c.get(rec))) ctx.aviso(`se encontró por DNI/RUC como «${c.get(rec)}»: el nombre no se cambia (para cambiarlo usa su ID)`); return; }
+      const actual = rec && !nuevo ? cxValor(c, c.get(rec)).v ?? '' : '';
+      if(nuevoVal===''){ return; } // una celda vacía nunca borra
+      if(String(nuevoVal)===String(actual)) return;
+      if(rec && !nuevo && b && (c.h in b)){
+        const original = cxValor(c, b[c.h]).v ?? '';
+        if(String(nuevoVal)===String(original)) return; // no se editó en el Excel
+        const hoy = plan.derivado ? (cxValor(c, plan.derivado(rec)[c.h]).v ?? '') : actual;
+        if(String(original)!==String(hoy)){ fila.conflictos.push(`${c.h}: en el CRM ya cambió a «${hoy}» después de descargar; no se pisa`); return; }
+      }
+      const bloqueo = rec && !nuevo && c.bloqueo && c.bloqueo(rec);
+      if(bloqueo){ fila.avisos.push(`${c.h} no se cambia porque ${bloqueo}: corrígelo en la ficha`); return; }
+      fila.cambios.push({ col:c, antes: actual, despues: nuevoVal, opcion: opc[c.h] });
+    });
+    // se valida solo lo nuevo o lo que cambia: un dato antiguo mal escrito no bloquea la fila
+    ctx.cambia = h => nuevo || fila.cambios.some(ch=> ch.col.h===h);
+    ent.validar(f, nuevo ? null : rec, ctx);
+    fila.rec = rec; fila.nuevo = nuevo; fila.f = f;
+    fila.etiqueta = nuevo ? (f['Nombre / Razón social'] || f['Cliente'] || f['DNI / RUC del cliente'] || '(nuevo)') + (f['N° de póliza'] ? ' · '+f['N° de póliza'] : '') + (f['N° de siniestro'] ? ' · '+f['N° de siniestro'] : '') : ent.etiqueta(rec);
+    fila.estado = fila.errores.length ? 'error' : nuevo ? 'nuevo' : fila.cambios.length ? 'cambio' : 'igual';
+    plan.filas.push(fila);
+  });
+  return plan;
+}
+
+function aplicarPlanCicloExcel(plan){
+  const ent = plan.ent;
+  let nuevos = 0, actualizados = 0, campos = 0;
+  plan.filas.filter(f=> f.estado==='nuevo' || f.estado==='cambio').forEach(fila=>{
+    const ctx = fila.ctx;
+    const rec = fila.nuevo ? ent.crear(fila.f, ctx) : fila.rec;
+    fila.cambios.forEach(ch=>{ ch.col.set(rec, ch.despues, ch.opcion, ctx); campos++; });
+    if(ent.completar) ent.completar(rec, fila.nuevo, ctx);
+    if(fila.nuevo){ ent.agregar(rec, ctx); nuevos++; }
+    else actualizados++;
+    const detalle = fila.cambios.map(ch=> `${ch.col.h}: «${ch.antes||'—'}» → «${ch.despues}»`).join('; ');
+    registrarAuditoria(fila.nuevo?'crear':'editar', ent.entidad, rec.id, `${fila.nuevo?'Nuevo desde Excel':'Editado desde Excel'}: ${ent.etiqueta(rec)}${detalle?' — '+detalle:''}`.slice(0,900));
+  });
+  return { nuevos, actualizados, campos };
+}
+
+function abrirCicloExcel(clave){
+  if(!puedeCicloExcel()){ alert('Tu perfil no tiene permiso para editar en Excel. Pídeselo al administrador.'); return; }
+  const ent = CX_ENTIDADES[clave];
+  const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const viejo = document.getElementById('cicloExcelHost'); if(viejo) viejo.remove();
+  const host = document.createElement('div'); host.id = 'cicloExcelHost';
+  const pintar = html => {
+    host.innerHTML = `<div class="modal-backdrop"><div class="modal" style="max-width:980px;"><h2>📊 ${esc(ent.titulo)} en Excel</h2>${html}</div></div>`;
+    host.querySelectorAll('[data-cx-cerrar]').forEach(b=> b.onclick = () => host.remove());
+  };
+  const inicio = () => {
+    pintar(`<p class="modal-hint">Trabaja la bitácora en Excel y vuelve a subirla cuantas veces necesites.</p>
+      <ol style="font-size:13.5px;line-height:1.7;margin:8px 0 14px 18px;">
+        <li><b>Descarga</b> el Excel con los datos actuales (${ent.lista().length} fila(s), cada una con su ID).</li>
+        <li><b>Edita</b> en Excel: corrige celdas o agrega filas nuevas al final sin ID.</li>
+        <li><b>Sube</b> el mismo archivo: verás qué cambia (antes → después) y los errores en rojo antes de guardar.</li>
+      </ol>
+      <p class="modal-hint">Nunca se borra nada: una celda vacía no borra el dato y quitar una fila no elimina el registro. Antes de guardar se hace un respaldo automático y la auditoría registra quién subió el archivo.${puedeVerFinanzasFG() ? '' : ' Tu archivo no incluye comisiones.'}</p>
+      <input type="file" id="cxArchivo" accept=".xlsx,.xls" style="display:none">
+      <div class="modal-actions"><button class="btn" data-cx-cerrar>Cerrar</button><button class="btn" id="cxDescargar">⬇ Descargar Excel actual</button><button class="btn btn-primary" id="cxSubir">⬆ Subir Excel editado</button></div>`);
+    document.getElementById('cxDescargar').onclick = () => descargarCicloExcel(clave);
+    const input = document.getElementById('cxArchivo');
+    document.getElementById('cxSubir').onclick = () => input.click();
+    input.onchange = e => {
+      const file = e.target.files[0]; if(!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        let plan;
+        try{ plan = planCicloExcel(clave, XLSX.read(new Uint8Array(ev.target.result), { type:'array' })); }
+        catch(err){ console.error(err); plan = { error:'No se pudo leer el archivo. Verifica que sea un Excel (.xlsx).' }; }
+        plan.archivo = file.name;
+        vistaPrevia(plan);
+      };
+      reader.readAsArrayBuffer(file);
+    };
+  };
+  const vistaPrevia = plan => {
+    if(plan.error){ pintar(`<p class="modal-hint" style="color:var(--danger);">${esc(plan.error)}</p><div class="modal-actions"><button class="btn" id="cxVolver">Volver</button><button class="btn" data-cx-cerrar>Cerrar</button></div>`); document.getElementById('cxVolver').onclick = inicio; return; }
+    const cuenta = e => plan.filas.filter(f=>f.estado===e).length;
+    const aplicables = plan.filas.filter(f=> f.estado==='nuevo' || f.estado==='cambio');
+    const conflictos = plan.filas.reduce((s,f)=> s + f.conflictos.length, 0);
+    const pill = (clase, t) => `<span class="pill ${clase}">${t}</span>`;
+    const estadoPill = { nuevo: pill('pill-green','Nuevo'), cambio: pill('pill-gold','Cambia'), igual: pill('pill-gray','Sin cambios'), error: pill('pill-red','Error: no se aplica') };
+    const mostrar = plan.filas.filter(f=> f.estado!=='igual' || f.avisos.length || f.conflictos.length)
+      .sort((a,b)=> ({error:0,nuevo:2,cambio:1,igual:3}[a.estado]) - ({error:0,nuevo:2,cambio:1,igual:3}[b.estado]) || a.n-b.n);
+    const detalle = f => [
+      ...f.errores.map(t=>`<div style="color:var(--danger);">✖ ${esc(t)}</div>`),
+      ...f.cambios.map(ch=> f.nuevo ? `<div>${esc(ch.col.h)}: <b>${esc(ch.despues)}</b></div>` : `<div>${esc(ch.col.h)}: <span style="color:var(--ink-soft);text-decoration:line-through;">${esc(ch.antes||'—')}</span> → <b>${esc(ch.despues)}</b></div>`),
+      ...f.conflictos.map(t=>`<div style="color:#B8823D;">⚠ ${esc(t)}</div>`),
+      ...f.avisos.map(t=>`<div style="color:#B8823D;">⚠ ${esc(t)}</div>`),
+    ].join('');
+    pintar(`<p class="modal-hint">Archivo «${esc(plan.archivo)}», hoja «${esc(plan.hoja)}». Revisa antes de guardar: solo se aplican las filas en verde y amarillo.${plan.conBase ? '' : plan.reporte ? ' <b>Este reporte es de antes de esta mejora</b>: se compara contra los datos actuales, así que si es antiguo revisa que no deshaga cambios recientes.' : ' <b>Este archivo no fue descargado del CRM</b>: se compara contra los datos actuales.'}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px;">${pill('pill-green', cuenta('nuevo')+' nuevo(s)')} ${pill('pill-gold', cuenta('cambio')+' con cambios')} ${pill('pill-gray', cuenta('igual')+' sin cambios')} ${pill('pill-red', cuenta('error')+' con errores')}${conflictos ? ' '+pill('pill-gold', conflictos+' dato(s) no se pisan') : ''}</div>
+      ${plan.ignoradas.length ? `<p class="modal-hint">Columnas que no se usan: ${esc(plan.ignoradas.join(', '))}.</p>` : ''}
+      <div style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:8px;">
+        <table><thead><tr><th>Fila</th><th>Registro</th><th>Resultado</th><th>Detalle</th></tr></thead><tbody>
+        ${mostrar.length ? mostrar.map(f=>`<tr${f.estado==='error'?' style="background:rgba(192,57,43,0.07);"':''}><td>${f.n}</td><td>${esc(f.etiqueta)}</td><td>${estadoPill[f.estado]}</td><td style="font-size:12.5px;">${detalle(f)}</td></tr>`).join('') : '<tr class="empty-row"><td colspan="4">No hay cambios: el archivo es igual a lo que ya está en el CRM.</td></tr>'}
+        </tbody></table>
+      </div>
+      <div class="modal-actions"><button class="btn" id="cxVolver">Elegir otro archivo</button><button class="btn" data-cx-cerrar>Cancelar</button><button class="btn btn-primary" id="cxAplicar" ${aplicables.length?'':'disabled'}>Guardar ${aplicables.length} fila(s) en el CRM</button></div>`);
+    document.getElementById('cxVolver').onclick = inicio;
+    const btn = document.getElementById('cxAplicar');
+    btn.onclick = async () => {
+      if(!confirm(`Se guardarán ${cuenta('nuevo')} registro(s) nuevo(s) y ${cuenta('cambio')} con cambios.${cuenta('error') ? `\n${cuenta('error')} fila(s) con errores NO se aplican.` : ''}\n\nAntes se guarda un respaldo automático del CRM. ¿Continuar?`)) return;
+      btn.disabled = true; btn.textContent = 'Guardando respaldo…';
+      const ahora = new Date(), hhmm = cxPad(ahora.getHours()) + cxPad(ahora.getMinutes());
+      const idRespaldo = `${todayISO()}-excel-${hhmm}`;
+      if(fbDb){
+        try{ await guardarRespaldoEnNube(idRespaldo, { motivo: `Antes de subir Excel de ${ent.titulo} (${nombreSesionActual()})` }); }
+        catch(err){ alert('No se pudo guardar el respaldo previo, así que no se aplicó nada: ' + (err.code||err.message)); btn.disabled = false; btn.textContent = 'Guardar en el CRM'; return; }
+      } else if(!confirm('No hay conexión con la nube para el respaldo automático. ¿Guardar los cambios de todas formas?')){ btn.disabled = false; btn.textContent = 'Guardar en el CRM'; return; }
+      const r = aplicarPlanCicloExcel(plan);
+      registrarAuditoria('importar', ent.entidad, '', `Subió Excel de ${ent.titulo} «${plan.archivo}»: ${r.nuevos} nuevo(s), ${r.actualizados} actualizado(s), ${r.campos} dato(s) cambiado(s), ${cuenta('error')} fila(s) con error sin aplicar${fbDb ? ` (respaldo previo: ${idRespaldo})` : ''}`);
+      save(); render();
+      pintar(`<p style="font-size:14px;">✓ Listo: ${r.nuevos} registro(s) nuevo(s) y ${r.actualizados} actualizado(s) (${r.campos} dato(s)).</p>
+        ${cuenta('error') ? `<p class="modal-hint" style="color:var(--danger);">${cuenta('error')} fila(s) con errores no se aplicaron: corrígelas en el Excel y vuelve a subirlo (lo ya guardado no se duplica).</p>` : ''}
+        ${fbDb ? `<p class="modal-hint">Respaldo previo: ${esc(idRespaldo)}.</p>` : ''}
+        <div class="modal-actions"><button class="btn btn-primary" data-cx-cerrar>Cerrar</button></div>`);
+    };
+  };
+  document.getElementById('crm-app').appendChild(host);
+  inicio();
+}
+
 function abrirCargasClaude(){
   const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
   const viejo = document.getElementById('cargasClaudeHost'); if(viejo) viejo.remove();
@@ -7890,8 +8496,7 @@ function viewClientes(){
   const productosSeguro = todosLosProductos().filter(r=>r.categoria==='seguro');
   const hayFiltroActivo = filtroClienteContacto!=='todos' || filtroClienteEtiqueta!=='todas' || filtroClienteTipo!=='todos' || filtroClienteProducto!=='todos' || filtroClienteAsesor!=='todos' || filtroClienteValor!=='todos' || filtroClienteActividad!=='todos';
   return `
-    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${misClientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${esAsesorSesion() ? '' : `<button class="btn" id="btnCalidadDatos">🩺 Calidad de datos</button>`}${puedeDescargar() ? `<button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button><button class="btn" id="btnPlantillaClientes">Descargar plantilla</button>` : ''}${esAsesorSesion() ? '' : '<button class="btn" id="btnCargaMasiva">⬆ Carga masiva (Excel)</button>'}${puedeDescargar() ? `<button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button>` : ''}${(esAsesorSesion()||esEjecutivaSesion()) ? '' : '<button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button>'}<button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
-    <input type="file" id="inputCargaMasivaClientes" accept=".xlsx,.xls" style="display:none;">
+    <div class="page-head"><div><h1>Gestión de Clientes</h1><p>Tu cartera de clientes — ${misClientes.length} registrados</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;">${esAsesorSesion() ? '' : `<button class="btn" id="btnCalidadDatos">🩺 Calidad de datos</button>`}${puedeDescargar() ? `<button class="btn" id="btnResumenCarteraPDF">📄 Resumen de cartera (PDF)</button>` : ''}${puedeCicloExcel() ? '<button class="btn" data-ciclo-excel="clientes" title="Descarga la bitácora en Excel, edítala y vuelve a subirla: verás los cambios antes de guardar">📊 Editar en Excel</button>' : ''}${puedeDescargar() ? `<button class="btn" id="btnExportClientes">${hayFiltroActivo ? 'Exportar filtrados (Excel)' : 'Exportar a Excel'}</button>` : ''}${(esAsesorSesion()||esEjecutivaSesion()) ? '' : '<button class="btn btn-danger-ghost" id="btnEliminarTodosClientes">🗑 Eliminar todos</button>'}<button class="btn btn-primary" id="btnNuevoCliente">+ Registrar cliente</button></div></div>
     <div style="margin-bottom:14px;"><input type="text" id="fClienteBusqueda" style="width:100%;max-width:420px;" placeholder="🔎 Buscar por nombre, documento o celular…" value="${filtroClienteBusqueda}" autocomplete="off"></div>
     <div class="grid stat-row" style="margin-bottom:16px;">
       <div class="card stat-card" style="background:#2E5266;color:#fff;padding:16px;cursor:pointer;${filtroClienteActividad==='todos'?'outline:2px solid #fff;':''}" data-filtro-actividad="todos">
@@ -8079,11 +8684,6 @@ function wireClientes(){
     }) });
     doc.save('resumen-cartera.pdf');
   };
-  const btnPlantilla = document.getElementById('btnPlantillaClientes'); if(btnPlantilla) btnPlantilla.onclick = () => {
-    const headers = ['Nombre / Razón social','Tipo de documento (DNI/RUC/CE)','Documento','Dirección','Ciudad','Celular 1','Celular 2','Correo 1','Correo 2','Persona de contacto','Fecha de nacimiento','OBS'];
-    const ejemplo = ['Textiles Andinos SAC', 'RUC', '20481234567', 'Av. Argentina 1234, Lima', 'Lima', '999888777', '', 'contacto@ejemplo.com', '', 'Juan Pérez - Gerente', '', 'Cliente referido'];
-    exportExcel('plantilla-carga-clientes.xlsx', headers, [ejemplo]);
-  };
   const btn = document.getElementById('btnNuevoCliente'); if(btn) btn.onclick = ()=>{ editing={type:'cliente', id:null}; render(); };
   const btnEliminarTodos = document.getElementById('btnEliminarTodosClientes'); if(btnEliminarTodos) btnEliminarTodos.onclick = () => {
     if(esAsesorSesion() || esEjecutivaSesion()) return;
@@ -8104,84 +8704,6 @@ function wireClientes(){
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = ()=>{ editing={type:'venta', id:b.dataset.editVenta}; render(); });
   document.querySelectorAll('[data-edit-siniestro]').forEach(b=> b.onclick = ()=>{ editing={type:'siniestro', id:b.dataset.editSiniestro}; render(); });
 
-  const btnCarga = document.getElementById('btnCargaMasiva');
-  const inputCarga = document.getElementById('inputCargaMasivaClientes');
-  if(btnCarga && inputCarga){
-    btnCarga.onclick = () => inputCarga.click();
-    inputCarga.onchange = (e) => {
-      const file = e.target.files[0];
-      if(!file) return;
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        try{
-          const wb = XLSX.read(ev.target.result, { type:'binary' });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const filas = XLSX.utils.sheet_to_json(ws, { defval:'' });
-          if(!filas.length){ alert('El archivo no tiene filas de datos.'); return; }
-          const norm = s => String(s||'').toLowerCase().trim();
-          const buscar = (fila, ...claves) => {
-            const keys = Object.keys(fila);
-            for(const key of keys){ if(claves.includes(norm(key))) return String(fila[key]||'').trim(); }
-            for(const key of keys){ const k = norm(key); if(claves.some(c=>k.includes(c))) return String(fila[key]||'').trim(); }
-            return '';
-          };
-          const buscarTipoDoc = (fila, documento) => {
-            const txt = norm(buscar(fila, 'tipo de documento', 'tipo documento'));
-            if(txt.includes('ruc')) return 'RUC';
-            if(txt.includes('ce') || txt.includes('extranjer')) return 'CE';
-            if(txt.includes('dni')) return 'DNI';
-            const soloNumeros = String(documento||'').replace(/\D/g,'');
-            if(soloNumeros.length===11) return 'RUC';
-            if(soloNumeros.length===8) return 'DNI';
-            return 'DNI';
-          };
-          let creados=0, actualizados=0, omitidos=0, posiblesDuplicados=0;
-          const nombresDuplicados = [];
-          filas.forEach(fila => {
-            const nombre = buscar(fila, 'cliente', 'nombre o razón social', 'razón social', 'razon social', 'empresa', 'nombre', 'razón', 'razon');
-            if(!nombre){ omitidos++; return; }
-            const documento = buscar(fila, 'dni/ruc', 'dni o ruc', 'ruc/dni', 'dni cliente', 'dni/ruc', 'documento', 'ruc', 'dni');
-            const data = {
-              nombre,
-              documento,
-              tipoDocumento: buscarTipoDoc(fila, documento),
-              celular1: buscar(fila, 'celular 1', 'celular1', 'teléfonos', 'telefonos', 'celular', 'contacto', 'teléfono', 'telefono'),
-              celular2: buscar(fila, 'celular 2', 'celular2'),
-              email: buscar(fila, 'correo electrónico', 'correo electronico', 'correo 1', 'correo1', 'correo', 'email'),
-              email2: buscar(fila, 'correo 2', 'correo2'),
-              direccion: buscar(fila, 'domicilio', 'dirección', 'direccion'),
-              ciudad: buscar(fila, 'sucursal', 'ciudad'),
-              personaContacto: buscar(fila, 'representante legal', 'persona de contacto', 'contacto'),
-              fechaNacimiento: buscar(fila, 'fecha de nacimiento', 'fecha nacimiento', 'nacimiento'),
-              datosAdicionales: buscar(fila, 'observaciones', 'obs', 'datos adicionales'),
-            };
-            const existente = documento ? state.clientes.find(c=>c.documento && c.documento===documento) : null;
-            if(existente){ Object.assign(existente, data); actualizados++; return; }
-            // sin coincidencia exacta de documento: revisar si el nombre es muy parecido a uno ya existente (posible duplicado)
-            const parecido = state.clientes.find(c=> similitudNombres(c.nombre, nombre) >= 0.87);
-            if(parecido){
-              posiblesDuplicados++;
-              nombresDuplicados.push(`${nombre} (parecido a: ${parecido.nombre})`);
-              return; // no se crea automáticamente; hay que revisarlo a mano
-            }
-            data.id = uid(); data.estadoContacto='nuevo'; data.etiquetas=[]; state.clientes.push(data); creados++;
-          });
-          if(creados || actualizados) registrarAuditoria('crear', 'cliente', '', `Carga masiva de clientes (Excel): ${creados} nuevo(s), ${actualizados} actualizado(s)`);
-          save();
-          render();
-          let msg = `Carga masiva completada:\n• ${creados} clientes nuevos\n• ${actualizados} actualizados (mismo documento)`;
-          if(omitidos) msg += `\n• ${omitidos} filas omitidas (sin nombre)`;
-          if(posiblesDuplicados) msg += `\n• ${posiblesDuplicados} fila(s) NO se crearon por parecer duplicadas de un cliente ya existente:\n${nombresDuplicados.slice(0,10).join('\n')}${nombresDuplicados.length>10?'\n...':''}\n\nRevísalas manualmente si quieres agregarlas de todas formas.`;
-          alert(msg);
-        }catch(err){
-          console.error(err);
-          alert('No se pudo leer el archivo. Verifica que sea un Excel (.xlsx) y que tenga la columna "Nombre".');
-        }
-        inputCarga.value = '';
-      };
-      reader.readAsBinaryString(file);
-    };
-  }
 }
 
 // ================= MODALES =================
@@ -8972,7 +9494,8 @@ function modalEjecutiva(){
     <div class="field"><label>Usuario de acceso (correo)</label><input type="text" id="mUsuarioEjecutiva" style="width:100%;" value="${e.usuario||''}" placeholder="correo@ejemplo.com"></div>
     <div class="field"><label>${tieneClave ? 'Nueva contraseña (dejar en blanco para no cambiarla)' : 'Contraseña de acceso'}</label><input type="password" id="mClaveEjecutiva" style="width:100%;" placeholder="••••••••"></div>
     ${editing.id ? `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaActiva" ${e.activo===false?'':'checked'}> Acceso habilitado</label>` : ''}
-    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaDescargaSiniestros" ${e.descargaSiniestros!==false?'checked':''}> Puede descargar el reporte Excel de Siniestros (ninguna otra descarga)</label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaDescargaSiniestros" ${e.descargaSiniestros!==false?'checked':''}> Puede descargar el reporte Excel de Siniestros</label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaExcelEditable" ${e.excelEditable===true?'checked':''}> Puede editar en Excel: descargar y subir Clientes, Pólizas y Siniestros (sin comisiones)</label>
     <div class="modal-actions">${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar acceso</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
   </div></div>`;
 }
@@ -9754,7 +10277,8 @@ function wireModal(){
         || state.ejecutivas.find(e=>e.usuario && e.usuario.toLowerCase()===usuario.toLowerCase() && e.id!==editing.id);
       if(yaUsado || usuario.toLowerCase()===state.auth.email.toLowerCase()){ alert('Ese correo de acceso ya está en uso.'); return; }
       const chkDescSin = document.getElementById('mEjecutivaDescargaSiniestros');
-      const data = { nombre, usuario, descargaSiniestros: !!(chkDescSin && chkDescSin.checked) };
+      const chkExcel = document.getElementById('mEjecutivaExcelEditable');
+      const data = { nombre, usuario, descargaSiniestros: !!(chkDescSin && chkDescSin.checked), excelEditable: !!(chkExcel && chkExcel.checked) };
       if(clave) data.passwordHash = hashSimple(clave);
       if(editing.id){
         const chkActiva = document.getElementById('mEjecutivaActiva');
@@ -9764,7 +10288,7 @@ function wireModal(){
         data.id = uid(); data.activo = true;
         state.ejecutivas.push(data);
       }
-      registrarAuditoria(editing.id?'editar':'crear', 'ejecutiva', editing.id||data.id, `Ejecutiva: ${data.nombre} · descarga Excel siniestros: ${data.descargaSiniestros?'sí':'no'}`);
+      registrarAuditoria(editing.id?'editar':'crear', 'ejecutiva', editing.id||data.id, `Ejecutiva: ${data.nombre} · descarga Excel siniestros: ${data.descargaSiniestros?'sí':'no'} · editar en Excel: ${data.excelEditable?'sí':'no'}`);
     }
     if(editing.type==='cliente'){
       const data = { nombre: document.getElementById('mNombre').value.trim(), tipoDocumento: document.getElementById('mTipoDocumento').value, documento: document.getElementById('mDocumento').value.trim(), direccion: document.getElementById('mDireccion').value.trim(), ciudad: document.getElementById('mCiudad').value, celular1: document.getElementById('mCelular1').value.trim(), celular2: document.getElementById('mCelular2').value.trim(), email: document.getElementById('mEmail').value.trim(), email2: document.getElementById('mEmail2').value.trim(), personaContacto: document.getElementById('mPersonaContacto').value.trim(),
