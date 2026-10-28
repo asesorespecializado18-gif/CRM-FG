@@ -6955,7 +6955,7 @@ function viewAsesores(){
         <thead><tr><th>Nombre</th><th>Usuario (correo)</th><th>Acceso</th><th></th></tr></thead>
         <tbody>
           ${state.ejecutivas.length===0 ? `<tr class="empty-row"><td colspan="4">Aún no registras ejecutivas de cuenta.</td></tr>` : state.ejecutivas.map(e=>{
-            const acceso = (e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`) + (e.descargaSiniestros!==false ? ` <span class="pill pill-gray" title="Puede descargar el reporte Excel de Siniestros">⬇ Excel siniestros</span>` : '') + (e.excelEditable===true ? ` <span class="pill pill-gray" title="Puede descargar y subir Clientes, Pólizas y Siniestros en Excel">📊 Editar en Excel</span>` : '');
+            const acceso = (e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`) + (e.descargaSiniestros!==false ? ` <span class="pill pill-gray" title="Puede descargar el reporte Excel de Siniestros">⬇ Excel siniestros</span>` : '') + (e.excelEditable!==false ? ` <span class="pill pill-gray" title="Puede descargar y subir Clientes, Pólizas y Siniestros en Excel">📊 Editar en Excel</span>` : '');
             return `<tr><td>${e.nombre}</td><td>${e.usuario||'—'}</td><td>${acceso}</td><td><button class="btn btn-ghost btn-sm" data-edit-ejecutiva="${e.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
@@ -7542,7 +7542,7 @@ function puedeCicloExcel(){
   const s = sesionEfectiva(); if(!s || s.rol==='asesor') return false;
   if(s.rol!=='ejecutiva') return true;
   const e = (state.ejecutivas||[]).find(x=>x.id===s.ejecutivaId);
-  return !!(e && e.activo!==false && e.excelEditable===true);
+  return !!(e && e.activo!==false && e.excelEditable!==false);
 }
 const cxPad = n => String(n).padStart(2,'0');
 const cxNorm = t => String(t??'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
@@ -9691,7 +9691,7 @@ function modalEjecutiva(){
     <div class="field"><label>${tieneClave ? 'Nueva contraseña (dejar en blanco para no cambiarla)' : 'Contraseña de acceso'}</label><input type="password" id="mClaveEjecutiva" style="width:100%;" placeholder="••••••••"></div>
     ${editing.id ? `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaActiva" ${e.activo===false?'':'checked'}> Acceso habilitado</label>` : ''}
     <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaDescargaSiniestros" ${e.descargaSiniestros!==false?'checked':''}> Puede descargar el reporte Excel de Siniestros</label>
-    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaExcelEditable" ${e.excelEditable===true?'checked':''}> Puede editar en Excel: descargar y subir Clientes, Pólizas y Siniestros (sin comisiones)</label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaExcelEditable" ${e.excelEditable!==false?'checked':''}> Puede editar en Excel: descargar y subir Clientes, Pólizas y Siniestros (sin comisiones)</label>
     <div class="modal-actions">${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar acceso</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
   </div></div>`;
 }
