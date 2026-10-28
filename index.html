@@ -3305,7 +3305,7 @@ function viewVentas(){
             const pendienteTasa = esSeguro(v.tipoProducto) && v.modoComisionAseguradora!=='fijo' && v.primaBruta && !v.porcentajeComisionAseguradora;
             const celdaComision = esAsesorSesion()
               ? (v.tipoComisionAsesor==='ninguna' ? '—' : !v.comisionAprobada ? '<span class="pill pill-gray">⏳ Por aprobar</span>' : fmtMonedaVal(comisionAsesor(v), v.moneda) + (v.tipoComisionAsesor==='porcentaje' ? ` (${v.valorComisionAsesor||0}%)` : ' (fijo)'))
-              : (pendienteTasa ? `<button class="btn btn-ghost btn-sm" data-calcular-comision="${v.id}" style="color:var(--warning, #B8823D);"><span class="pill pill-gold">⚙ Pendiente de calcular</span></button>` : fmtDual(v)) + (v.asesorId ? `<div style="margin-top:3px;">${v.comisionAprobada ? `<span class="pill pill-green" style="font-size:10px;" title="${v.comisionAprobadaPor?`Aprobada por ${v.comisionAprobadaPor} el ${fmtDate(v.comisionAprobadaFecha)}`:''}">✓ Aprobada</span>` : `<button class="btn btn-ghost btn-sm" data-aprobar-comision="${v.id}" style="font-size:10.5px;padding:2px 6px;">Aprobar para el asesor</button>`}</div>` : '');
+              : (pendienteTasa ? `<button class="btn btn-ghost btn-sm" data-calcular-comision="${v.id}" style="color:var(--warning, #B8823D);"><span class="pill pill-gold">⚙ Pendiente de calcular</span></button>` : fmtDual(v)) + (v.asesorId ? `<div style="margin-top:3px;">${v.comisionAprobada ? `<span class="pill pill-green" style="font-size:10px;" title="${v.comisionAprobadaPor?`Aprobada por ${v.comisionAprobadaPor} el ${fmtDate(v.comisionAprobadaFecha)}`:''}">✓ Aprobada</span>` : esEjecutivaSesion() ? `<span class="pill pill-gray" style="font-size:10px;">Por aprobar</span>` : `<button class="btn btn-ghost btn-sm" data-aprobar-comision="${v.id}" style="font-size:10.5px;padding:2px 6px;">Aprobar para el asesor</button>`}</div>` : '');
             const d = v.vigenciaFin ? daysUntil(v.vigenciaFin) : null;
             let vigenciaCelda = '<span class="pill pill-gray">No aplica</span>';
             if(v.vigenciaFin){
@@ -3638,6 +3638,7 @@ function wireVentas(){
   document.querySelectorAll('[data-edit-venta]').forEach(b=> b.onclick = () => { editing = {type:'venta', id:b.dataset.editVenta}; render(); });
   document.querySelectorAll('[data-duplicar-venta]').forEach(b=> b.onclick = () => { editing = {type:'venta', id:null, duplicarDesdeId:b.dataset.duplicarVenta, calculoComision:true}; render(); });
   document.querySelectorAll('[data-aprobar-comision]').forEach(b=> b.onclick = () => {
+    if(esEjecutivaSesion()){ alert('Solo el administrador aprueba comisiones.'); return; }
     const v = state.ventas.find(v=>v.id===b.dataset.aprobarComision);
     if(v){
       v.comisionAprobada = true;
@@ -6130,7 +6131,7 @@ function b360Datos(){
   const ACC = { crear:'Registro', editar:'Actualización', eliminar:'Eliminación', restaurar:'Restauración', importar:'Importación', exportar:'Descarga' };
   const ENT = { venta:'póliza', cliente:'ficha de cliente', siniestro:'siniestro', seguimiento:'cotización / pendiente', asesor:'asesor', ejecutiva:'usuario ejecutivo' };
   const papelera = new Map((state.papelera||[]).map(p=>[p.entidadId, p]));
-  (state.auditoria||[]).forEach(a=>{
+  (esEjecutivaSesion() ? [] : (state.auditoria||[])).forEach(a=>{ // la ejecutiva no ve el registro de auditoría (control interno del administrador)
     if(a.entidad==='gestion') return; // la gestión ya figura como registro propio (los cambios quedan en la pestaña de auditoría)
     const desc = a.descripcion || '';
     let caso = null, area = 'Comercial';
@@ -9461,7 +9462,7 @@ function modalVenta(){
     <div class="field"><label>Notas</label><textarea id="mNotas" style="width:100%;min-height:56px;">${v.notas||''}</textarea></div>
     </div>
     <div class="modal-actions">
-      ${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar venta</button>` : ''}
+      ${editing.id && !esEjecutivaSesion() ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar venta</button>` : ''}
       <button class="btn" id="mCancel">Cancelar</button>
       <button class="btn btn-primary" id="mSave">Guardar</button>
     </div>
@@ -9536,7 +9537,7 @@ function modalCliente(){
     <div class="field"><label>Etiquetas</label><div style="display:flex;gap:10px;flex-wrap:wrap;">${ETIQUETAS_CLIENTE.map(t=>`<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:13px;"><input type="checkbox" class="mEtiqueta" value="${t.id}" ${(c.etiquetas||[]).includes(t.id)?'checked':''}> ${t.label}</label>`).join('')}</div></div>
     <div class="field"><label>Observaciones (OBS)</label><textarea id="mDatosAdicionales" style="width:100%;min-height:60px;" placeholder="Cualquier otra información relevante del cliente">${c.datosAdicionales||''}</textarea></div>
 
-    <div class="modal-actions">${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar cliente</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
+    <div class="modal-actions">${editing.id && !esEjecutivaSesion() ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar cliente</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
   </div></div>`;
 }
 
@@ -9578,6 +9579,7 @@ function wireModal(){
     else if(/^\d{8}$/.test(d)) selTipoDoc.value = 'DNI';
   });
   const del = document.getElementById('mDelete'); if(del) del.onclick = () => {
+    if(esEjecutivaSesion()){ alert('Tu perfil no puede eliminar registros. Pídeselo al administrador.'); return; }
     const etiquetas = { venta:'esta venta', asesor:'este asesor', ejecutiva:'el acceso de esta ejecutiva', cliente:'este cliente (y perderás su historial de contacto)' };
     if(!confirm(`¿Seguro que quieres eliminar ${etiquetas[editing.type]||'este registro'}? Podrás restaurarlo desde la Papelera durante 30 días (los archivos adjuntos, si tiene, se borran de inmediato y no se pueden recuperar).`)) return;
     if(editing.type==='venta'){
