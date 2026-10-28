@@ -534,6 +534,13 @@ function sesionEfectiva(){
 function esAsesorSesion(){ const s = sesionEfectiva(); return !!(s && s.rol==='asesor'); }
 function esEjecutivaSesion(){ const s = sesionEfectiva(); return !!(s && s.rol==='ejecutiva'); }
 function puedeDescargar(){ return !esEjecutivaSesion(); }
+// Permiso puntual por ejecutiva: solo el reporte Excel de Siniestros (lo marca el administrador en Configuración > Ejecutivas)
+function puedeDescargarSiniestros(){
+  if(!esEjecutivaSesion()) return true;
+  const s = sesionEfectiva();
+  const e = (state.ejecutivas||[]).find(x=>x.id===s.ejecutivaId);
+  return !!(e && e.activo!==false && e.descargaSiniestros===true);
+}
 function puedeVerFinanzasFG(){ return !esAsesorSesion() && !esEjecutivaSesion(); }
 function asegurarIdsHistorial(){
   if(!Array.isArray(state.auditoria)) state.auditoria = [];
@@ -5803,7 +5810,7 @@ function viewSiniestros(){
   const tarjeta = (bg, label, valor, hint) => `<div class="card stat-card" style="background:${bg};color:#fff;padding:16px;"><div class="label" style="color:rgba(255,255,255,0.85);">${label}</div><div class="value num" style="color:#fff;">${valor}</div><div class="hint" style="color:rgba(255,255,255,0.75);">${hint}</div></div>`;
   return `
     <div class="page-head"><div><h1>Siniestros</h1><p>Bitácora de siniestros: un caso por fila, con su estado, la última gestión y el próximo paso.</p></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargar() ? '<button class="btn" id="btnReporteSiniestros" title="Descarga el Reporte de siniestros FG (Resumen, Casos en curso, Detalle, Casos críticos, Ideas de mejora y Notas)">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${puedeDescargarSiniestros() ? '<button class="btn" id="btnReporteSiniestros" title="Descarga el Reporte de siniestros FG (Resumen, Casos en curso, Detalle, Casos críticos, Ideas de mejora y Notas)">⬇ Descargar reporte Excel</button>' : ''}<button class="btn btn-primary" id="btnNuevoSiniestro">+ Registrar siniestro</button></div></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:16px;">
       ${tarjeta('#3D6B52','Siniestros gestionados', misSiniestros.length, 'casos registrados')}
       ${tarjeta('#B8823D','Casos abiertos', abiertos.length, 'aún sin cierre')}
@@ -6583,7 +6590,7 @@ function altoFila(textos, anchos){
   return lineas>1 ? Math.min(409, lineas*14.4) : null;
 }
 async function descargarReporteSiniestros(lista){
-  if(esEjecutivaSesion()){ alert('Tu perfil no tiene permiso para descargar archivos.'); return; }
+  if(!puedeDescargarSiniestros()){ alert('Tu perfil no tiene permiso para descargar archivos.'); return; }
   const btn = document.getElementById('btnReporteSiniestros'); if(btn){ btn.disabled = true; btn.textContent = 'Preparando…'; }
   try{
     const JSZip = await cargarJSZip();
@@ -6773,7 +6780,7 @@ function viewAsesores(){
       <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px 0;">
         <div>
           <div class="panel-title" style="margin:0;">Ejecutivas de cuenta</div>
-          <div class="panel-sub">Acceso completo al sistema, sin permiso para descargar Excel ni PDF — solo pueden ingresar y editar información.</div>
+          <div class="panel-sub">Acceso completo al sistema, sin permiso para descargar Excel ni PDF — solo pueden ingresar y editar información. Excepción opcional: el reporte Excel de Siniestros, si lo activas en su ficha.</div>
         </div>
         <button class="btn btn-primary" id="btnNuevaEjecutiva">+ Nueva ejecutiva</button>
       </div>
@@ -6781,7 +6788,7 @@ function viewAsesores(){
         <thead><tr><th>Nombre</th><th>Usuario (correo)</th><th>Acceso</th><th></th></tr></thead>
         <tbody>
           ${state.ejecutivas.length===0 ? `<tr class="empty-row"><td colspan="4">Aún no registras ejecutivas de cuenta.</td></tr>` : state.ejecutivas.map(e=>{
-            const acceso = e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`;
+            const acceso = (e.activo===false ? `<span class="pill pill-gray">Suspendida</span>` : `<span class="pill pill-green">Con acceso</span>`) + (e.descargaSiniestros===true ? ` <span class="pill pill-gray" title="Puede descargar el reporte Excel de Siniestros">⬇ Excel siniestros</span>` : '');
             return `<tr><td>${e.nombre}</td><td>${e.usuario||'—'}</td><td>${acceso}</td><td><button class="btn btn-ghost btn-sm" data-edit-ejecutiva="${e.id}">Editar</button></td></tr>`;
           }).join('')}
         </tbody>
@@ -8959,11 +8966,12 @@ function modalEjecutiva(){
   const tieneClave = !!e.passwordHash;
   return `<div class="modal-backdrop"><div class="modal">
     <h2>${editing.id?'Editar ejecutiva de cuenta':'Nueva ejecutiva de cuenta'}</h2>
-    <p class="modal-hint">Tiene acceso a todas las bitácoras, igual que tú — pero no puede descargar nada en Excel ni PDF. Solo puede ingresar y editar información.</p>
+    <p class="modal-hint">Tiene acceso a todas las bitácoras, igual que tú — pero no puede descargar nada en Excel ni PDF, salvo el reporte de Siniestros si lo activas abajo. Solo puede ingresar y editar información.</p>
     <div class="field"><label>Nombre completo</label><input type="text" id="mNombreEjecutiva" style="width:100%;" value="${e.nombre||''}"></div>
     <div class="field"><label>Usuario de acceso (correo)</label><input type="text" id="mUsuarioEjecutiva" style="width:100%;" value="${e.usuario||''}" placeholder="correo@ejemplo.com"></div>
     <div class="field"><label>${tieneClave ? 'Nueva contraseña (dejar en blanco para no cambiarla)' : 'Contraseña de acceso'}</label><input type="password" id="mClaveEjecutiva" style="width:100%;" placeholder="••••••••"></div>
     ${editing.id ? `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaActiva" ${e.activo===false?'':'checked'}> Acceso habilitado</label>` : ''}
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-soft);margin-top:4px;"><input type="checkbox" id="mEjecutivaDescargaSiniestros" ${e.descargaSiniestros===true?'checked':''}> Puede descargar el reporte Excel de Siniestros (ninguna otra descarga)</label>
     <div class="modal-actions">${editing.id ? `<button class="btn btn-danger-ghost" id="mDelete">Eliminar acceso</button>` : ''}<button class="btn" id="mCancel">Cancelar</button><button class="btn btn-primary" id="mSave">Guardar</button></div>
   </div></div>`;
 }
@@ -9744,7 +9752,8 @@ function wireModal(){
       const yaUsado = state.asesores.find(a=>a.usuario && a.usuario.toLowerCase()===usuario.toLowerCase())
         || state.ejecutivas.find(e=>e.usuario && e.usuario.toLowerCase()===usuario.toLowerCase() && e.id!==editing.id);
       if(yaUsado || usuario.toLowerCase()===state.auth.email.toLowerCase()){ alert('Ese correo de acceso ya está en uso.'); return; }
-      const data = { nombre, usuario };
+      const chkDescSin = document.getElementById('mEjecutivaDescargaSiniestros');
+      const data = { nombre, usuario, descargaSiniestros: !!(chkDescSin && chkDescSin.checked) };
       if(clave) data.passwordHash = hashSimple(clave);
       if(editing.id){
         const chkActiva = document.getElementById('mEjecutivaActiva');
@@ -9754,7 +9763,7 @@ function wireModal(){
         data.id = uid(); data.activo = true;
         state.ejecutivas.push(data);
       }
-      registrarAuditoria(editing.id?'editar':'crear', 'ejecutiva', editing.id||data.id, `Ejecutiva: ${data.nombre}`);
+      registrarAuditoria(editing.id?'editar':'crear', 'ejecutiva', editing.id||data.id, `Ejecutiva: ${data.nombre} · descarga Excel siniestros: ${data.descargaSiniestros?'sí':'no'}`);
     }
     if(editing.type==='cliente'){
       const data = { nombre: document.getElementById('mNombre').value.trim(), tipoDocumento: document.getElementById('mTipoDocumento').value, documento: document.getElementById('mDocumento').value.trim(), direccion: document.getElementById('mDireccion').value.trim(), ciudad: document.getElementById('mCiudad').value, celular1: document.getElementById('mCelular1').value.trim(), celular2: document.getElementById('mCelular2').value.trim(), email: document.getElementById('mEmail').value.trim(), email2: document.getElementById('mEmail2').value.trim(), personaContacto: document.getElementById('mPersonaContacto').value.trim(),
