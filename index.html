@@ -5900,7 +5900,7 @@ function modalSiniestro(){
       <div class="field" style="flex:3;"><label>Cómo prevenirlo</label><input type="text" id="mSinPrevencion" style="width:100%;" value="${esc(s.rechazoPrevencion)}"></div>
     </div>
     <div class="modal-actions">
-      ${editing.id ? `<button class="btn btn-danger-ghost" id="mSinDelete">Eliminar</button>` : ''}
+      ${editing.id && !esEjecutivaSesion() ? `<button class="btn btn-danger-ghost" id="mSinDelete">Eliminar</button>` : ''}
       <button class="btn" id="mSinCancel">Cancelar</button>
       <button class="btn btn-primary" id="mSinSave">Guardar</button>
     </div>
@@ -8235,6 +8235,7 @@ function wireModalSiniestro(){
     });
   }
   const del = document.getElementById('mSinDelete'); if(del) del.onclick = () => {
+    if(esEjecutivaSesion()){ alert('Tu perfil no puede eliminar siniestros. Pídeselo al administrador.'); return; }
     if(!confirm('¿Eliminar este siniestro? Quedará 30 días en la Papelera.')) return;
     const sinDel = state.siniestros.find(x=>x.id===editing.id);
     if(sinDel){
