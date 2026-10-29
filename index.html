@@ -299,11 +299,39 @@ async function descargarVentasArchivadas(){
     alert('No se pudo descargar: ' + err.message);
   }
 }
-async function guardarArchivoFirebase(nombre, dataUrl){
+// Si Firebase Storage no está activado, el navegador reintenta la subida en silencio hasta 10 minutos.
+// Por eso se comprueba antes (2 s) y se limita el tiempo de reintentos.
+let storageActivo = false;
+async function comprobarStorage(){
+  if(storageActivo) return;
+  let r = null;
+  try{ r = await fetch(`https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o?maxResults=1`); }
+  catch(e){ throw new Error('No hay conexión con la nube. Revisa tu internet e inténtalo de nuevo.'); }
+  if(r.status===404) throw new Error('Firebase Storage no está activado en el proyecto crm-fg-21ec0, por eso el PDF no se puede guardar. Hay que activarlo en la consola de Firebase (Storage › Comenzar). Los demás datos sí se guardan.');
+  storageActivo = true;
+}
+function mensajeErrorSubida(err){
+  const code = (err && err.code) || '';
+  if(code==='storage/retry-limit-exceeded') return 'La nube no respondió en 1 minuto. Revisa tu internet e inténtalo de nuevo.';
+  if(code==='storage/unauthorized') return 'Las reglas de Firebase Storage no permiten subir el archivo. Publica storage.rules en Firebase › Storage › Reglas.';
+  if(code==='storage/quota-exceeded') return 'Se llenó el espacio de Firebase Storage.';
+  return (err && err.message) || 'Error desconocido';
+}
+const fmtMB = b => (b/1024/1024).toFixed(1);
+async function guardarArchivoFirebase(nombre, dataUrl, alAvanzar){
+  if(!fbStorage) throw new Error('Firebase Storage no cargó. Recarga la página.');
+  await comprobarStorage();
+  try{ fbStorage.setMaxUploadRetryTime(60*1000); }catch(e){}
   const id = Math.random().toString(36).slice(2,10) + Date.now().toString(36); // uid() vive dentro del bloque principal y aquí no existe
   const ref = fbStorage.ref().child(`archivos/${id}`);
-  await ref.putString(dataUrl, 'data_url', { customMetadata: { nombre } });
+  const tarea = ref.putString(dataUrl, 'data_url', { customMetadata: { nombre } });
+  if(alAvanzar) tarea.on('state_changed', snap => alAvanzar(snap.bytesTransferred, snap.totalBytes));
+  try{ await tarea; }
+  catch(err){ throw new Error(mensajeErrorSubida(err)); }
   return id;
+}
+function leerComoDataUrl(file){
+  return new Promise((ok, mal)=>{ const r = new FileReader(); r.onload = ()=>ok(r.result); r.onerror = ()=>mal(new Error('No se pudo leer el archivo.')); r.readAsDataURL(file); });
 }
 async function obtenerArchivoFirebase(id){
   try{
@@ -7406,6 +7434,9 @@ function viewCompletarDatos(){
       ${inputs ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end;">${inputs}<button class="btn btn-primary btn-sm" data-completar-guardar="${v.id}">Guardar</button></div>` : ''}
       <div id="cdError_${v.id}" style="color:var(--danger);font-size:12.5px;margin-top:4px;"></div>
       ${soloFormulario.length ? `<div class="hint" style="margin-top:6px;">${soloFormulario.map(k=> k.id==='prima' ? 'La prima es aproximada (viene del reporte de Alta): pon la prima real del PDF' : 'Adjunta el PDF de la póliza').join(' · ')} → <button class="btn btn-ghost btn-sm" data-edit-venta="${v.id}">Editar póliza</button></div>` : ''}
+      ${falta('pdf') ? `<div data-pdf-drop="${v.id}" style="margin-top:8px;border:1.5px dashed var(--border);border-radius:8px;padding:8px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;">
+        <button class="btn btn-sm" data-pdf-adjuntar="${v.id}">📎 Adjuntar PDF</button><span class="hint" id="cdPdf_${v.id}">o arrastra aquí el PDF de la póliza</span>
+        <input type="file" accept="application/pdf" data-pdf-input="${v.id}" style="display:none;"></div>` : ''}
     </div>`;
   };
   return `
@@ -7525,6 +7556,33 @@ function wireVistasPolizas(){
   if(polVista==='completar'){
     document.querySelectorAll('[data-completar-falta]').forEach(el=> el.onclick = ()=>{ filtroCompletarFalta = filtroCompletarFalta===el.dataset.completarFalta ? '' : el.dataset.completarFalta; completarPagina = 1; render(); });
     document.querySelectorAll('[data-completar-guardar]').forEach(b=> b.onclick = ()=>{ const v = state.ventas.find(x=>x.id===b.dataset.completarGuardar); if(v) guardarCompletarDatos(v); });
+    const adjuntarPDFBandeja = async (ventaId, file) => {
+      const v = state.ventas.find(x=>x.id===ventaId); const aviso = document.getElementById('cdPdf_'+ventaId);
+      const decir = (t, color) => { if(aviso){ aviso.textContent = t; aviso.style.color = color||''; } };
+      if(!v || !file) return;
+      if(file.type!=='application/pdf' && !/\.pdf$/i.test(file.name)){ decir('Ese archivo no es PDF.', 'var(--danger)'); return; }
+      let final = file;
+      try{
+        if(file.size > 25*1024*1024){
+          decir(`Comprimiendo PDF (pesa ${fmtMB(file.size)} MB, el máximo es 25 MB)…`);
+          final = await comprimirPDF(file, 25*1024*1024);
+          if(!final){ decir('No se pudo comprimir por debajo de 25 MB. Prueba con ilovepdf.com/compress_pdf.', 'var(--danger)'); return; }
+        }
+        decir('Comprobando la nube…');
+        const id = await guardarArchivoFirebase(final.name, await leerComoDataUrl(final), (hecho, total)=> decir(`Subiendo ${total?Math.round(hecho*100/total):0} % (${fmtMB(hecho)} de ${fmtMB(total)} MB)…`));
+        if(v.polizaPDFId) eliminarArchivoFirebase(v.polizaPDFId);
+        v.polizaPDFId = id; v.polizaPDFNombre = final.name;
+        registrarAuditoria('editar', 'venta', v.id, `PDF de la póliza adjuntado: ${final.name}`);
+        save(); render();
+      }catch(err){ decir('No se subió: ' + err.message, 'var(--danger)'); }
+    };
+    document.querySelectorAll('[data-pdf-adjuntar]').forEach(b=> b.onclick = ()=>{ const inp = document.querySelector(`[data-pdf-input="${b.dataset.pdfAdjuntar}"]`); if(inp) inp.click(); });
+    document.querySelectorAll('[data-pdf-input]').forEach(inp=> inp.onchange = ()=> adjuntarPDFBandeja(inp.dataset.pdfInput, inp.files[0]));
+    document.querySelectorAll('[data-pdf-drop]').forEach(zona=>{
+      zona.ondragover = e=>{ e.preventDefault(); zona.style.borderColor = 'var(--primary)'; };
+      zona.ondragleave = ()=>{ zona.style.borderColor = ''; };
+      zona.ondrop = e=>{ e.preventDefault(); zona.style.borderColor = ''; adjuntarPDFBandeja(zona.dataset.pdfDrop, e.dataTransfer.files[0]); };
+    });
     document.querySelectorAll('[id^="cd_"]').forEach(inp=> inp.onkeydown = e=>{ if(e.key==='Enter'){ const v = state.ventas.find(x=> inp.id.endsWith('_'+x.id)); if(v) guardarCompletarDatos(v); } });
     const q = document.getElementById('cdQuitarCliente'); if(q) q.onclick = e=>{ e.preventDefault(); filtroCompletarCliente = ''; render(); };
     const ant = document.getElementById('cdPagAnt'); if(ant) ant.onclick = ()=>{ completarPagina = Math.max(1, completarPagina-1); render(); };
@@ -9145,9 +9203,9 @@ function wireClientes(){
       const textoOriginal = btnDoc.textContent;
       const reader = new FileReader();
       reader.onload = async () => {
-        btnDoc.textContent = 'Subiendo…'; btnDoc.disabled = true;
+        btnDoc.textContent = 'Comprobando la nube…'; btnDoc.disabled = true;
         try{
-          const archivoId = await guardarArchivoFirebase(file.name, reader.result);
+          const archivoId = await guardarArchivoFirebase(file.name, reader.result, (hecho, total)=>{ btnDoc.textContent = `Subiendo ${total?Math.round(hecho*100/total):0} % (${fmtMB(hecho)} de ${fmtMB(total)} MB)…`; });
           const c = state.clientes.find(x=>x.id===fichaClienteId);
           if(!c){ btnDoc.textContent = textoOriginal; btnDoc.disabled = false; return; }
           c.documentos = c.documentos || [];
@@ -10781,24 +10839,6 @@ function wireModal(){
         fechaAnulacion: document.getElementById('mEstadoVenta').value==='anulada' ? (document.getElementById('mFechaAnulacion').value || todayISO()) : '',
         notas: document.getElementById('mNotas').value,
       };
-      const ventaExistentePDF = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
-      if(pendingPolizaPDF!==undefined){
-        if(ventaExistentePDF && ventaExistentePDF.polizaPDFId){ eliminarArchivoFirebase(ventaExistentePDF.polizaPDFId); }
-        if(pendingPolizaPDF===null){ data.polizaPDFNombre=''; data.polizaPDFId=''; }
-        else {
-          saveBtn.textContent = 'Subiendo archivo…'; saveBtn.disabled = true;
-          try{
-            const nuevoId = await guardarArchivoFirebase(pendingPolizaPDF.name, pendingPolizaPDF.dataUrl);
-            data.polizaPDFNombre = pendingPolizaPDF.name;
-            data.polizaPDFId = nuevoId;
-          }catch(err){
-            saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
-            mostrarErrorModal('No se pudo subir el archivo PDF a la nube: ' + err.message + '. Intenta de nuevo o quita el archivo.');
-            return;
-          }
-          saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
-        }
-      }
       if(!data.clienteId){ irAPestanaModal('personales'); const elBuscar=document.getElementById('mClienteBuscar'); if(elBuscar) elBuscar.style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar el Cliente (pestaña "Datos personales").'); return; }
       if(esSeguro(tipoProductoSel) && !data.aseguradora){ irAPestanaModal('poliza'); document.getElementById('mAseguradora').style.borderColor='var(--danger)'; mostrarErrorModal('Falta seleccionar la Aseguradora (pestaña "Datos de la póliza").'); return; }
       if(esSeguro(tipoProductoSel) && !data.primaBruta){ irAPestanaModal('pago'); const el=document.getElementById('mPrimaTotalPago'); if(el) el.style.borderColor='var(--danger)'; mostrarErrorModal('Falta ingresar la Prima Total (pestaña "Primas y Forma de Pago").'); return; }
@@ -10813,6 +10853,24 @@ function wireModal(){
           if(!confirm(`Ya existe otra venta con el N° de póliza "${data.numeroPoliza}" (folio ${folioV(polizaDuplicada.folio)}, cliente: ${cliDup?cliDup.nombre:'—'}).\n\n¿Es un error de tipeo? Cancela para revisar. Si estás seguro de que es correcto (por ejemplo, una renovación con el mismo número), presiona Aceptar para continuar.`)) { irAPestanaModal('poliza'); return; }
         }
       }
+      // PDF de la póliza: se sube recién aquí, cuando el formulario ya pasó las validaciones
+      const ventaExistentePDF = editing.id ? state.ventas.find(x=>x.id===editing.id) : null;
+      let pdfAnteriorPorBorrar = null, errorPDF = '';
+      if(pendingPolizaPDF===null){ data.polizaPDFNombre=''; data.polizaPDFId=''; if(ventaExistentePDF && ventaExistentePDF.polizaPDFId) pdfAnteriorPorBorrar = ventaExistentePDF.polizaPDFId; }
+      else if(pendingPolizaPDF){
+        saveBtn.disabled = true; saveBtn.textContent = 'Comprobando la nube…';
+        try{
+          const nuevoId = await guardarArchivoFirebase(pendingPolizaPDF.name, pendingPolizaPDF.dataUrl, (hecho, total)=>{
+            saveBtn.textContent = `Subiendo PDF ${total?Math.round(hecho*100/total):0} % (${fmtMB(hecho)} de ${fmtMB(total)} MB)…`;
+          });
+          data.polizaPDFNombre = pendingPolizaPDF.name;
+          data.polizaPDFId = nuevoId;
+          if(ventaExistentePDF && ventaExistentePDF.polizaPDFId) pdfAnteriorPorBorrar = ventaExistentePDF.polizaPDFId;
+        }catch(err){ errorPDF = err.message; }
+        saveBtn.textContent = 'Guardar'; saveBtn.disabled = false;
+      }
+      if(pdfAnteriorPorBorrar) eliminarArchivoFirebase(pdfAnteriorPorBorrar);
+      if(errorPDF) setTimeout(()=>alert('Los datos de la póliza se guardaron, pero el PDF NO se subió:\n\n' + errorPDF), 50);
       if(editing.id){
         const existing = state.ventas.find(v=>v.id===editing.id);
         if(data.estadoComision==='pagada' && existing.estadoComision!=='pagada') data.fechaPagoComision = todayISO();
